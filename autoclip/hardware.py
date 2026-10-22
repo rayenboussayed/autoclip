@@ -1,7 +1,8 @@
 """Choosing the video encoder: a GPU one that *really works* on this machine, else the CPU's libx264.
 
 Listing an encoder is not enough (ffmpeg builds list ``h264_nvenc`` on machines without NVIDIA hardware), so
-each candidate is probed by encoding a short test clip with exactly the arguments that will be used later.
+each candidate is probed by encoding a short test clip with exactly the arguments - and the same ffmpeg binary -
+that MoviePy will use later.
 """
 
 from __future__ import annotations
@@ -13,7 +14,6 @@ import subprocess
 from collections.abc import Callable
 
 from .config import VideoCfg
-from .media import ffmpeg_exe
 from .models import Encoder
 
 log = logging.getLogger("autoclip")
@@ -60,10 +60,23 @@ HARDWARE: dict[str, Callable[[VideoCfg], Encoder]] = {
 }
 
 
+def encoding_ffmpeg() -> str:
+    """The ffmpeg MoviePy writes with: its bundled binary unless ``FFMPEG_BINARY`` names another one.
+
+    ``media.ffmpeg_exe`` prefers the ffmpeg on ``PATH`` (used to decode), but MoviePy has always imported the
+    bundled one instead. Probing an encoder with a different binary than the one that will encode is how a GPU
+    encoder gets "proven" and then fails at render time with an option the other build does not know.
+    """
+    from moviepy.video.io import ffmpeg_writer  # heavy: only imported when an encoder is probed
+
+    return str(ffmpeg_writer.FFMPEG_BINARY)
+
+
 @functools.cache
 def works(encoder: Encoder) -> bool:
-    """Can ffmpeg encode a short test clip with this encoder and these arguments on this machine?"""
-    cmd = [ffmpeg_exe(), "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=5:d=0.4", "-pix_fmt", "yuv420p", "-c:v", encoder.name]
+    """Can the ffmpeg MoviePy writes with encode a short test clip with this encoder and these arguments?"""
+    cmd = [encoding_ffmpeg(), "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=5:d=0.4"]
+    cmd += ["-pix_fmt", "yuv420p", "-c:v", encoder.name]
     try:  # same argument order as MoviePy's writer: preset first, then our parameters
         return (
             subprocess.run(

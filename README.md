@@ -126,7 +126,9 @@ keyboard clicks or hum. `transcript.enhance` is enabled by default:
 * The log has START/END of every operation with wall time, RSS, free RAM, CPU and throughput; workers log into the same file.
 
 ## Platform notes
-* **ffmpeg**: the one on `PATH` is used if present, otherwise the binary bundled with `imageio-ffmpeg`.
+* **ffmpeg**: decoding uses the one on `PATH` if present, otherwise the binary bundled with `imageio-ffmpeg`. Encoding goes
+  through MoviePy, which uses `FFMPEG_BINARY` if you set it, else its bundled binary - and the encoder is probed with that
+  same binary, so a GPU encoder is only chosen when the build that will really encode can use it.
 * **Fonts**: each OS's font folders are searched for a bold font that covers the caption's script; install a Noto font for scripts your OS lacks.
 * **Arabic / Hebrew** captions are shaped in pure Python when Pillow has no libraqm (typical for Windows / macOS wheels).
   **Hindi / Thai / Khmer** need Pillow built with libraqm; a warning is logged when it is missing.

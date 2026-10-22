@@ -159,7 +159,8 @@ retried alone, in-process. Workers re-run `setup_logging(log_file, level, None)`
    modules import the object once. Memory/CPU balancing happens in `traced` operations (`after_operation`), before each
    render submission, and inside `Cache.trim`. Trim hooks are best-effort and swallow exceptions (logged at DEBUG).
 6. **GPU encoders are used only if proven.** `hardware.works()` really encodes a 0.4 s test clip with the exact arguments
-   MoviePy will use (preset first, then `Encoder.params`). Listing an encoder in `ffmpeg -encoders` proves nothing.
+   MoviePy will use (preset first, then `Encoder.params`) *and the binary MoviePy writes with* (`encoding_ffmpeg()`, not
+   the `PATH` ffmpeg used for decoding). Listing an encoder in `ffmpeg -encoders` proves nothing.
    `compute.device: "cpu"` keeps the GPU out of the run entirely (the encoder and the transcriber).
 7. **Config is strict.** Unknown keys, wrong JSON types and invalid values raise `ConfigError` at load; `"_comment"`
    keys are ignored. All defaults live in the dataclass fields (single source of truth for `--init-full`).
@@ -292,6 +293,10 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     intended (and documented), not a bug.
 15. **Do not use `caplog` for CLI tests** (see section 8) and do not call `setup_logging` in library code.
 16. **Config key names matter:** `scenes` = scene types; `snap_to_cuts` = shot-change snapping. Do not reintroduce `style` or `snap_scenes`.
+17. **Two ffmpegs are in play.** `media.ffmpeg_exe()` prefers the one on `PATH` (decoding, `split` mode), but MoviePy
+    encodes with `FFMPEG_BINARY` or its bundled `imageio-ffmpeg` binary. The probe therefore uses
+    `hardware.encoding_ffmpeg()`: probing with the `PATH` ffmpeg once "proved" NVENC on a machine whose bundled build
+    rejects `-rc`, and every clip then died at render time.
 
 ## 10. Recipes
 

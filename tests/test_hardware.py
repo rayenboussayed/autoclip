@@ -46,6 +46,21 @@ def test_probe_tells_working_from_broken_encoders_with_real_ffmpeg() -> None:
     assert works(Encoder("mpeg4", True, "medium", ("-b:v", "1M")))  # an encoder without presets just ignores the placeholder
 
 
+def test_probe_uses_the_ffmpeg_moviepy_encodes_with(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Another build can accept options the real one rejects: probe the binary MoviePy writes with, not PATH's."""
+    from moviepy.video.io import ffmpeg_writer
+
+    assert hardware.encoding_ffmpeg() == ffmpeg_writer.FFMPEG_BINARY
+    seen: list[str] = []
+
+    def record(cmd: list[str], **_kw: object) -> subprocess.CompletedProcess[bytes]:
+        seen.append(cmd[0])
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", record)
+    assert works(cpu_encoder(VideoCfg(preset="ultrafast"))) and seen == [ffmpeg_writer.FFMPEG_BINARY]
+
+
 def test_probe_survives_hangs_and_missing_binaries(monkeypatch: pytest.MonkeyPatch) -> None:
     def hang(*_a: object, **_k: object) -> None:
         raise subprocess.TimeoutExpired("ffmpeg", 60)
