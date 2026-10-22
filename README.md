@@ -149,7 +149,8 @@ keyboard clicks or hum. `transcript.enhance` is enabled by default:
 
 The build workflow (`.github/workflows/build.yml`) builds a standalone app for **Linux, macOS and
 Windows, on x64 and arm64** - no Python installation needed on the machine that runs it. Push a
-tag (`v1.2.3`) and the six builds are attached to the release.
+tag (`v1.2.3`) and the six builds are attached to the release (one zip each), plus the AppImage
+and the snap of the two Linux targets.
 
 To build it yourself (for the machine you are on):
 
@@ -166,6 +167,20 @@ inside it) and a folder starts much faster.
 
 The optional extras - the speech enhancement and the spectral denoising - are not in the binary:
 they are optional, the app works without them, and they would make it noticeably bigger.
+
+### Linux: AppImage and snap
+
+```bash
+# the AppImage (one file, runs everywhere, no installation)
+python tools/make_appimage.py --dist dist/autoclip --out dist/autoclip-x86_64.AppImage
+
+# the snap (needs snapcraft)
+snapcraft --destructive-mode
+```
+
+The build workflow does both for every Linux target and uploads them next to the other builds.
+Without an argument the AppImage and the snap open the desktop app, with one they run the command
+line - so `./autoclip-x86_64.AppImage config.json` still cuts clips.
 
 ## Platform notes
 * **ffmpeg**: decoding uses the one on `PATH` if present, otherwise the binary bundled with `imageio-ffmpeg`. Encoding goes
@@ -190,6 +205,7 @@ never logged, SQL is parameterised, cached arrays load with `allow_pickle=False`
 pip install -r requirements-dev.txt
 ruff check . && ruff format --check . && mypy autoclip tests tools
 pytest            # fails below 95% branch coverage (currently 100%); real ffmpeg, real worker processes
+pre-commit install   # the same checks on every commit (ruff, mypy and the test suite)
 ```
 
 The package has three parts:

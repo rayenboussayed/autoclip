@@ -11,6 +11,15 @@ dist/
 .venv-*/
 venv/
 
+# packaging output: the AppImage, the snap and what snapcraft stages
+*.AppImage
+*.snap
+squashfs-root/
+parts/
+prime/
+stage/
+.snapcraft/
+
 # tooling caches
 .pytest_cache/
 .mypy_cache/

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=autoclip
+GenericName=Video clip maker
+Comment=Cut long videos into the best short and long clips
+Exec=autoclip
+Icon=autoclip
+Categories=AudioVideo;Video;AudioVideoEditing;
+Keywords=video;clip;clips;shorts;reels;tiktok;youtube;highlights;
+Terminal=false
+StartupNotify=true

@@ -6,8 +6,10 @@ on:
   pull_request:
     paths:
       - "autoclip/**"
-      - "frozen_entry.py"
+      - "tools/**"
+      - "assets/**"
       - "autoclip.spec"
+      - "snapcraft.yaml"
       - ".github/workflows/build.yml"
       - "pyproject.toml"
 
@@ -81,11 +83,46 @@ jobs:
           JSON
           "$BIN" build-run.json
           ls build-out/short/build-check/*.mp4
+      - name: Build the AppImage (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64) TOOL=appimagetool-x86_64.AppImage ;;
+            aarch64) TOOL=appimagetool-aarch64.AppImage ;;
+            *) echo "unknown architecture: $(uname -m)"; exit 1 ;;
+          esac
+          curl -fsSL -o appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/$TOOL"
+          chmod +x appimagetool
+          python tools/make_appimage.py --dist dist/autoclip --out "dist/autoclip-$(uname -m).AppImage" \
+            --appdir build/autoclip.AppDir --tool ./appimagetool
+          # it runs without FUSE when extracted, so check it here too
+          APPIMAGE_EXTRACT_AND_RUN=1 "dist/autoclip-$(uname -m).AppImage" --help
+      - name: Build the snap (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo snap install snapcraft --classic
+          # the version of the snap is the version of the package
+          VERSION="$(python -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+          sed -i "s/^version: .*/version: \"$VERSION\"/" snapcraft.yaml
+          snapcraft --destructive-mode
+          ls -la ./*.snap
       - name: Upload the build
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: dist/autoclip
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload the Linux packages
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-packages
+          path: |
+            dist/*.AppImage
+            ./*.snap
           if-no-files-found: error
           retention-days: 30
 
@@ -98,8 +135,26 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: Collect the release files
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          here="$PWD/release"
+          for dir in artifacts/*; do
+            name="$(basename "$dir")"
+            case "$name" in
+              *-packages)
+                cp "$dir"/* "$here"/
+                ;;
+              *)
+                # unzipping gives autoclip/ with the binary inside - the layout of dist/
+                (cd "$dir" && zip -qr "$here/$name.zip" autoclip)
+                ;;
+            esac
+          done
+          ls -la release
       - name: Attach the builds to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" artifacts/* --generate-notes --title "${{ github.ref_name }}"
+          gh release create "${{ github.ref_name }}" release/* --generate-notes --title "${{ github.ref_name }}"

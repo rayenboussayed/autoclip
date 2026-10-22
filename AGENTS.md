@@ -27,6 +27,9 @@ python -m autoclip config.json                 # run (exit 0 = all ok, 1 = somet
 python -m autoclip --gui                       # the desktop app (same as: python -m autoclip.app)
 
 python -m PyInstaller autoclip.spec --noconfirm  # standalone build (needs pyinstaller; see the build workflow)
+python tools/make_appimage.py                   # the AppImage (Linux) from that build
+snapcraft --destructive-mode                    # the snap (Linux) from that build
+pre-commit install                              # ruff, mypy and the test suite on every commit
 ruff check . && ruff format --check .          # lint + format (line length 140)
 mypy autoclip tests tools                       # strict typing, tests and tools included
 pytest                                         # whole suite; FAILS if branch coverage < 95%
@@ -70,8 +73,12 @@ autoclip/
     window.py       the window: tabs, details panel, log, Run / Stop / Save / Load / Reset
 tests/            mirrors the modules; conftest.py generates the fixture video
 autoclip.spec     the PyInstaller spec: a standalone build (engine + command line + desktop app)
-tools/frozen_entry.py   the entry point of the frozen build (a frozen __main__ has no package around it)
-tools/            compare_stt.py - development aid: STT models x enhancement backends on one scene
+snapcraft.yaml    the snap: the same build as a snap (linux, amd64 + arm64)
+assets/           the icon and the desktop file of the AppImage and the snap
+tools/            frozen_entry.py - the entry point of the frozen build (a frozen __main__ has no package around it)
+                  make_appimage.py - builds the AppDir and the AppImage from the PyInstaller build
+                  make_icon.py     - draws the icon (assets/autoclip.png)
+                  compare_stt.py   - development aid: STT models x enhancement backends on one scene
                   verify_output.py - development aid: checks a finished output directory
 docs/             stt-comparison.md - the measured comparison of transcription models and denoisers
 AGENTS.md        this file (guidance for coding agents)
@@ -328,7 +335,11 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     (`session.pipeline_command` checks `sys.frozen`) instead of `python -m autoclip`. The bundle is a
     folder, not a single file: numpy, OpenCV, the Whisper runtime and ffmpeg are big and a folder
     starts much faster. The optional extras are not bundled - the app degrades gracefully without them.
-18. **Two ffmpegs are in play.** `media.ffmpeg_exe()` prefers the one on `PATH` (decoding, `split` mode), but MoviePy
+18. **The Linux packages wrap the same build.** The AppImage and the snap do not compile anything:
+    they stage the PyInstaller folder. So the entry point is a *script* (without arguments the
+    desktop app opens, with arguments the command line runs) and the payload keeps its place - a
+    symlink would break PyInstaller, which looks for its files next to the binary.
+19. **Two ffmpegs are in play.** `media.ffmpeg_exe()` prefers the one on `PATH` (decoding, `split` mode), but MoviePy
     encodes with `FFMPEG_BINARY` or its bundled `imageio-ffmpeg` binary. The probe therefore uses
     `hardware.encoding_ffmpeg()`: probing with the `PATH` ffmpeg once "proved" NVENC on a machine whose bundled build
     rejects `-rc`, and every clip then died at render time.

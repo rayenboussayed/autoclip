@@ -1,0 +1,68 @@
+name: autoclip
+base: core24
+version: "2.1.0"
+summary: Cut long videos into the best short and long clips
+description: |
+  autoclip turns long videos into the best short (TikTok, Reels, Shorts) and long clips.
+
+  It transcribes the video, scores every sentence-aligned window for the scene type you ask for
+  (best, funny, sad, educational, ...), picks the best non-overlapping ones and renders them:
+  the audio is cleaned up, the pauses and the filler words are cut, the captions are burned in
+  and the clip is encoded.
+
+  Free, local and offline - only the speech model is downloaded once.
+
+  The desktop app (autoclip --gui) shows every option of the config file with an explanation.
+grade: stable
+confinement: strict
+architectures:
+  - amd64
+  - arm64
+license: MIT
+compression: lzo
+
+apps:
+  autoclip:
+    command: bin/autoclip
+    common-id: io.github.rayenboussayed.autoclip
+    extensions: [gnome]
+    desktop: usr/share/applications/autoclip.desktop
+    plugs:
+      - home
+      - network
+      - removable-media
+      - audio-playback
+      - video-playback
+
+parts:
+  # the standalone program (built by PyInstaller before snapcraft runs)
+  autoclip:
+    plugin: dump
+    source: dist/autoclip
+    organize:
+      autoclip: usr/lib/autoclip/autoclip
+      _internal: usr/lib/autoclip/_internal
+    stage:
+      - usr/lib/autoclip
+
+  # the entry point, the desktop file and the icon
+  launcher:
+    plugin: nil
+    override-build: |
+      install -d "$CRAFT_PART_INSTALL/bin" "$CRAFT_PART_INSTALL/usr/share/applications"
+      install -d "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/512x512/apps"
+      install -D -m 0644 assets/autoclip.desktop "$CRAFT_PART_INSTALL/usr/share/applications/autoclip.desktop"
+      install -D -m 0644 assets/autoclip.png "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/512x512/apps/autoclip.png"
+      cat > "$CRAFT_PART_INSTALL/bin/autoclip" <<'LAUNCHER'
+      #!/bin/sh
+      # Without arguments the desktop app opens, with arguments the command line runs.
+      if [ $# -eq 0 ]; then
+          exec "$SNAP/usr/lib/autoclip/autoclip" --gui
+      fi
+      exec "$SNAP/usr/lib/autoclip/autoclip" "$@"
+      LAUNCHER
+      chmod 0755 "$CRAFT_PART_INSTALL/bin/autoclip"
+    stage:
+      - bin/autoclip
+      - usr/share/applications/autoclip.desktop
+      - usr/share/icons/hicolor/512x512/apps/autoclip.png
