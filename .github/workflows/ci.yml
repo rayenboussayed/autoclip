@@ -14,9 +14,22 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -e ".[dev]"
-      - run: ruff check autoclip tests && ruff format --check autoclip tests
+      - run: ruff check . && ruff format --check .
       - run: mypy autoclip tests tools
+      # the desktop app tests need a display: a virtual one on Linux (macOS and Windows have one)
+      - name: Install a virtual display
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
       # pytest enforces >= 95% branch coverage (see pyproject.toml); spawned workers are measured too
-      - run: pytest
+      - name: Test
+        if: runner.os != 'Linux'
+        run: pytest
+      - name: Test (virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a pytest
       - name: Re-run with the security-patched Pillow (MoviePy's own pin is merely conservative)
+        if: runner.os != 'Linux'
         run: pip install "Pillow>=12.3" && pytest
+      - name: Re-run with the security-patched Pillow (virtual display)
+        if: runner.os == 'Linux'
+        run: pip install "Pillow>=12.3" && xvfb-run -a pytest

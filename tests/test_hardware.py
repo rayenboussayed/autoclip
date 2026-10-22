@@ -7,10 +7,10 @@ import subprocess
 
 import pytest
 
-from autoclip import hardware
-from autoclip.config import VideoCfg
-from autoclip.hardware import HARDWARE, PLACEHOLDER_PRESET, PRIORITY, cpu_encoder, pick_encoder, works
-from autoclip.models import Encoder
+from autoclip.core import hardware
+from autoclip.core.config import VideoCfg
+from autoclip.core.hardware import HARDWARE, PLACEHOLDER_PRESET, PRIORITY, cpu_encoder, pick_encoder, works
+from autoclip.core.models import Encoder
 
 
 @pytest.fixture(autouse=True)

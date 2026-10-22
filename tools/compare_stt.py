@@ -35,7 +35,7 @@ from numpy.typing import NDArray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from autoclip.media import decode_audio
+from autoclip.core.media import decode_audio
 
 F32 = NDArray[np.float32]
 SR = 16000  # what faster-whisper expects

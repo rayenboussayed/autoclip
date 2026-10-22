@@ -1,0 +1,1082 @@
+"""The catalogue of every configuration option: what it does, why you would change it, when to.
+
+The desktop app builds its form from this list, so an option that exists in
+:mod:`autoclip.core.config` but is missing here would be invisible in the UI - the test suite
+checks that the two stay in sync.
+
+Each option carries three texts:
+
+``what``
+    what the option does, in one sentence.
+``why``
+    why you would ever change it away from its default.
+``when``
+    when in a project that is the right moment to do so.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+#: The kinds of control the form knows how to build.
+KINDS = ("bool", "choice", "int", "float", "str", "path", "dir", "csv", "lines")
+
+
+@dataclass(frozen=True, slots=True)
+class Option:
+    """One configuration option and its explanation."""
+
+    path: str  # the config path, e.g. "clips.short.count"
+    label: str  # the label in the form
+    kind: str  # one of KINDS
+    what: str
+    why: str
+    when: str
+    choices: tuple[str, ...] = ()
+    visible_when: str = ""  # "other.path=value": only shown when that option has that value
+    advanced: bool = False  # shown in the "advanced" group of its section
+    placeholder: str = ""  # the grey hint inside an empty entry
+    csv_is_list: bool = True  # a csv field that may also be a single string ("best" is not ["b", "e", "s", "t"])
+
+
+@dataclass(frozen=True, slots=True)
+class Section:
+    """A group of options shown as one tab of the app."""
+
+    key: str
+    title: str
+    subtitle: str
+    options: tuple[Option, ...] = field(default_factory=tuple)
+
+
+def _o(
+    path: str,
+    label: str,
+    kind: str,
+    what: str,
+    why: str,
+    when: str,
+    choices: tuple[str, ...] = (),
+    visible_when: str = "",
+    advanced: bool = False,
+    placeholder: str = "",
+    csv_is_list: bool = True,
+) -> Option:
+    """A short constructor for one option."""
+    return Option(path, label, kind, what, why, when, choices, visible_when, advanced, placeholder, csv_is_list)
+
+
+# --------------------------------------------------------------------------------------------
+# The sections, in the order the app shows them.
+# --------------------------------------------------------------------------------------------
+
+VIDEOS = Section(
+    "videos",
+    "Videos",
+    "What to cut and where the result goes",
+    (
+        _o(
+            "input",
+            "Videos to process",
+            "lines",
+            "The videos to work on: full paths, a glob such as `talks/*.mp4`, or one path per line.",
+            "The batch is the unit of work: every video gets its own clips, and one broken file never stops the others.",
+            "Fill this in first - it is the only option without a useful default.",
+            placeholder="one path or glob per line",
+        ),
+        _o(
+            "output_dir",
+            "Output folder",
+            "dir",
+            "Where the clips are written: `<output>/short/<video>/` and `<output>/long/<video>/`.",
+            "Keeps the results of a run together and away from the source footage.",
+            "Set it once per project; the work files (database, transcript cache) and the logs follow it.",
+        ),
+        _o(
+            "compute.device",
+            "Compute device",
+            "choice",
+            "Where the heavy work runs: `cpu` never touches the GPU, `gpu` insists on it, `auto` uses it when there is a usable one.",
+            "`cpu` is the safe choice on a laptop (no heat, no driver trouble); a GPU is several times faster.",
+            "Use `cpu` on shared or battery-powered machines, `auto` everywhere else.",
+            choices=("auto", "cpu", "gpu"),
+        ),
+    ),
+)
+
+CLIPS = Section(
+    "clips",
+    "Clips",
+    "Which moments become clips, and how long they are",
+    (
+        _o(
+            "clips.mode",
+            "Mode",
+            "choice",
+            "What to produce: `highlights` picks the best moments, `ranges` cuts the exact ranges you list, "
+            "`split` cuts the video into equal parts.",
+            "`ranges` gives full control when you already know the timestamps, `split` prepares footage for further editing.",
+            "Leave it at `highlights` unless you want to mark the cuts yourself.",
+            choices=("highlights", "ranges", "split"),
+        ),
+        _o(
+            "clips.kinds",
+            "Clip kinds",
+            "csv",
+            "Which clip lengths to produce: `short` (vertical, for TikTok/Reels/Shorts) and/or `long` (horizontal, for YouTube).",
+            "The kinds are rendered with different shapes and different length rules, so each one needs its own settings.",
+            "Pick `short` for social posts, `long` for a compilation video, both for a full package.",
+        ),
+        _o(
+            "clips.scenes",
+            "Scene types",
+            "csv",
+            "The kinds of moment to look for: `best`, `attractive`, `exciting`, `funny`, `sad`, `emotional`, "
+            "`inspiring`, `calm`, `educational`, `controversial` - or `all`.",
+            "Each type has its own scoring, so `funny` finds the jokes and `educational` the explanations.",
+            "Use `all` for a wide selection, a single type when you only want that mood.",
+            csv_is_list=False,
+        ),
+        _o(
+            "clips.short.count",
+            "Short clips per scene type",
+            "int",
+            "How many short clips are produced for each scene type.",
+            "More clips mean more chances that one of them hits; they compete for the same moments, so a later type may get fewer.",
+            "Raise it for a big batch of social posts, lower it to keep only the strongest moments.",
+        ),
+        _o(
+            "clips.short.min_seconds",
+            "Short: minimum length",
+            "float",
+            "The shortest a short clip may be; the pause removal gives cuts back rather than going below it.",
+            "Very short clips often feel abrupt, and platforms prefer a few seconds of context.",
+            "Raise it when the clips feel choppy, lower it for very punchy edits.",
+        ),
+        _o(
+            "clips.short.target_seconds",
+            "Short: recommended length",
+            "float",
+            "The length the clips tend to get: candidates near it get a small score bonus, but it stays a preference, not a limit.",
+            "The scene type still decides the content - the target only nudges the length towards what usually works.",
+            "Leave it empty to take whatever length the content offers, set it when you know the platform's sweet spot.",
+        ),
+        _o(
+            "clips.short.max_seconds",
+            "Short: maximum length",
+            "float",
+            "The longest a short clip may be; the padding around the cut cannot push it over.",
+            "Long clips lose viewers on the first seconds, and the platform's own limits are short.",
+            "Keep it at or below the platform limit (60 s for Reels and Shorts).",
+        ),
+        _o(
+            "clips.short.aspect",
+            "Short: shape",
+            "str",
+            "The shape of the short clips: `9:16`, `1:1`, `4:5`, `16:9` or `original`.",
+            "A vertical frame uses the screen of a phone best; `original` keeps the source shape.",
+            "Use `9:16` for TikTok, Reels and Shorts, `1:1` for feed posts.",
+        ),
+        _o(
+            "clips.short.ranges",
+            "Short: fixed ranges",
+            "lines",
+            "Exact ranges to cut in `ranges` mode, one `HH:MM:SS-HH:MM:SS` per line.",
+            "You decide where the clips start and end instead of the automatic finder.",
+            "Only in `ranges` mode - the ranges belong to the `short` kind.",
+            visible_when="clips.mode=ranges",
+        ),
+        _o(
+            "clips.long.count",
+            "Long clips per scene type",
+            "int",
+            "How many long clips are produced for each scene type.",
+            "Long clips cost real time to render, so fewer of them is usually the right choice.",
+            "One per scene type is enough for a compilation; more only when the material is rich.",
+        ),
+        _o(
+            "clips.long.min_seconds",
+            "Long: minimum length",
+            "float",
+            "The shortest a long clip may be.",
+            "A long clip that is not really long wastes the format.",
+            "Keep it well above the short minimum (three minutes and more is the usual range).",
+        ),
+        _o(
+            "clips.long.target_seconds",
+            "Long: recommended length",
+            "float",
+            "The length the long clips tend to get - a preference, not a limit.",
+            "Long clips work best when they hold a complete thought, and the bonus keeps them around a predictable size.",
+            "Set it to the length your platform and your audience expect.",
+        ),
+        _o(
+            "clips.long.max_seconds",
+            "Long: maximum length",
+            "float",
+            "The longest a long clip may be.",
+            "Keeps a single clip from running past the attention span - and the render time with it.",
+            "Ten minutes is a good ceiling for a compilation piece.",
+        ),
+        _o(
+            "clips.long.aspect",
+            "Long: shape",
+            "str",
+            "The shape of the long clips: `16:9`, `9:16`, `1:1`, `4:5` or `original`.",
+            "A long clip is usually watched on a big screen, so it keeps the horizontal shape.",
+            "Use `16:9` for YouTube, `9:16` when the long clip is meant for a phone.",
+        ),
+        _o(
+            "clips.long.ranges",
+            "Long: fixed ranges",
+            "lines",
+            "Exact ranges to cut in `ranges` mode, one `HH:MM:SS-HH:MM:SS` per line.",
+            "You decide where the clips start and end instead of the automatic finder.",
+            "Only in `ranges` mode - the ranges belong to the `long` kind.",
+            visible_when="clips.mode=ranges",
+        ),
+        _o(
+            "clips.keywords",
+            "Keywords",
+            "csv",
+            "Extra words or phrases that boost a moment, in any language.",
+            "The built-in word lists are English; your own words make the finder work in your language or on your topic.",
+            "When the automatic scoring misses what you mean by a good moment (brand names, technical terms, a catch phrase).",
+            advanced=True,
+        ),
+        _o(
+            "clips.lexicon_file",
+            "Extra word lists",
+            "path",
+            'A JSON file with your own word lists per feature, for example `{"funny": ["my catch phrase"]}`.',
+            "Extends the built-in English lists with your own vocabulary, feature by feature.",
+            "When `keywords` is not enough because you want many words per feature.",
+            advanced=True,
+        ),
+        _o(
+            "clips.skip_intro_seconds",
+            "Skip the intro",
+            "float",
+            "Seconds at the start of the video that are never used.",
+            "Introductions, greetings and housekeeping are rarely the best moment of a talk.",
+            "When the video opens with a long preamble.",
+        ),
+        _o(
+            "clips.snap_to_cuts",
+            "Snap to shot changes",
+            "bool",
+            "Move the cut points to the nearest shot change instead of cutting in the middle of a shot.",
+            "A cut that lands on a camera change looks intentional and is less jarring.",
+            "For edited or multi-camera footage; it needs the optional `scenedetect` package.",
+        ),
+        _o(
+            "clips.pad_start",
+            "Padding before",
+            "float",
+            "Extra seconds kept before the first word of a clip.",
+            "A little breathing room stops the clip from starting too abruptly.",
+            "Raise it if the first word is cut off; lower it for a punchy start.",
+            advanced=True,
+        ),
+        _o(
+            "clips.pad_end",
+            "Padding after",
+            "float",
+            "Extra seconds kept after the last word of a clip.",
+            "The ending should not fall on the last syllable.",
+            "Raise it if the last word is cut off; lower it for a punchy ending.",
+            advanced=True,
+        ),
+        _o(
+            "clips.split_seconds",
+            "Split length",
+            "float",
+            "The length of the parts in `split` mode.",
+            "Fixed-length parts are easy to upload, archive or edit further.",
+            "Only in `split` mode.",
+            visible_when="clips.mode=split",
+        ),
+    ),
+)
+
+TRANSCRIPT = Section(
+    "transcript",
+    "Transcript",
+    "How the spoken text is obtained",
+    (
+        _o(
+            "transcript.mode",
+            "Source",
+            "choice",
+            "Where the text comes from: `auto` uses your subtitle file when there is one and transcribes otherwise, "
+            "`whisper` always transcribes, `file` only reads your file, `off` uses no text at all.",
+            "Transcription is the slowest part of a run, so an existing subtitle file makes it instant.",
+            "Use `file` when you already have subtitles, `off` when you only want an automatic cut.",
+            choices=("auto", "whisper", "file", "off"),
+        ),
+        _o(
+            "transcript.file",
+            "Subtitle file",
+            "path",
+            "Your subtitle file (.srt or .json); `{stem}` is replaced by the name of each video.",
+            "Skips the transcription and gives exact word timings.",
+            "Whenever you have subtitles; with several videos the name must contain `{stem}`.",
+            visible_when="transcript.mode=file",
+        ),
+        _o(
+            "transcript.cache",
+            "Reuse the transcript",
+            "bool",
+            "Keep the transcript in the work folder and reuse it while the video, the model and the language do not change.",
+            "Re-running the selection then costs nothing instead of paying for the transcription again.",
+            "Keep it on; turn it off only when you want every run to start from scratch.",
+        ),
+        _o(
+            "transcript.model",
+            "Whisper model",
+            "str",
+            "The speech model: `tiny`, `base`, `small`, `medium` or `large-v3` (multilingual, not the `.en` ones).",
+            "Bigger models understand accents, noise and rare words better, but need more time and memory.",
+            "`large-v3` for the final result, `small` or `base` for a quick first look.",
+        ),
+        _o(
+            "transcript.auto_downgrade",
+            "Use a smaller model when memory is tight",
+            "bool",
+            "Fall back to a smaller model automatically when the machine has too little free memory.",
+            "Prevents the run from dying with an out-of-memory error on a small machine.",
+            "Keep it on unless you need exactly one model and the fallback would surprise you.",
+            advanced=True,
+        ),
+        _o(
+            "transcript.language",
+            "Language",
+            "str",
+            "The language of the audio, for example `en`, `de` or `ar`; empty means detect it.",
+            "A known language is detected faster and more reliably than an automatic guess.",
+            "When the detection picks the wrong language, or when you want to skip the detection.",
+        ),
+        _o(
+            "transcript.multilingual",
+            "Detect the language per segment",
+            "bool",
+            "Detect the language of every segment instead of the whole video.",
+            "Needed for videos that switch between languages.",
+            "Only for mixed-language videos - it makes the transcription slower.",
+            advanced=True,
+        ),
+        _o(
+            "transcript.device",
+            "Transcription device",
+            "choice",
+            "Where the transcription runs: `cuda` on the GPU, `cpu` on the processor, `auto` on the GPU when there is one.",
+            "The GPU is several times faster, but it needs a matching CUDA setup.",
+            "Leave it at `auto`; `compute.device = cpu` overrides it anyway.",
+            choices=("auto", "cpu", "cuda"),
+            advanced=True,
+        ),
+        _o(
+            "transcript.beam_size",
+            "Accuracy (beam size)",
+            "int",
+            "How hard the model searches for the words: 1 is fastest, 5 is most accurate.",
+            "A larger beam size fixes more mistakes but takes proportionally longer.",
+            "Use 1 for a quick test, 5 for the final render.",
+            advanced=True,
+        ),
+        _o(
+            "transcript.word_timestamps",
+            "Time every word",
+            "bool",
+            "Record the time of every single word.",
+            "Needed for the word-by-word caption highlight and for cutting filler words.",
+            "Keep it on; turning it off saves a little time but loses the highlight.",
+        ),
+        _o(
+            "transcript.enhance.enabled",
+            "Clean up the speech",
+            "bool",
+            "Denoise the audio before it is transcribed.",
+            "A noisy recording makes the model write the wrong words - and the wrong language.",
+            "On for a noisy recording, off for a clean one: denoising clean audio can only hurt it.",
+        ),
+        _o(
+            "transcript.enhance.backend",
+            "Denoiser",
+            "choice",
+            "Which denoiser to use: `sherpa` (a small ONNX model, needs the optional `sherpa-onnx` package) "
+            "or `noisereduce` (spectral gating).",
+            "The two behave differently: the ONNX model removes the noise, the spectral gate only attenuates it.",
+            "`sherpa` for speech recorded with a real microphone, `noisereduce` for hum and constant hiss.",
+            choices=("sherpa", "noisereduce"),
+            visible_when="transcript.enhance.enabled=true",
+        ),
+        _o(
+            "transcript.enhance.model",
+            "Denoiser model",
+            "choice",
+            "Which denoiser model to use: `gtcrn` (fast, light) or one of the `dpdfnet` models (heavier, cleaner).",
+            "The bigger models remove more noise but cost more time per minute of audio.",
+            "`gtcrn` is the good default; a `dpdfnet` model when the recording is really rough.",
+            choices=("gtcrn", "dpdfnet_baseline", "dpdfnet2", "dpdfnet4", "dpdfnet8"),
+            visible_when="transcript.enhance.enabled=true",
+            advanced=True,
+        ),
+        _o(
+            "transcript.enhance.attenuation_limit_db",
+            "Maximum attenuation",
+            "float",
+            "How much the `dpdfnet` models may remove, in dB (0 = off, 100 = no limit).",
+            "Limits how much of the signal the denoiser may treat as noise.",
+            "Raise it for very noisy recordings, lower it when the denoiser starts eating the quiet parts of words.",
+            visible_when="transcript.enhance.enabled=true",
+            advanced=True,
+        ),
+        _o(
+            "transcript.enhance.denoise_strength",
+            "Denoise strength",
+            "float",
+            "How hard the `noisereduce` backend works, from 0 (off) to 1 (aggressive).",
+            "A stronger setting removes more noise but can leave a metallic sound.",
+            "Start at the default and raise it only while the transcription is still wrong.",
+            visible_when="transcript.enhance.enabled=true",
+            advanced=True,
+        ),
+        _o(
+            "transcript.enhance.snr_threshold_db",
+            "Only clean up noisy audio",
+            "float",
+            "Only enhance the audio when its signal-to-noise ratio is below this value in dB; empty means always.",
+            "A clean recording (a screen capture with a good microphone, say) is only damaged by denoising.",
+            "Keep it around 20 dB; lower it when you want the clean-up to run more often.",
+        ),
+        _o(
+            "transcript.enhance.num_threads",
+            "Denoiser threads",
+            "int",
+            "How many threads the denoiser may use.",
+            "The denoiser is small, so more threads make it slower rather than faster.",
+            "Leave it at 4 unless you know the machine better.",
+            visible_when="transcript.enhance.enabled=true",
+            advanced=True,
+        ),
+        _o(
+            "transcript.enhance.model_dir",
+            "Model folder",
+            "dir",
+            "Where the denoiser model is kept; empty means `<output>/.work/models`.",
+            "Keeps the downloaded model out of the way and lets you share it between projects.",
+            "Only when you want the model in a fixed place (an offline machine, for example).",
+            advanced=True,
+        ),
+    ),
+)
+
+VIDEO = Section(
+    "video",
+    "Video",
+    "Shape, quality and background of the clips",
+    (
+        _o(
+            "video.short_side",
+            "Short side",
+            "int",
+            "The size of the short side of the output (1080 gives 1080x1920 for a vertical clip).",
+            "The resolution decides how sharp the clip is and how long it takes to render.",
+            "1080 for the final result, 720 or 540 for a quick look.",
+        ),
+        _o(
+            "video.fps",
+            "Frames per second",
+            "float",
+            "The frame rate of the output; empty keeps the rate of the source video.",
+            "A lower rate makes the file smaller and the render faster, at the price of motion.",
+            "Leave it empty for a source video you do not want to change; 30 is the usual choice.",
+        ),
+        _o(
+            "video.layout",
+            "Layout",
+            "choice",
+            "How the picture fills the frame: `fit` shows the whole frame on a background, `fill` crops it to the edges.",
+            "`fit` keeps everything visible but adds borders, `fill` looks native but may cut off parts.",
+            "`fit` for talks and screen recordings, `fill` for footage that was shot for the format.",
+            choices=("fit", "fill"),
+        ),
+        _o(
+            "video.background.type",
+            "Background",
+            "choice",
+            "What fills the empty space around the picture: `blur` (a blurred copy of the frame), `color` "
+            "(a flat colour) or `image` (your own picture).",
+            "The background frames the video and keeps the eye on the captions.",
+            "`blur` is the safe default; `image` when the video is part of a series with its own look.",
+            choices=("blur", "color", "image"),
+        ),
+        _o(
+            "video.background.blur",
+            "Blur strength",
+            "float",
+            "How strongly the background is blurred.",
+            "A stronger blur separates the picture from the background more clearly.",
+            "Raise it when the background still competes with the foreground.",
+            visible_when="video.background.type=blur",
+            advanced=True,
+        ),
+        _o(
+            "video.background.dim",
+            "Darken the background",
+            "float",
+            "How much the background is darkened, from 0 (as it is) to 1 (black).",
+            "Darkening the background makes the white captions easier to read.",
+            "A little darkening (0.3-0.5) is enough for most footage.",
+            visible_when="video.background.type=blur",
+            advanced=True,
+        ),
+        _o(
+            "video.background.color",
+            "Background colour",
+            "str",
+            "The colour of the flat background, for example `#101010`.",
+            "A flat colour is the cleanest background for captions.",
+            "A near-black colour looks professional and keeps the captions readable.",
+            visible_when="video.background.type=color",
+        ),
+        _o(
+            "video.background.image",
+            "Background picture",
+            "path",
+            "Your own picture, used as the background.",
+            "It gives a series of clips the same look, whatever the source video is.",
+            "Only when the background should be part of your brand.",
+            visible_when="video.background.type=image",
+        ),
+        _o(
+            "video.fade_seconds",
+            "Fade in and out",
+            "float",
+            "The length of the fade at the start and at the end of every clip.",
+            "A short fade softens the cut when the clip is played in a row.",
+            "A fifth of a second is enough; use 0 for a hard cut.",
+        ),
+        _o(
+            "video.gpu",
+            "GPU encoder",
+            "choice",
+            "Which hardware encoder to try: `auto` uses the first one that really works on this machine, `off` always uses the CPU.",
+            "A GPU encoder is much faster and leaves the processor free for the transcription.",
+            "`auto` on a desktop with a supported GPU; `off` everywhere else, or when `compute.device` is `cpu`.",
+            choices=("auto", "off", "nvenc", "videotoolbox", "qsv", "amf"),
+        ),
+        _o(
+            "video.crf",
+            "Quality (CRF)",
+            "int",
+            "The quality of the encode: lower is better quality and a bigger file (18-23 is the useful range).",
+            "It is the single knob that decides how good the result looks and how big it gets.",
+            "18-20 for the final file, 23-28 for a quick preview.",
+        ),
+        _o(
+            "video.preset",
+            "Encoder speed",
+            "str",
+            "How hard the encoder works: `ultrafast`, `superfast`, `veryfast`, `faster`, `fast`, `medium`, `slow`, `slower`, `veryslow`.",
+            "A slower preset gives a smaller file at the same quality - and takes longer.",
+            "`veryfast` for everyday use, `medium` when the file size matters.",
+        ),
+        _o(
+            "video.maxrate_mbps",
+            "Maximum bitrate",
+            "float",
+            "A cap on the bitrate in megabits per second; 0 means no cap.",
+            "Keeps the file inside the limits of the platform you upload to.",
+            "Set it when the platform has a limit, otherwise leave it at 12.",
+            advanced=True,
+        ),
+        _o(
+            "video.thumbnail",
+            "Cover image",
+            "bool",
+            "Also write a small `.jpg` cover image next to every clip.",
+            "A cover image is what a platform shows before the clip is played.",
+            "Keep it on if you upload the clips yourself.",
+        ),
+    ),
+)
+
+CAPTIONS = Section(
+    "captions",
+    "Captions",
+    "The text burned into the picture, and the hook title",
+    (
+        _o(
+            "captions.enabled",
+            "Captions",
+            "bool",
+            "Burn the spoken text into the picture.",
+            "Most people watch a clip without sound, and the captions carry the message.",
+            "On for social media and for any clip that has to work muted.",
+        ),
+        _o(
+            "captions.font",
+            "Font",
+            "str",
+            "The font: `auto` picks a system font that covers the script of your language.",
+            "A font that lacks a glyph shows an empty box instead of the letter.",
+            "Leave it at `auto` unless you want a specific typeface (a path to a `.ttf` works too).",
+        ),
+        _o(
+            "captions.size",
+            "Font size",
+            "int",
+            "The size of the caption text in pixels; empty derives it from the resolution.",
+            "The captions have to be readable on a phone without taking the whole screen.",
+            "Empty is fine for any resolution; set it only for a special look.",
+            advanced=True,
+        ),
+        _o(
+            "captions.color",
+            "Text colour",
+            "str",
+            "The colour of the caption text.",
+            "It has to contrast with the picture behind it.",
+            "White is the safe choice; a brand colour when the series has one.",
+        ),
+        _o(
+            "captions.bg_color",
+            "Background colour",
+            "str",
+            "The colour of the box behind the text.",
+            "A box makes the text readable over any picture.",
+            "Black with a partly transparent box works on almost everything.",
+        ),
+        _o(
+            "captions.bg_opacity",
+            "Background transparency",
+            "float",
+            "How transparent the box behind the text is, from 0 (invisible) to 1 (solid).",
+            "A half transparent box keeps the picture visible while the text stays readable.",
+            "Around 0.6 is a good compromise; 0 removes the box entirely.",
+        ),
+        _o(
+            "captions.stroke_width",
+            "Outline",
+            "int",
+            "The width of the outline around the letters.",
+            "An outline keeps the text readable when there is no box behind it.",
+            "1-2 pixels when the background is transparent, otherwise 0.",
+            advanced=True,
+        ),
+        _o(
+            "captions.stroke_color",
+            "Outline colour",
+            "str",
+            "The colour of the outline around the letters.",
+            "Usually black, so the text reads on a bright picture.",
+            "Only relevant when the outline width is above 0.",
+            advanced=True,
+        ),
+        _o(
+            "captions.highlight",
+            "Highlight the spoken word",
+            "bool",
+            "Colour the word that is being spoken while the rest stays white.",
+            "It guides the eye and makes a clip feel alive - it is the style most short videos use.",
+            "On for social media; off for a calmer look or for scripts without spaces.",
+        ),
+        _o(
+            "captions.highlight_color",
+            "Highlight colour",
+            "str",
+            "The colour of the word that is being spoken.",
+            "A bright colour draws the eye without being loud.",
+            "A warm yellow is the common choice.",
+            visible_when="captions.highlight=true",
+            advanced=True,
+        ),
+        _o(
+            "captions.position",
+            "Position",
+            "choice",
+            "Where the captions sit in the frame: `top`, `center`, `lower` or `bottom`.",
+            "The bottom is covered by the app bar of most social apps.",
+            "`lower` is the safe choice, `top` when the lower part of the picture matters.",
+            choices=("top", "center", "lower", "bottom"),
+        ),
+        _o(
+            "captions.safe_top",
+            "Safe area at the top",
+            "float",
+            "The share of the frame kept free at the top, as a fraction of its height.",
+            "Keeps the captions clear of the status bar and the channel name.",
+            "0.1 is enough; raise it when something is still in the way.",
+            advanced=True,
+        ),
+        _o(
+            "captions.safe_bottom",
+            "Safe area at the bottom",
+            "float",
+            "The share of the frame kept free at the bottom, as a fraction of its height.",
+            "Keeps the captions clear of the app bar and the like button.",
+            "0.2 is the usual value for vertical video.",
+            advanced=True,
+        ),
+        _o(
+            "captions.max_chars",
+            "Characters per screen",
+            "int",
+            "How many characters fit on one caption screen before the text is broken up.",
+            "Long lines are hard to read; short ones are easy.",
+            "Around 24 characters works for a phone in portrait.",
+        ),
+        _o(
+            "captions.max_seconds",
+            "Seconds per screen",
+            "float",
+            "How long one caption screen stays before the next one appears.",
+            "A screen that stays too long has already been read and gets in the way.",
+            "Around 2.5 seconds; shorter for a fast speaker.",
+        ),
+        _o(
+            "captions.uppercase",
+            "Upper case",
+            "bool",
+            "Write the captions in capital letters.",
+            "Capital letters are easier to read at a glance in short videos.",
+            "On for punchy social clips, off for a calmer look.",
+        ),
+        _o(
+            "title.enabled",
+            "Hook title",
+            "bool",
+            "Show a short title at the start of the clip.",
+            "The first line tells the viewer what the clip is about, before they decide to stay.",
+            "On when the clip is meant to stop the scroll.",
+        ),
+        _o(
+            "title.seconds",
+            "Title length",
+            "float",
+            "How long the title stays on the screen.",
+            "Long enough to read it, short enough not to waste the opening.",
+            "Two to three seconds for a short title.",
+            visible_when="title.enabled=true",
+        ),
+        _o(
+            "title.position",
+            "Title position",
+            "choice",
+            "Where the title sits: `top`, `center`, `lower` or `bottom`.",
+            "The top is usually free and does not fight with the captions.",
+            "`top` for a hook title, `center` for a dramatic intro.",
+            choices=("top", "center", "lower", "bottom"),
+            visible_when="title.enabled=true",
+        ),
+    ),
+)
+
+AUDIO = Section(
+    "audio",
+    "Audio",
+    "The sound of the clips: clean-up, loudness and silence",
+    (
+        _o(
+            "audio.enhance",
+            "Clean up the sound",
+            "bool",
+            "High-pass the audio, reduce the noise, normalise the loudness of the speech and limit the peaks.",
+            "Clips cut from one video sit at different levels; this makes them sound alike.",
+            "On for every clip that is published; off when the sound is already perfect.",
+        ),
+        _o(
+            "audio.denoise",
+            "Noise reduction",
+            "choice",
+            "How the noise is removed: `auto` (spectral gating if the package is there, otherwise ffmpeg), "
+            "`noisereduce`, `ffmpeg` or `none`.",
+            "The three methods differ in speed and in how much they damage the voice.",
+            "`auto` for everything; `none` when the recording is clean.",
+            choices=("auto", "noisereduce", "ffmpeg", "none"),
+        ),
+        _o(
+            "audio.denoise_strength",
+            "Noise reduction strength",
+            "float",
+            "How hard the noise reduction works, from 0 (off) to 1 (aggressive).",
+            "A stronger setting removes more hiss but can sound metallic.",
+            "Raise it only while the noise is still audible.",
+            advanced=True,
+        ),
+        _o(
+            "audio.highpass_hz",
+            "Remove low rumble",
+            "float",
+            "Everything below this frequency is removed.",
+            "It removes the rumble of handling noise and the hum of a mains frequency.",
+            "80 Hz is a good default; raise it for a rumbling microphone.",
+            advanced=True,
+        ),
+        _o(
+            "audio.target_dbfs",
+            "Target loudness",
+            "float",
+            "The loudness the speech is normalised to, in dBFS (about -14 LUFS is the usual broadcast level).",
+            "Clips that are too quiet are skipped by the viewers.",
+            "Leave it at -16; lower it only if the platform complains about the level.",
+            advanced=True,
+        ),
+        _o(
+            "audio.fade_seconds",
+            "Audio fade",
+            "float",
+            "The length of the fade in and fade out of the sound.",
+            "A click at the start of a clip is the most common small flaw in an automatic edit.",
+            "Around 0.1 seconds; 0 removes the fades.",
+            advanced=True,
+        ),
+        _o(
+            "silence.remove",
+            "Shorten the pauses",
+            "bool",
+            "Cut the long pauses out of the clip and join the parts that are left.",
+            "Pauses are dead time; removing them makes the clip tighter and faster to watch.",
+            "On for every clip; off when the pauses are part of the style.",
+        ),
+        _o(
+            "silence.min_silence",
+            "Pause length to cut",
+            "float",
+            "Pauses longer than this many seconds are shortened.",
+            "Short gaps are natural speech, long gaps are waiting, thinking or a break.",
+            "Half a second is the usual value; raise it to keep more of the pauses.",
+        ),
+        _o(
+            "silence.keep_padding",
+            "Padding around the cut",
+            "float",
+            "How much of the silence is kept on each side of the cut.",
+            "Without any padding the words run into each other.",
+            "Around 0.1 seconds; more when the speaker talks very close together.",
+            advanced=True,
+        ),
+        _o(
+            "silence.threshold_db",
+            "Silence threshold",
+            "str",
+            "The level below which the audio counts as silence, in dB; `auto` derives it from the recording.",
+            "A fixed threshold fits one recording, the automatic one fits many.",
+            "`auto` for mixed material; a number when the level of the recording is known.",
+            advanced=True,
+        ),
+        _o(
+            "silence.remove_fillers",
+            "Cut the filler words",
+            "bool",
+            'Remove words like "um", "uh" and "erm" together with the pauses around them.',
+            "Fillers make a clip feel unpolished; they also cost seconds.",
+            "On for social clips; off when the speaker's style depends on them.",
+        ),
+        _o(
+            "silence.fillers",
+            "Filler words",
+            "csv",
+            "The words that count as fillers.",
+            "The list only knows English words; your own language needs its own list.",
+            "Add the fillers of your language, for example `ähm`, `ehm`.",
+            advanced=True,
+        ),
+    ),
+)
+
+SPEED = Section(
+    "speed",
+    "Speed",
+    "How much memory and CPU the run may use",
+    (
+        _o(
+            "processing.chunk_threshold_minutes",
+            "Chunk from this length",
+            "float",
+            "Videos longer than this many minutes are transcribed in pieces; 0 means always.",
+            "A very long video is never loaded into memory at once, so the run stays stable.",
+            "Leave it at 0; only raise it if you transcribe many short videos in a row.",
+            advanced=True,
+        ),
+        _o(
+            "processing.chunk_minutes",
+            "Chunk length",
+            "float",
+            "The length of one piece of audio given to the transcription model.",
+            "A shorter piece needs less memory, a longer one is transcribed a little faster.",
+            "Five minutes is a good balance; raise it on a machine with plenty of memory.",
+        ),
+        _o(
+            "resources.cpus",
+            "CPU cores to use",
+            "int",
+            "How many processor cores the run may use; 0 means as many as the machine has.",
+            "Fewer cores leave the machine responsive for everything else.",
+            "0 on a dedicated machine; 2-4 on a laptop you are still working on.",
+        ),
+        _o(
+            "resources.max_cpu_percent",
+            "Maximum CPU load",
+            "float",
+            "The share of the cores the run may take, in percent.",
+            "Keeps the machine usable while the clips are rendered.",
+            "Lower it when the fan gets loud, raise it when you want the job done sooner.",
+        ),
+        _o(
+            "resources.max_workers",
+            "Parallel clips",
+            "int",
+            "How many clips are rendered at the same time; 0 means as many as the memory allows.",
+            "More workers finish sooner but need more memory at the same time.",
+            "0 is right for most machines; 1 renders one clip after the other.",
+        ),
+        _o(
+            "resources.memory_fraction",
+            "Share of the free memory",
+            "float",
+            "The share of the currently free memory the run may claim.",
+            "The run follows the state of the machine instead of taking a fixed amount.",
+            "Lower it (0.5) when other programs need the memory; raise it (0.9) on a free machine.",
+            advanced=True,
+        ),
+        _o(
+            "resources.memory_reserve_mb",
+            "Memory reserved for the system",
+            "int",
+            "The amount of memory in megabytes that is always left to the operating system.",
+            "The operating system and your other programs need room, even when the run is busy.",
+            "512 MB is enough; raise it to 2048 when the machine swaps.",
+            advanced=True,
+        ),
+        _o(
+            "storage.cache_memory_mb",
+            "Cache in memory",
+            "int",
+            "How many megabytes of the cache are kept in memory; 0 means as much as is free.",
+            "A memory cache is much faster than one on disk.",
+            "Leave it at 0; lower it when the machine runs out of memory.",
+            advanced=True,
+        ),
+        _o(
+            "storage.cache_disk_mb",
+            "Cache on disk",
+            "int",
+            "The maximum size of the cached data inside the working database, in megabytes.",
+            "A cap keeps the work folder from growing without end.",
+            "The default is enough for most projects.",
+            advanced=True,
+        ),
+    ),
+)
+
+LLM = Section(
+    "llm",
+    "LLM & log",
+    "The optional re-ranking with a local model, and the log files",
+    (
+        _o(
+            "llm.enabled",
+            "Re-rank with an LLM",
+            "bool",
+            "Let a local language model look at the candidates and pick the best ones.",
+            "A model understands the meaning of a moment, where the built-in scoring only measures signals.",
+            "On when the automatic selection is not good enough and you have a local Ollama or OpenAI-compatible server.",
+        ),
+        _o(
+            "llm.base_url",
+            "Server address",
+            "str",
+            "The address of the model server, for example `http://localhost:11434`.",
+            "The re-ranking sends the candidate texts to this server.",
+            "Leave it at the default for Ollama; change it for LM Studio or a server on another machine.",
+            visible_when="llm.enabled=true",
+        ),
+        _o(
+            "llm.model",
+            "Model name",
+            "str",
+            "The model on the server, for example `llama3.2`.",
+            "A stronger model ranks better but answers slower.",
+            "Use the name the server shows for its models.",
+            visible_when="llm.enabled=true",
+        ),
+        _o(
+            "llm.api_key",
+            "API key",
+            "str",
+            "The key sent to the server, if it asks for one.",
+            "Some servers (a hosted one, for example) need it.",
+            "Only when the server requires a key; it is never written to the log.",
+            visible_when="llm.enabled=true",
+        ),
+        _o(
+            "llm.top_k",
+            "Candidates sent to the model",
+            "int",
+            "How many candidates the model is asked to choose from.",
+            "More candidates mean a better choice, but a longer answer from the model.",
+            "12 is enough; raise it to 20 when the selection is still weak.",
+            visible_when="llm.enabled=true",
+            advanced=True,
+        ),
+        _o(
+            "llm.timeout",
+            "Answer timeout",
+            "float",
+            "How long the app waits for the model, in seconds.",
+            "A model that never answers must not stop the run.",
+            "Raise it for a large model on a slow machine.",
+            visible_when="llm.enabled=true",
+            advanced=True,
+        ),
+        _o(
+            "logging.enabled",
+            "Write a log file",
+            "bool",
+            "Write a log file into `<output>/logs/`.",
+            "The log shows every step, the memory use and the reason for a skipped clip.",
+            "Keep it on - it is the first place to look when a clip is not what you expected.",
+        ),
+        _o(
+            "logging.level",
+            "Log detail",
+            "choice",
+            "How much the log file records: `DEBUG` writes every small step, `INFO` the important ones.",
+            "The detail helps to find out why a moment was not chosen.",
+            "`INFO` normally, `DEBUG` when you are chasing a problem.",
+            choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        ),
+        _o(
+            "logging.console_level",
+            "Console detail",
+            "choice",
+            "How much is printed to the terminal.",
+            "The desktop app shows this output in its log window.",
+            "`INFO` to follow the run, `WARNING` for a quiet console.",
+            choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        ),
+        _o(
+            "logging.file",
+            "Log file",
+            "path",
+            "A fixed log file; empty means a new timestamped file in `<output>/logs/`.",
+            "A fixed name is handy when a script collects the logs of many runs.",
+            "Empty is fine; set it when the log has to land somewhere specific.",
+            advanced=True,
+        ),
+    ),
+)
+
+#: Every section, in the order the app shows them.
+SECTIONS: tuple[Section, ...] = (VIDEOS, CLIPS, TRANSCRIPT, VIDEO, CAPTIONS, AUDIO, SPEED, LLM)
+
+#: Every option, by its config path.
+OPTIONS: dict[str, Option] = {o.path: o for s in SECTIONS for o in s.options}
+
+
+def option_paths() -> list[str]:
+    """The config paths of every option, in the order the app shows them."""
+    return [o.path for s in SECTIONS for o in s.options]

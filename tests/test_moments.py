@@ -13,11 +13,11 @@ from typing import Any
 import numpy as np
 import pytest
 
-from autoclip import moments
-from autoclip.config import Config, parse
-from autoclip.media import probe
-from autoclip.models import MediaInfo, Moment
-from autoclip.moments import (
+from autoclip.core import moments
+from autoclip.core.config import Config, parse
+from autoclip.core.media import probe
+from autoclip.core.models import MediaInfo, Moment
+from autoclip.core.moments import (
     audio_candidates,
     audio_features,
     build_lexicons,
@@ -33,9 +33,9 @@ from autoclip.moments import (
     text_features,
     zscore,
 )
-from autoclip.resources import RESOURCES
-from autoclip.store import Cache, Store
-from autoclip.styles import STYLES
+from autoclip.core.resources import RESOURCES
+from autoclip.core.store import Cache, Store
+from autoclip.core.styles import STYLES
 
 from .conftest import SENTENCES, Media, make_cfg, merge
 
@@ -234,7 +234,7 @@ def pipeline(media: Media, tmp_path: Path):  # type: ignore[no-untyped-def]
 
 
 def load_segments(store: Store, media: Media) -> None:
-    from autoclip.transcript import load_transcript_file
+    from autoclip.core.transcript import load_transcript_file
 
     store.put_segments(load_transcript_file(media.transcript))
 

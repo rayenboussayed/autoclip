@@ -12,16 +12,16 @@ from typing import Any
 import numpy as np
 import pytest
 
-from autoclip import hardware, transcript
-from autoclip.config import Config, EnhanceCfg, ProcessingCfg, TranscriptCfg, parse
-from autoclip.denoise import SpeechEnhancer
-from autoclip.errors import AutoclipError
-from autoclip.hardware import pick_encoder
-from autoclip.media import F32, decode_audio, frame_energy_db, probe
-from autoclip.models import MediaInfo
-from autoclip.resources import MB, RESOURCES
-from autoclip.store import Store
-from autoclip.transcript import (
+from autoclip.core import hardware, transcript
+from autoclip.core.config import Config, EnhanceCfg, ProcessingCfg, TranscriptCfg, parse
+from autoclip.core.denoise import SpeechEnhancer
+from autoclip.core.errors import AutoclipError
+from autoclip.core.hardware import pick_encoder
+from autoclip.core.media import F32, decode_audio, frame_energy_db, probe
+from autoclip.core.models import MediaInfo
+from autoclip.core.resources import MB, RESOURCES
+from autoclip.core.store import Store
+from autoclip.core.transcript import (
     asr_device,
     chunk_bounds,
     fit_whisper_model,

@@ -8,7 +8,24 @@ pip install -r requirements.txt
 pip install -U "Pillow>=12.3"          # security fixes; MoviePy's "<12" pin is only conservative (CI tests both)
 python -m autoclip --init config.json  # tiny starter config   (--init-full lists every option and default)
 python -m autoclip config.json         # or: autoclip config.json  (after `pip install -e .`)
+python -m autoclip.app                 # the desktop app (same options, explained)
 ```
+
+## The desktop app
+
+`python -m autoclip.app` opens a native window (Tk, the look of your system) with **every option of
+the config file**:
+
+- eight tabs - *Videos, Clips, Transcript, Video, Captions, Audio, Speed, LLM & log* - each option
+  with a one-line summary under it;
+- a details panel that explains the option you clicked: **what** it does, **why** you would change
+  it and **when** it is the right moment;
+- *All options...* opens the same explanations in a searchable list;
+- *Run* writes the config and starts the pipeline (the log appears in the window), *Stop* ends it;
+  *Save config*, *Load config...* and *Reset* work on the config file.
+
+The app and the command line share the same engine and the same config file - what the window builds
+is exactly what `python -m autoclip config.json` would run.
 
 ## Output layout
 
@@ -152,6 +169,19 @@ pip install -r requirements-dev.txt
 ruff check . && ruff format --check . && mypy autoclip tests tools
 pytest            # fails below 95% branch coverage (currently 100%); real ffmpeg, real worker processes
 ```
+
+The package has three parts:
+
+```
+autoclip/
+  core/   the engine: config, media, audio, transcript, moments, captions, render, runner, store
+  cli/    the command line: python -m autoclip config.json
+  app/    the desktop app:  python -m autoclip.app   (Tk, native look)
+```
+
+`core` knows nothing about a user interface; the CLI and the app are thin layers on top of it, and
+the app keeps its behaviour (reading and writing the config, starting and stopping the pipeline) in
+`app/session.py`, so it can be tested without a display.
 
 `tools/compare_stt.py` compares transcription models and enhancement backends on one scene of a video:
 

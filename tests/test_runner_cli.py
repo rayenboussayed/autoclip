@@ -17,15 +17,16 @@ from typing import Any
 
 import pytest
 
-from autoclip import runner
-from autoclip.cli import main, parse_hms
-from autoclip.config import Config
-from autoclip.hardware import HW_MAX_WORKERS, cpu_encoder
-from autoclip.models import Encoder, Moment, RenderJob
-from autoclip.resources import RESOURCES, WorkerPlan
-from autoclip.runner import _srt_time, render_all, render_job
-from autoclip.store import Store
-from autoclip.transcript import load_transcript_file
+from autoclip.cli import main
+from autoclip.core import runner
+from autoclip.core.config import Config
+from autoclip.core.hardware import HW_MAX_WORKERS, cpu_encoder
+from autoclip.core.models import Encoder, Moment, RenderJob
+from autoclip.core.pipeline import parse_hms
+from autoclip.core.resources import RESOURCES, WorkerPlan
+from autoclip.core.runner import _srt_time, render_all, render_job
+from autoclip.core.store import Store
+from autoclip.core.transcript import load_transcript_file
 
 from .conftest import Media, make_cfg, merge
 from .test_transcript import install_stub_whisper
@@ -376,7 +377,7 @@ def test_main_config_errors_and_init(tmp_path: Path, capsys: pytest.CaptureFixtu
 
 
 def test_generated_configs_load_without_errors(tmp_path: Path) -> None:
-    from autoclip.config import load_config
+    from autoclip.core.config import load_config
 
     (tmp_path / "video.mp4").write_bytes(b"x")  # the starter config names video.mp4
     for flag in ("--init", "--init-full"):

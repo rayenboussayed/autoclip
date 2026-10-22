@@ -13,12 +13,12 @@ from typing import Any
 import numpy as np
 import pytest
 
-from autoclip import audio, media
-from autoclip.audio import Timeline, build_audio, compute_keep, enhance_audio, frame_db, is_filler, load_window_audio, piece_bounds
-from autoclip.config import AudioCfg, SilenceCfg
-from autoclip.errors import AutoclipError
-from autoclip.media import AUDIO_SR, FRAME, decode_audio, ffmpeg_exe, frame_energy_db, probe, scene_cuts, snap_to_cut, snap_to_quiet
-from autoclip.models import Word
+from autoclip.core import audio, media
+from autoclip.core.audio import Timeline, build_audio, compute_keep, enhance_audio, frame_db, is_filler, load_window_audio, piece_bounds
+from autoclip.core.config import AudioCfg, SilenceCfg
+from autoclip.core.errors import AutoclipError
+from autoclip.core.media import AUDIO_SR, FRAME, decode_audio, ffmpeg_exe, frame_energy_db, probe, scene_cuts, snap_to_cut, snap_to_quiet
+from autoclip.core.models import Word
 
 from .conftest import Media
 

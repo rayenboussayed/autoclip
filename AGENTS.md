@@ -12,7 +12,8 @@ non-overlapping ones -> render (enhance audio, cut pauses/fillers, layout, burn 
 
 * Free, local, no service dependencies (optional local LLM re-rank over HTTP).
 * Runs on Linux, macOS and Windows, Python >= 3.10 (developed and verified on 3.12). No system ffmpeg required.
-* Version 2.1.0. ~3,000 lines of package code in 19 modules, ~2,400 lines of tests (199 tests, 100% statement + branch coverage).
+* Three parts: `core` (the engine), `cli` (the command line) and `app` (the desktop app, Tk).
+* Version 2.1.0. ~5,200 lines of package code in 28 modules, ~3,700 lines of tests (284 tests, 100% statement + branch coverage).
 
 ## 2. Commands
 
@@ -23,6 +24,7 @@ pip install -e .                               # optional: gives the `autoclip` 
 
 python -m autoclip --init config.json          # tiny starter config      (--init-full: every option + default)
 python -m autoclip config.json                 # run (exit 0 = all ok, 1 = something failed, 2 = bad config)
+python -m autoclip --gui                       # the desktop app (same as: python -m autoclip.app)
 
 ruff check . && ruff format --check .          # lint + format (line length 140)
 mypy autoclip tests tools                       # strict typing, tests and tools included
@@ -39,24 +41,32 @@ A full `pytest` takes about one minute (real ffmpeg encodes, real worker process
 ```
 autoclip/
   __main__.py     python -m autoclip entry (freeze_support for frozen Windows builds)
-  cli.py          argument parsing, per-video pipeline (process_video), main(), --init
-  config.py       typed config dataclasses (Pydantic validates them), strict loader, input globbing
-  styles.py       DATA ONLY: STYLES (scene weights), STYLE_HELP, LEXICONS
-  models.py       small slotted dataclasses: Span/Word/Segment/Moment, MediaInfo, Encoder, RenderJob
-  errors.py       AutoclipError, ConfigError
-  resources.py    ResourceMonitor + RESOURCES singleton: CPU/RAM -> worker plan, cache budget
-  log.py          LOG, setup_logging, traced decorator, speed_text
-  store.py        SQLite Store (WAL), MemoryLRU, Cache (RAM LRU in front of SQLite kv), is_boundary
-  media.py        ffmpeg discovery, probe (PyAV), energy track, decode_audio, scene cuts, snapping
-  audio.py        enhance_audio (denoise/loudness/limiter), compute_keep (pauses/fillers), Timeline, build_audio
-  transcript.py   parse srt/json, faster-whisper (chunked for long videos), disk cache, get_transcript
-  denoise.py      speech enhancement before transcription: SpeechEnhancer (sherpa-onnx ONNX | noisereduce)
-  moments.py      candidates, vectorised features, per-scene scoring, pick(), LLM re-rank, select_moments
-  hardware.py     GPU/CPU encoder choice: probe by really encoding; Encoder builders; HW_MAX_WORKERS
-  fonts.py        cross-platform font discovery + glyph coverage (fontTools)
-  captions.py     text sprites (balanced wrapping, word highlight), CaptionTrack, build_captions
-  render.py       layout, OpenCV resize/blur, encode, render_clip
-  runner.py       RenderJob execution: render_job (never raises), render_all (adaptive process pool)
+  core/           THE ENGINE - no user interface, heavy imports stay inside functions
+    config.py       typed config dataclasses (Pydantic validates them), strict loader, input globbing
+    pipeline.py     process_video (probe -> transcript -> moments -> render), split_video, ranges_moments
+    styles.py       DATA ONLY: STYLES (scene weights), STYLE_HELP, LEXICONS
+    models.py       small slotted dataclasses: Span/Word/Segment/Moment, MediaInfo, Encoder, RenderJob
+    errors.py       AutoclipError, ConfigError
+    resources.py    ResourceMonitor + RESOURCES singleton: CPU/RAM -> worker plan, cache budget
+    log.py          LOG, setup_logging, traced decorator, speed_text
+    store.py        SQLite Store (WAL), MemoryLRU, Cache (RAM LRU in front of SQLite kv), is_boundary
+    media.py        ffmpeg discovery, probe (PyAV), energy track, decode_audio, scene cuts, snapping
+    audio.py        enhance_audio (denoise/loudness/limiter), compute_keep (pauses/fillers), Timeline, build_audio
+    transcript.py   parse srt/json, faster-whisper (chunked for long videos), disk cache, get_transcript
+    denoise.py      speech enhancement before transcription: SpeechEnhancer (sherpa-onnx ONNX | noisereduce)
+    moments.py      candidates, vectorised features, per-scene scoring, pick(), LLM re-rank, select_moments
+    hardware.py     GPU/CPU encoder choice: probe by really encoding; Encoder builders; HW_MAX_WORKERS
+    fonts.py        cross-platform font discovery + glyph coverage (fontTools)
+    captions.py     text sprites (balanced wrapping, word highlight), CaptionTrack, build_captions
+    render.py       layout, OpenCV resize/blur, encode, render_clip
+    runner.py       RenderJob execution: render_job (never raises), render_all (adaptive process pool)
+  cli/            THE COMMAND LINE - python -m autoclip config.json
+    __init__.py     argument parsing, main(), --init / --init-full, --gui
+  app/            THE DESKTOP APP - python -m autoclip.app (Tk, native look)
+    fields.py       the catalogue: every config option with what / why / when (the app is built from it)
+    form.py         the form: one row per option, the control that fits its kind, the scroll area
+    session.py      the behaviour without widgets: read/write/validate the config, start/stop the pipeline
+    window.py       the window: tabs, details panel, log, Run / Stop / Save / Load / Reset
 tests/            mirrors the modules; conftest.py generates the fixture video
 tools/            compare_stt.py - development aid: STT models x enhancement backends on one scene
                   verify_output.py - development aid: checks a finished output directory
@@ -79,7 +89,9 @@ hardware, audio   <- config, log, media, models (+store for transcript/moments)
 denoise           <- config, errors, media
 transcript, moments, captions, render <- the layers above
 runner            <- hardware, log, models, render, resources, store
-cli               <- everything
+pipeline          <- everything of the engine (the per-video run)
+cli               <- core.pipeline, core.config, core.errors, core.hardware, core.log, core.resources
+app               <- core.config, core.errors (+ tkinter)
 ```
 `RenderJob` lives in `models.py` (not `runner.py`) precisely to avoid a `render <-> runner` cycle; `Encoder` is in
 `models.py` and its logic in `hardware.py` to avoid `models <-> media`. If you need a new shared type, put it in `models.py`.
@@ -170,6 +182,10 @@ retried alone, in-process. Workers re-run `setup_logging(log_file, level, None)`
    stem are rejected at load time (they would share outputs).
 9. **Words/segments must be shorter than `store.MAX_SPAN` (120 s)**: window queries only look that far back.
 10. **No work on the GPU except encoding (and Whisper via CUDA).** Do not claim end-to-end GPU acceleration.
+11. **The desktop app shows every config option.** `app/fields.py` is the catalogue: one entry per option with
+    *what* it does, *why* you would change it and *when*. `tests/test_app.py` compares it with the config
+    dataclasses, so a new option that is not in the catalogue (or an entry that is not in the config) fails
+    the suite. The app writes the same config file the command line reads - never a second format.
 
 ## 6. Configuration (`config.py`)
 
@@ -209,6 +225,9 @@ retried alone, in-process. Workers re-run `setup_logging(log_file, level, None)`
   for throughput. Never log the LLM API key (`LlmCfg.api_key` has `repr=False`).
 * **Errors:** raise `AutoclipError` (or `ConfigError`) for expected, user-fixable problems; let real bugs raise.
   Never `except:`; catching `Exception` is allowed only at isolation boundaries (per video, per clip, best-effort hooks) and must log.
+* **The desktop app is native Tk:** `ttk` widgets with the platform theme (`system_theme()`), no custom colours
+  beyond the grey of the help lines, no third-party GUI toolkit. The behaviour (config, process) stays in
+  `app/session.py` so it can be tested without a display; `app/window.py` only draws and wires.
 * **Minimal and DRY:** no dead code, no unused parameters/types, no speculative options. Prefer deleting to adding.
   Modules stay small and single-purpose (largest is ~360 lines). Prefer vectorised NumPy over Python loops for per-candidate work.
 * **Style:** ruff (rules E,F,I,B,UP,S,SIM,RUF,PL; bandit `S` enforced), line length 140, `ruff format`.
@@ -253,6 +272,8 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 * **CLI tests read the run's log file**, not `caplog`: `main()` reconfigures the logger.
 * Coverage uses `branch = true`, `concurrency = ["multiprocessing", "thread"]`, `parallel = true`: code that runs inside
   spawned workers is measured. `if __name__ == "__main__":` is excluded; `__main__.py` is exercised with `runpy`.
+* The desktop app: the behaviour lives in `app/session.py` and is tested without a display; the widgets need one, so
+  those tests skip when there is none (`has_display()`). CI runs them under `xvfb-run` on Linux.
 * Every new behaviour needs a test that would fail without it; every bug fix needs a regression test. Assertions should
   state the contract (e.g. "no moment is reused under another label"), not incidental values.
 * Keep tests fast: prefer the 40 s fixture, `short_side` 96-144, `ultrafast`, `audio.denoise: "none"` unless denoise is the subject.

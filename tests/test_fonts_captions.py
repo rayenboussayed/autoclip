@@ -10,9 +10,9 @@ import numpy as np
 import pytest
 from PIL import features
 
-from autoclip import captions, fonts
-from autoclip.audio import Timeline
-from autoclip.captions import (
+from autoclip.core import captions, fonts
+from autoclip.core.audio import Timeline
+from autoclip.core.captions import (
     CaptionTrack,
     Chunk,
     Face,
@@ -27,11 +27,11 @@ from autoclip.captions import (
     sprite_key,
     without_fillers,
 )
-from autoclip.config import CaptionsCfg, Config, parse
-from autoclip.fonts import covers, dominant_script, find_font, font_dirs, font_index, has_rtl
-from autoclip.models import Span, Word
-from autoclip.resources import RESOURCES
-from autoclip.store import Cache, Store
+from autoclip.core.config import CaptionsCfg, Config, parse
+from autoclip.core.fonts import covers, dominant_script, find_font, font_dirs, font_index, has_rtl
+from autoclip.core.models import Span, Word
+from autoclip.core.resources import RESOURCES
+from autoclip.core.store import Cache, Store
 
 
 @pytest.fixture(scope="session")

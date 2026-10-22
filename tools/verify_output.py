@@ -27,7 +27,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from autoclip.media import decode_audio
+from autoclip.core.media import decode_audio
 
 NAME_RE = re.compile(r"^(?P<video>.+)_(?P<scene>[a-z]+)_(?P<n>\d{2})_(?P<start>\d+)s$")
 SRT_TIME = re.compile(r"(\d+):(\d\d):(\d\d)[,.](\d{1,3})\s*-->\s*(\d+):(\d\d):(\d\d)[,.](\d{1,3})")

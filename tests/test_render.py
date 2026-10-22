@@ -11,14 +11,14 @@ import pytest
 from moviepy import ColorClip, VideoFileClip
 from PIL import Image
 
-from autoclip.config import VideoCfg, parse
-from autoclip.hardware import cpu_encoder
-from autoclip.media import probe
-from autoclip.models import Encoder, Moment, RenderJob
-from autoclip.render import blur_function, canvas_size, estimate_render_bytes, even, fill_to, layout, render_clip, resize_to
-from autoclip.resources import RESOURCES
-from autoclip.store import Cache, Store
-from autoclip.transcript import load_transcript_file
+from autoclip.core.config import VideoCfg, parse
+from autoclip.core.hardware import cpu_encoder
+from autoclip.core.media import probe
+from autoclip.core.models import Encoder, Moment, RenderJob
+from autoclip.core.render import blur_function, canvas_size, estimate_render_bytes, even, fill_to, layout, render_clip, resize_to
+from autoclip.core.resources import RESOURCES
+from autoclip.core.store import Cache, Store
+from autoclip.core.transcript import load_transcript_file
 
 from .conftest import Media, make_cfg
 

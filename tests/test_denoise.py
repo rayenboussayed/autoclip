@@ -12,9 +12,9 @@ from typing import Any
 import numpy as np
 import pytest
 
-from autoclip import denoise
-from autoclip.config import EnhanceCfg
-from autoclip.denoise import SpeechEnhancer, fetch_model
+from autoclip.core import denoise
+from autoclip.core.config import EnhanceCfg
+from autoclip.core.denoise import SpeechEnhancer, fetch_model
 
 
 def tone(seconds: float = 0.5, sr: int = 16000) -> np.ndarray:

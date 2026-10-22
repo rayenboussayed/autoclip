@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from autoclip.config import ClipsCfg, Config, KindCfg, expand_inputs, load_config, parse
-from autoclip.errors import ConfigError
+from autoclip.core.config import ClipsCfg, Config, KindCfg, expand_inputs, load_config, parse
+from autoclip.core.errors import ConfigError
 
 
 def write(tmp: Path, data: object, name: str = "config.json") -> Path:

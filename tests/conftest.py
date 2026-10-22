@@ -13,9 +13,9 @@ from typing import Any
 import numpy as np
 import pytest
 
-from autoclip.config import Config, parse
-from autoclip.log import LOG, setup_logging
-from autoclip.media import ffmpeg_exe
+from autoclip.core.config import Config, parse
+from autoclip.core.log import LOG, setup_logging
+from autoclip.core.media import ffmpeg_exe
 
 SENTENCES = [
     "Welcome everyone to this big talk today.",
