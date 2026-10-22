@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from autoclip.config import Config, build
+from autoclip.config import Config, parse
 from autoclip.log import LOG, setup_logging
 from autoclip.media import ffmpeg_exe
 
@@ -108,7 +108,7 @@ def make_cfg(media: Media, out: Path, source: Path | None = None, **sections: di
         "logging": {"enabled": False, "console_level": "ERROR"},
         "resources": {"max_workers": 1},
     }
-    cfg = build(Config, merge(data, sections))
+    cfg = parse(Config, merge(data, sections))
     cfg.input = [str(source or media.video)]
     cfg.output_dir = str(out)
     return cfg

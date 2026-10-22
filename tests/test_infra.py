@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from autoclip import resources
-from autoclip.config import Config, build
+from autoclip.config import Config, parse
 from autoclip.log import LOG, setup_logging, speed_text, traced
 from autoclip.models import Moment, Segment, Word
 from autoclip.resources import MB, ResourceMonitor, Snapshot, cgroup_cpu_quota, cgroup_memory_available
@@ -19,7 +19,7 @@ from autoclip.store import Cache, MemoryLRU, Store, is_boundary
 
 
 def cfg_with(**sections: dict[str, object]) -> Config:
-    return build(Config, sections)
+    return parse(Config, sections)
 
 
 # ---- resources -----------------------------------------------------------------------------------

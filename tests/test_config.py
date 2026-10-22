@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from autoclip.config import ClipsCfg, Config, KindCfg, build, expand_inputs, load_config
+from autoclip.config import ClipsCfg, Config, KindCfg, expand_inputs, load_config, parse
 from autoclip.errors import ConfigError
 
 
@@ -26,55 +26,55 @@ def touch(tmp: Path, *names: str) -> None:
 
 def test_defaults_roundtrip_through_json() -> None:
     """``--init-full`` output must load back into the identical defaults."""
-    assert build(Config, json.loads(json.dumps(asdict(Config())))) == Config()
+    assert parse(Config, json.loads(json.dumps(asdict(Config())))) == Config()
 
 
-def test_build_accepts_comments_and_int_for_float() -> None:
-    cfg = build(Config, {"_comment": "x", "clips": {"short": {"min_seconds": 5, "max_seconds": 9}, "_why": 1}})
+def test_parse_accepts_comments_and_int_for_float() -> None:
+    cfg = parse(Config, {"_comment": "x", "clips": {"short": {"min_seconds": 5, "max_seconds": 9}, "_why": 1}})
     assert cfg.clips.short.min_seconds == 5
 
 
 @pytest.mark.parametrize(
     "data, fragment",
     [
-        ({"cout": 1}, "unknown config key 'cout'"),
-        ({"clips": {"cout": 1}}, "'clips.cout'"),
-        ({"clips": {"short": {"count": "5"}}}, "invalid value"),
-        ({"clips": {"short": {"count": True}}}, "invalid value"),
-        ({"clips": {"short": {"min_seconds": True}}}, "invalid value"),
-        ({"clips": 3}, "must be a JSON object"),
-        ({"clips": {"mode": "nope"}}, "invalid value"),
-        ({"clips": {"kinds": ["medium"]}}, "invalid value"),
-        ({"clips": {"keywords": ["a", 1]}}, "invalid value"),
-        ({"clips": {"lexicon_file": 5}}, "invalid value"),
-        ({"silence": {"threshold_db": "loud"}}, "invalid value"),
+        ({"cout": 1}, "cout: Unexpected keyword argument"),
+        ({"clips": {"cout": 1}}, "clips.cout: Unexpected keyword argument"),
+        ({"clips": {"short": {"count": "5"}}}, "clips.short.count: Input should be a valid integer"),
+        ({"clips": {"short": {"count": True}}}, "clips.short.count: Input should be a valid integer"),
+        ({"clips": {"short": {"min_seconds": True}}}, "clips.short.min_seconds: Input should be a valid number"),
+        ({"clips": 3}, "clips: Input should be a dictionary"),
+        ({"clips": {"mode": "nope"}}, "clips.mode: Input should be"),
+        ({"clips": {"kinds": ["medium"]}}, "clips.kinds.0: Input should be"),
+        ({"clips": {"keywords": ["a", 1]}}, "clips.keywords.1: Input should be a valid string"),
+        ({"clips": {"lexicon_file": 5}}, "clips.lexicon_file: Input should be a valid string"),
+        ({"silence": {"threshold_db": "loud"}}, "silence.threshold_db"),
         ({"clips": {"scenes": "nope"}}, "unknown clips.scenes"),
         ({"clips": {"scenes": ["best", "nope"]}}, "unknown clips.scenes"),
         ({"clips": {"kinds": []}}, "clips.kinds"),
         ({"clips": {"kinds": ["short", "short"]}}, "clips.kinds"),
-        ({"clips": {"split_seconds": 0}}, "split_seconds"),
-        ({"clips": {"short": {"min_seconds": 50, "max_seconds": 10}}}, "min_seconds"),
-        ({"clips": {"short": {"target_seconds": 5}}}, "target_seconds"),
-        ({"clips": {"short": {"min_seconds": 5, "max_seconds": 10, "target_seconds": 20}}}, "target_seconds"),
-        ({"clips": {"long": {"count": 0}}}, "at least 1"),
-        ({"clips": {"short": {"ranges": ["bad"]}}}, "HH:MM:SS"),
-        ({"clips": {"long": {"aspect": "wide"}}}, "aspect"),
-        ({"llm": {"base_url": "file:///etc/passwd"}}, r"http\(s\)"),
-        ({"video": {"aspect": "9:16"}}, "unknown config key 'video.aspect'"),
-        ({"video": {"gpu": "cuda"}}, "invalid value"),
-        ({"processing": {"chunk_minutes": 0}}, "chunk_minutes"),
-        ({"transcript": {"enhance": {"backend": "nope"}}}, "invalid value"),
-        ({"transcript": {"enhance": {"model": "nope"}}}, "invalid value"),
-        ({"transcript": {"enhance": {"attenuation_limit_db": 200}}}, "attenuation_limit_db"),
-        ({"transcript": {"enhance": {"denoise_strength": 2}}}, "denoise_strength"),
-        ({"transcript": {"enhance": {"num_threads": 0}}}, "num_threads"),
-        ({"transcript": {"enhance": {"snr_threshold_db": 0}}}, "snr_threshold_db"),
-        ({"compute": {"device": "tpu"}}, "invalid value"),
+        ({"clips": {"split_seconds": 0}}, "clips.split_seconds: Input should be greater than 0"),
+        ({"clips": {"short": {"min_seconds": 50, "max_seconds": 10}}}, "min_seconds must be <= max_seconds"),
+        ({"clips": {"short": {"target_seconds": 5}}}, "target_seconds must be between"),
+        ({"clips": {"short": {"min_seconds": 5, "max_seconds": 10, "target_seconds": 20}}}, "target_seconds must be between"),
+        ({"clips": {"long": {"count": 0}}}, "clips.long.count: Input should be greater than or equal to 1"),
+        ({"clips": {"short": {"ranges": ["bad"]}}}, "clips.short.ranges.0: String should match pattern"),
+        ({"clips": {"long": {"aspect": "wide"}}}, "clips.long.aspect: String should match pattern"),
+        ({"llm": {"base_url": "file:///etc/passwd"}}, "llm.base_url: String should match pattern"),
+        ({"video": {"aspect": "9:16"}}, "video.aspect: Unexpected keyword argument"),
+        ({"video": {"gpu": "cuda"}}, "video.gpu: Input should be"),
+        ({"processing": {"chunk_minutes": 0}}, "processing.chunk_minutes: Input should be greater than 0"),
+        ({"transcript": {"enhance": {"backend": "nope"}}}, "transcript.enhance.backend: Input should be"),
+        ({"transcript": {"enhance": {"model": "nope"}}}, "transcript.enhance.model: Input should be"),
+        ({"transcript": {"enhance": {"attenuation_limit_db": 200}}}, "transcript.enhance.attenuation_limit_db:"),
+        ({"transcript": {"enhance": {"denoise_strength": 2}}}, "transcript.enhance.denoise_strength:"),
+        ({"transcript": {"enhance": {"num_threads": 0}}}, "transcript.enhance.num_threads:"),
+        ({"transcript": {"enhance": {"snr_threshold_db": 0}}}, "transcript.enhance.snr_threshold_db:"),
+        ({"compute": {"device": "tpu"}}, "compute.device: Input should be"),
     ],
 )
 def test_invalid_config_is_rejected(data: dict[str, object], fragment: str) -> None:
     with pytest.raises(ConfigError, match=fragment):
-        build(Config, data)
+        parse(Config, data)
 
 
 def test_scene_types_all_one_or_a_list() -> None:
@@ -92,18 +92,18 @@ def test_short_and_long_kinds_have_their_own_defaults() -> None:
     assert (cc.long.aspect, cc.long.min_seconds, cc.long.max_seconds) == ("16:9", 180, 600)
     assert cc.short.target_seconds is None and cc.long.target_seconds is None  # no recommendation by default
     assert cc.kind("short") is cc.short and cc.kind("long") is cc.long
-    custom = build(Config, {"clips": {"kinds": ["long"], "long": {"aspect": "original", "ranges": ["0:10-0:50"]}}})
+    custom = parse(Config, {"clips": {"kinds": ["long"], "long": {"aspect": "original", "ranges": ["0:10-0:50"]}}})
     assert custom.clips.long.aspect == "original" and custom.clips.long.ranges == ["0:10-0:50"] and custom.clips.short.count == 5
 
 
 def test_the_recommended_length_is_optional_and_must_fit_the_range() -> None:
-    kind = build(Config, {"clips": {"short": {"min_seconds": 10, "max_seconds": 60, "target_seconds": 30}}}).clips.short
+    kind = parse(Config, {"clips": {"short": {"min_seconds": 10, "max_seconds": 60, "target_seconds": 30}}}).clips.short
     assert kind.target_seconds == 30
-    assert build(Config, {"clips": {"short": {"target_seconds": None}}}).clips.short.target_seconds is None
+    assert parse(Config, {"clips": {"short": {"target_seconds": None}}}).clips.short.target_seconds is None
 
 
 def test_valid_unions_and_lists() -> None:
-    cfg = build(Config, {"clips": {"scenes": ["best", "funny"]}, "silence": {"threshold_db": -40}, "video": {"fps": None, "gpu": "nvenc"}})
+    cfg = parse(Config, {"clips": {"scenes": ["best", "funny"]}, "silence": {"threshold_db": -40}, "video": {"fps": None, "gpu": "nvenc"}})
     assert cfg.clips.scene_list() == ["best", "funny"] and KindCfg().aspect == "9:16"
     assert cfg.silence.threshold_db == -40 and cfg.video.fps is None and cfg.video.gpu == "nvenc"
 

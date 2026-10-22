@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from autoclip import moments
-from autoclip.config import Config, build
+from autoclip.config import Config, parse
 from autoclip.media import probe
 from autoclip.models import MediaInfo, Moment
 from autoclip.moments import (
@@ -46,7 +46,7 @@ def cfg(**sections: dict[str, Any]) -> Config:
     base = {
         "clips": {"short": {"count": 2, "min_seconds": 6, "max_seconds": 12}, "long": {"count": 1, "min_seconds": 12, "max_seconds": 30}}
     }
-    return build(Config, merge(base, sections))
+    return parse(Config, merge(base, sections))
 
 
 def covers(c: Any, k: int, sentence: int) -> bool:

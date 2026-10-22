@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from autoclip import hardware, transcript
-from autoclip.config import Config, EnhanceCfg, ProcessingCfg, TranscriptCfg, build
+from autoclip.config import Config, EnhanceCfg, ProcessingCfg, TranscriptCfg, parse
 from autoclip.denoise import SpeechEnhancer
 from autoclip.errors import AutoclipError
 from autoclip.hardware import pick_encoder
@@ -249,7 +249,7 @@ def test_cache_key_covers_the_source_file(media: Media, tmp_path: Path) -> None:
     cfg = TranscriptCfg()
     key = transcript._cache_key(media.video, cfg, ProcessingCfg())
     assert key != transcript._cache_key(other, cfg, ProcessingCfg())
-    assert key == transcript._cache_key(media.video, build(TranscriptCfg, {}), ProcessingCfg())
+    assert key == transcript._cache_key(media.video, parse(TranscriptCfg, {}), ProcessingCfg())
 
 
 def test_cache_key_covers_the_enhancement_settings(media: Media) -> None:

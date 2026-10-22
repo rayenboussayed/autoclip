@@ -40,7 +40,7 @@ A full `pytest` takes about one minute (real ffmpeg encodes, real worker process
 autoclip/
   __main__.py     python -m autoclip entry (freeze_support for frozen Windows builds)
   cli.py          argument parsing, per-video pipeline (process_video), main(), --init
-  config.py       typed config dataclasses, strict loader, validation, input globbing
+  config.py       typed config dataclasses (Pydantic validates them), strict loader, input globbing
   styles.py       DATA ONLY: STYLES (scene weights), STYLE_HELP, LEXICONS
   models.py       small slotted dataclasses: Span/Word/Segment/Moment, MediaInfo, Encoder, RenderJob
   errors.py       AutoclipError, ConfigError
@@ -70,7 +70,7 @@ pyproject.toml    deps, ruff, mypy(strict), pytest(+coverage gate), coverage(mul
 
 ```
 errors, styles, fonts              leaves
-config            <- errors, styles
+config            <- errors, styles, pydantic
 models, resources <- config
 log               <- resources
 media             <- errors, log, models
@@ -180,15 +180,20 @@ retried alone, in-process. Workers re-run `setup_logging(log_file, level, None)`
 `storage`, `logging`. `KindCfg` = `count` (per scene), `min_seconds`, `target_seconds` (recommended, optional),
 `max_seconds`, `aspect`, `ranges` - the length of a clip is `clip(minimum, recommended, maximum)`.
 
-* `build(cls, data)` walks dataclass type hints; `_conforms` checks JSON values against `Literal`, `X | None`,
-  `list[X]`, `int` vs `float` (bool is not an int/float). Validation lives in `__post_init__` and raises `ConfigError`.
+* **Pydantic validates the file** (`pydantic.dataclasses.dataclass` + `ConfigDict(extra="forbid")`): an unknown key, a
+  wrong type or an out-of-range value becomes a `ConfigError` (`parse()` wraps the `ValidationError`). Numeric fields use
+  `Annotated[int|float|bool, Strict()]` so JSON keeps its type (a bool is not an int, a string is not a number); formats
+  use `StringConstraints(pattern=...)`; cross-field rules (min <= max, scene names) are `model_validator(mode="after")`.
+  Keys starting with `_` are ignored, so a config file can carry `"_comment"` entries. **Do not hand-roll type checks.**
 * `load_config` resolves every path relative to the config file, expands `input` globs (sorted, de-duplicated, absolute),
   and requires `{stem}` in `transcript.file` when several videos are given.
 * `scenes`: `"all"` | one name | list; `ClipsCfg.scene_list()` expands it. `"scenes"` means the scene *types* (the keys of
   `STYLES`); shot-change snapping is `snap_to_cuts` (renamed from `snap_scenes` to avoid the clash).
 
 ### Adding a config option (checklist)
-1. Add a typed field with a default (and a comment) to the right dataclass; add `__post_init__` validation if values can be invalid.
+1. Add a typed field with a default (and a comment) to the right dataclass. Put the constraint in the type
+   (`Field(ge=..., le=...)`, `StringConstraints(pattern=...)`, `Annotated[int, Strict()]`) or, for a rule that spans
+   fields, in a `model_validator(mode="after")` that raises `ConfigError` - never in a hand-written type check.
 2. Use it from code via `cfg.<section>.<field>` (never read raw JSON elsewhere).
 3. Tests: valid + invalid case in `tests/test_config.py` (the `--init-full` round-trip test already guards defaults), plus a behavioural test.
 4. If it changes behaviour users see, update `README.md` (and the upgrade notes if it is breaking).
@@ -217,6 +222,7 @@ retried alone, in-process. Workers re-run `setup_logging(log_file, level, None)`
 * **Dependencies:** adding one needs a strong reason (affects installs on three OSes). Pin a lower bound in
   `pyproject.toml` *and* `requirements.txt`; optional features must degrade gracefully when the package is absent.
   `sherpa-onnx` (the speech enhancement backend) is **optional**: without it the audio is transcribed unenhanced.
+  `pydantic` validates the config file (schema, types, ranges) - do not replace it with hand-written checks.
   Rejected on purpose: `clearvoice` (pins numpy<2, scenedetect 0.6.6, opencv 4.10 - it would downgrade the environment),
   `deepfilternet` (numpy<2 + a Rust toolchain), `resemble-enhance` (numpy==1.26.2, torch==2.1.1).
 

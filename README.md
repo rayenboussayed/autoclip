@@ -50,6 +50,9 @@ A kind that is not requested (or finds nothing) gets no folder. Several videos s
   * `max_seconds` is a hard ceiling: a clip is never longer, not even by the padding around it.
 * `mode: "ranges"` cuts your own ranges per kind (`clips.short.ranges`, `clips.long.ranges`, scene type `custom`);
   `mode: "split"` cuts equal parts into `long/{video}/`.
+* The file is validated before anything is touched: an unknown key, a wrong type or a value out of range is reported with
+  the option that caused it (`error: clips.short.count: Input should be a valid integer`) and the run stops. Keys starting
+  with `_` are ignored, so `"_comment"` entries are fine.
 * `input` is a path, a glob or a list. One broken video or clip never stops the batch. Exit status: `0` all done, `1` something
   failed, `2` bad configuration. With several videos `transcript.file` needs `{stem}` (e.g. `subs/{stem}.srt`).
   Unknown config keys are errors.

@@ -11,7 +11,7 @@ import pytest
 from moviepy import ColorClip, VideoFileClip
 from PIL import Image
 
-from autoclip.config import VideoCfg, build
+from autoclip.config import VideoCfg, parse
 from autoclip.hardware import cpu_encoder
 from autoclip.media import probe
 from autoclip.models import Encoder, Moment, RenderJob
@@ -57,7 +57,7 @@ def test_layout_variants(tmp_path: Path) -> None:
     Image.new("RGB", (30, 30), (0, 255, 0)).save(tmp_path / "bg.png")
 
     def layers(**video: Any) -> list[Any]:
-        return layout(fg, (72, 128), build(VideoCfg, video), 1.0)
+        return layout(fg, (72, 128), parse(VideoCfg, video), 1.0)
 
     assert len(layers(layout="fill")) == 1 and layers(layout="fill")[0].size == (72, 128)
     blur = layers()

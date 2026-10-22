@@ -27,7 +27,7 @@ from autoclip.captions import (
     sprite_key,
     without_fillers,
 )
-from autoclip.config import CaptionsCfg, Config, build
+from autoclip.config import CaptionsCfg, Config, parse
 from autoclip.fonts import covers, dominant_script, find_font, font_dirs, font_index, has_rtl
 from autoclip.models import Span, Word
 from autoclip.resources import RESOURCES
@@ -289,7 +289,7 @@ def test_without_fillers_closes_the_gap() -> None:
 
 # ---- build_captions ------------------------------------------------------------------------------
 def config(**captions_cfg: Any) -> Config:
-    return build(Config, {"captions": captions_cfg})
+    return parse(Config, {"captions": captions_cfg})
 
 
 def sentence() -> list[Word]:
@@ -326,7 +326,7 @@ def test_build_captions_plain_uppercase_and_skips(cache: Cache, real_font: Path)
     tiny, _ = build_captions(words(("blink", 0.0, 0.01)), Timeline([(0.0, 0.05)]), config(), cache, (360, 640), 0.05)
     assert tiny is None  # shown for under 80 ms: skipped
     keep_fillers, kf_lines = build_captions(
-        sentence(), Timeline([(0.0, 3.0)]), build(Config, {"silence": {"remove_fillers": False}}), cache, (360, 640), 3.0
+        sentence(), Timeline([(0.0, 3.0)]), parse(Config, {"silence": {"remove_fillers": False}}), cache, (360, 640), 3.0
     )
     assert keep_fillers is not None and any("Um," in ln.text for ln in kf_lines)
 
