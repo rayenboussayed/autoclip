@@ -836,3 +836,175 @@ def test_focusing_an_option_tells_the_window() -> None:
         assert app.why_label.cget("text") == OPTIONS["clips.short.count"].why
     finally:
         app.destroy()
+
+
+# -- the last corners ------------------------------------------------------------------------
+
+
+@needs_display
+def test_cancelling_the_config_dialogs_changes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cancelled file dialog leaves the app as it was."""
+    from autoclip.app.window import AutoclipApp
+
+    monkeypatch.setattr(filedialog, "askopenfilename", lambda **kw: "")
+    monkeypatch.setattr(filedialog, "asksaveasfilename", lambda **kw: "")
+    app = AutoclipApp(tmp_path / "config.json")
+    try:
+        app._choose_config()
+        app._save_as()
+        app._load()
+        assert app.config_path == tmp_path / "config.json"
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_a_pipeline_that_cannot_be_started_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the pipeline does not start, the app says so."""
+    from autoclip.app import window
+    from autoclip.app.window import AutoclipApp
+
+    def broken(path: Path) -> Any:
+        raise OSError("no python")
+
+    monkeypatch.setattr(window, "start_pipeline", broken)
+    app = AutoclipApp(tmp_path / "config.json")
+    try:
+        app._run()
+        assert app._process is None
+        assert "error:" in app.log.get("1.0", "end")
+        assert app.status.cget("text") == "Could not start the pipeline."
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_an_absolute_output_folder_is_used_as_it_is(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An absolute output folder is not made relative to the config file."""
+    from autoclip.app import window
+    from autoclip.app.window import AutoclipApp
+
+    opened: list[Path] = []
+    monkeypatch.setattr(window, "open_folder", opened.append)
+    app = AutoclipApp(tmp_path / "config.json")
+    try:
+        set_option(app, "output_dir", str(tmp_path / "elsewhere"))
+        app._open_output()
+        assert opened == [tmp_path / "elsewhere"]
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_closing_the_window_without_a_run_just_closes_it(tmp_path: Path) -> None:
+    """Closing the app while nothing runs does not stop anything."""
+    import tkinter as tk
+
+    from autoclip.app.window import AutoclipApp
+
+    app = AutoclipApp(tmp_path / "config.json")
+    app._on_close()
+    with pytest.raises(tk.TclError):
+        app.winfo_exists()  # the window is gone
+
+
+@needs_display
+def test_the_button_that_opens_the_option_reference(tmp_path: Path) -> None:
+    """The reference window can be opened from the app."""
+    from autoclip.app.window import AutoclipApp, ReferenceWindow
+
+    app = AutoclipApp(tmp_path / "config.json")
+    try:
+        app._show_reference()
+        assert any(isinstance(w, ReferenceWindow) for w in app.winfo_children())
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_the_reference_window_ignores_an_unknown_option() -> None:
+    """A selection that is not in the catalogue shows nothing."""
+    from autoclip.app.window import AutoclipApp, ReferenceWindow
+
+    app = AutoclipApp()
+    try:
+        window = ReferenceWindow(app)
+        window.options.clear()
+        window.tree.selection_set("clips.scenes")
+        window._show()
+        assert window.text.get("1.0", "end").strip() == ""
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_a_wheel_event_without_a_direction_scrolls_nothing() -> None:
+    """An event that is neither a button nor a wheel does not scroll."""
+    import tkinter as tk
+
+    from autoclip.app.form import ScrollFrame
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        scroll = ScrollFrame(root)
+        calls: list[tuple[int, str]] = []
+        scroll.canvas.yview_scroll = lambda amount, what: calls.append((amount, what))  # type: ignore[method-assign]
+        scroll.scroll_by(cast("tk.Event", types.SimpleNamespace()))
+        assert calls == []
+    finally:
+        root.destroy()
+
+
+@needs_display
+def test_a_multi_line_field_without_a_control_ignores_its_value() -> None:
+    """A multi-line field whose control is missing does not crash."""
+    import tkinter as tk
+
+    from autoclip.app.form import Field
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        option = OPTIONS["clips.short.ranges"]
+        empty = Field(option, 0, ttk.Label(root), ttk.Frame(root), ttk.Label(root), ttk.Frame(root), None, None)
+        empty.set("00:00-00:10")
+        assert empty.value() == []  # there is no control to read
+    finally:
+        root.destroy()
+
+
+@needs_display
+def test_the_callbacks_of_the_form_report_their_changes() -> None:
+    """The callbacks of a field report the value of the control."""
+    import tkinter as tk
+
+    from autoclip.app.form import Form
+
+    changed: list[tuple[str, Any]] = []
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        form = Form(root, (OPTIONS["input"],), {"input": []}, lambda path, value: changed.append((path, value)))
+        reporter = form._text_reporter(OPTIONS["input"], form.fields["input"].text)  # type: ignore[arg-type]
+        reporter(cast("tk.Event", types.SimpleNamespace()))
+        assert changed and changed[-1][0] == "input"
+        focus = form._focus_reporter(OPTIONS["input"])
+        focus(cast("tk.Event", types.SimpleNamespace()))  # a plain root has no details panel
+    finally:
+        root.destroy()
+
+
+def test_the_command_line_can_open_the_desktop_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--gui`` opens the window instead of running a config file."""
+    import autoclip.cli as cli
+
+    called: list[Path | None] = []
+
+    def fake_launch(path: Path | None = None) -> int:
+        called.append(path)
+        return 0
+
+    monkeypatch.setattr("autoclip.app.launch", fake_launch)
+    assert cli.main(["--gui", "config.json"]) == 0
+    assert called == [Path("config.json")]
