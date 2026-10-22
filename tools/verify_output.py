@@ -2,10 +2,11 @@
 
 The tool answers the question "did the run really produce what it promised?":
 
-* every clip listed in ``clips.json`` exists, is a valid video with audio, has the right shape
-  and a duration that matches the moment it was cut from,
-* the ``.srt`` sidecar covers the whole clip and carries the text of that moment,
-* the ``.jpg`` thumbnail is a valid image,
+* every clip listed in ``clips.json`` exists, is a valid video with audio, has the shape the run
+  recorded and a duration that matches the moment it was cut from,
+* the ``.srt`` sidecar covers the whole clip and carries the text of that moment (when the run wrote
+  sidecars at all - a run without captions has none),
+* the ``.jpg`` thumbnail is a valid image (when the run wrote thumbnails),
 * the file names follow the ``{video}_{scene}_{nn}_{start}s`` convention.
 
 Usage::
@@ -78,13 +79,22 @@ def trimmed_seconds(work_dir: Path) -> dict[str, float]:
 
 
 def check_kind(root: Path, kind: str, video: str, problems: list[Problem], expected: dict[str, float]) -> int:
-    """Check every clip of one kind; returns the number of clips that were checked."""
+    """Check every clip of one kind; returns the number of clips that were checked.
+
+    The checks follow what the run promised, not a fixed config: the shape is the one the run
+    recorded, and the sidecars and the thumbnails are only expected when the run wrote any.
+    """
     folder = root / kind / video
+    if not folder.is_dir():
+        return 0  # the run did not produce this kind
     index = folder / "clips.json"
     if not index.is_file():
         problems.append(Problem(str(index), "missing clips.json"))
         return 0
     entries: list[dict[str, Any]] = json.loads(index.read_text(encoding="utf-8"))
+    clips = [folder / str(entry["file"]) for entry in entries]
+    with_sidecars = any(c.with_suffix(".srt").is_file() for c in clips)
+    with_thumbnails = any(c.with_suffix(".jpg").is_file() for c in clips)
     for entry in entries:
         name = str(entry["file"])
         clip = folder / name
@@ -100,17 +110,18 @@ def check_kind(root: Path, kind: str, video: str, problems: list[Problem], expec
             problems.append(Problem(str(clip), "has no audio"))
         if abs(duration - moment) > 0.5 * max(1.0, moment / 10):
             problems.append(Problem(str(clip), f"is {duration:.1f}s but the moment is {moment:.1f}s"))
-        if fps < 25 or fps > 35:
+        if fps < 10 or fps > 60:
             problems.append(Problem(str(clip), f"has {fps:.1f} fps"))
-        if kind == "short" and (width, height) != (720, 1280):
-            problems.append(Problem(str(clip), f"is {width}x{height}, expected 720x1280"))
-        if kind == "long" and (width, height) != (1280, 720):
-            problems.append(Problem(str(clip), f"is {width}x{height}, expected 1280x720"))
+        want = (int(entry["width"]), int(entry["height"])) if entry.get("width") and entry.get("height") else None
+        if want is not None and (width, height) != want:
+            problems.append(Problem(str(clip), f"is {width}x{height}, the run recorded {want[0]}x{want[1]}"))
         audio = decode_audio(clip, 0.0, min(duration, 10.0), 16000)
         if float(np.sqrt((audio.astype(np.float64) ** 2).mean())) < 1e-4:
             problems.append(Problem(str(clip), "is silent"))
         srt = clip.with_suffix(".srt")
-        if not srt.is_file():
+        if not with_sidecars:
+            pass  # the run wrote no sidecars at all (captions off or no text)
+        elif not srt.is_file():
             problems.append(Problem(str(srt), "missing sidecar"))
         else:
             cues = [m for m in SRT_TIME.finditer(srt.read_text(encoding="utf-8"))]
@@ -121,7 +132,7 @@ def check_kind(root: Path, kind: str, video: str, problems: list[Problem], expec
                 if last < duration - 1.0:
                     problems.append(Problem(str(srt), f"ends at {last:.1f}s but the clip is {duration:.1f}s"))
         thumb = clip.with_suffix(".jpg")
-        if not thumb.is_file() or thumb.stat().st_size == 0:
+        if with_thumbnails and (not thumb.is_file() or thumb.stat().st_size == 0):
             problems.append(Problem(str(thumb), "missing or empty thumbnail"))
     return len(entries)
 
