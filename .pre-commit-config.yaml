@@ -1,0 +1,38 @@
+# The hooks of autoclip: the linter and the formatter of the project (ruff), the type checker
+# (mypy) and the test suite (pytest).
+#
+# mypy and pytest run in the environment of the project (``language: system``): they need the
+# dependencies of autoclip, and an isolated environment would only have the tools themselves.
+# So activate the virtual environment (``.venv``) before you commit.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.1
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (the type checker)
+        entry: mypy autoclip tests tools
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
+      - id: pytest
+        name: pytest (the test suite)
+        entry: pytest -x -q --no-cov
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
