@@ -1,0 +1,17 @@
+# autoclip - install with:  pip install -r requirements.txt
+# Python >= 3.10.  ffmpeg is NOT required: the binary bundled with imageio-ffmpeg is used when none is on PATH.
+numpy>=1.26
+psutil>=5.9            # CPU / RAM monitoring for the adaptive resource balancing
+av>=12                 # probing the input video (replaces ffprobe)
+moviepy>=2.1,<3        # composition / encoding
+Pillow>=10.1           # caption rendering - see README: upgrade to >=12.3 for security fixes
+opencv-python-headless>=4.8   # fast resize + blur
+fonttools>=4.40        # checks that a font really covers a caption's glyphs
+faster-whisper>=1.1    # local transcription (99+ languages)
+arabic-reshaper>=3.0   # right-to-left captions on Pillow builds without libraqm (Windows / macOS wheels)
+python-bidi>=0.4.2
+
+# optional: speech denoising, scene-cut snapping and speech enhancement (all degrade gracefully when absent)
+noisereduce>=3.0
+sherpa-onnx>=1.13
+scenedetect[opencv]>=0.7

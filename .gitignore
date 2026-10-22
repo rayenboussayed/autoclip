@@ -1,0 +1,30 @@
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# virtual environments
+.venv/
+.venv-*/
+venv/
+
+# tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# autoclip output: rendered clips, work directories (database, transcript cache, models) and logs
+runs/
+*.work/
+.autoclip/
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store

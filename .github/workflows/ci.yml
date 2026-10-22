@@ -1,0 +1,22 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.10", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: ruff check autoclip tests && ruff format --check autoclip tests
+      - run: mypy autoclip tests tools
+      # pytest enforces >= 95% branch coverage (see pyproject.toml); spawned workers are measured too
+      - run: pytest
+      - name: Re-run with the security-patched Pillow (MoviePy's own pin is merely conservative)
+        run: pip install "Pillow>=12.3" && pytest
