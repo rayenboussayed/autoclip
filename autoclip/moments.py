@@ -26,6 +26,8 @@ F64 = NDArray[np.float64]
 Counter = Callable[[str], int]
 Segs = list[tuple[float, float, str, bool]]
 CJK_CHARS = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\u0e00-\u0e7f\u3000-\u303f\uff00-\uffef]")
+#: How much a candidate near the recommended length may beat an equally good one (scene scores are z-scores).
+LENGTH_BONUS = 0.75
 
 
 def count_units(text: str) -> int:
@@ -89,9 +91,10 @@ def text_candidates(segs: Segs, cc: ClipsCfg, kind: KindCfg, duration: float) ->
 
 
 def audio_candidates(total: float, cc: ClipsCfg, kind: KindCfg) -> Candidates:
-    """Fixed-length windows every 2 s (min, middle and max length) for videos without a usable transcript."""
+    """Fixed-length windows every 2 s (the shortest, the recommended and the longest length) for videos without a usable transcript."""
+    middle = kind.target_seconds if kind.target_seconds is not None else (kind.min_seconds + kind.max_seconds) / 2
     spans = []
-    for length in sorted({kind.min_seconds, (kind.min_seconds + kind.max_seconds) / 2, kind.max_seconds}):
+    for length in sorted({kind.min_seconds, middle, kind.max_seconds}):
         t = float(cc.skip_intro_seconds)
         while t + length <= total + 0.01:
             spans.append((t, min(t + length, total)))
@@ -99,6 +102,21 @@ def audio_candidates(total: float, cc: ClipsCfg, kind: KindCfg) -> Candidates:
     start, end = (np.array(c, dtype=np.float64) for c in zip(*spans, strict=True)) if spans else (np.zeros(0),) * 2
     none = np.full(len(spans), -1, dtype=np.int64)
     return Candidates(none, none, start, end)
+
+
+def length_bonus(cands: Candidates, kind: KindCfg) -> F64:
+    """A small bonus for candidates whose length is close to the recommended one.
+
+    The recommendation is a preference, not a limit: the scene type still decides the content, the
+    length only decides how close to ``target_seconds`` the winner should be.  The candidate at
+    the target gets the full bonus, the one at the bound opposite the target gets nothing.
+    """
+    if kind.target_seconds is None:
+        return np.zeros(len(cands))
+    target = kind.target_seconds
+    span = max(abs(target - kind.min_seconds), abs(kind.max_seconds - target), 1e-6)
+    length = cands.end - cands.start
+    return LENGTH_BONUS * (1.0 - np.minimum(np.abs(length - target) / span, 1.0))
 
 
 def zscore(v: F64) -> F64:
@@ -135,7 +153,7 @@ def text_features(cands: Candidates, segs: Segs, lex: dict[str, Counter], kwfn: 
     hook = np.zeros(len(cands))
     for n, (i, j, s0) in enumerate(zip(cands.i, cands.j, cands.start, strict=True)):
         first = slice(i, min(j + 1, np.searchsorted(starts, s0 + 5)))  # segments starting in the first 5 s
-        hook[n] = question[first].any() + 0.5 * min(2, emphasis[first].sum()) + 0.5 * digit[first].any()
+        hook[n] = float(question[first].any()) + 0.5 * min(2, int(emphasis[first].sum())) + 0.5 * float(digit[first].any())
     return {**feats, "hook": hook}
 
 
@@ -271,7 +289,7 @@ def select_moments(
     moments: list[Moment] = []
     taken: list[tuple[float, float]] = []
     for scene in cc.scene_list():
-        scores = scene_score(feats, scene, kwfn is not None)
+        scores = scene_score(feats, scene, kwfn is not None) + length_bonus(cands, kcfg)
         picks = pick(cands, scores, max(kcfg.count, cfg.llm.top_k) if cfg.llm.enabled and text_mode else kcfg.count, taken)
         found = [
             Moment(float(cands.start[k]), float(cands.end[k]), store.segment_text(int(cands.i[k]), int(cands.j[k])) if text_mode else "",
@@ -289,6 +307,8 @@ def select_moments(
                 if not kcfg.min_seconds * 0.6 <= e - s <= kcfg.max_seconds * 1.4:
                     s, e = m.start, m.end
             m.start, m.end = snap_to_cut(s, cuts, 2.5), snap_to_cut(e, cuts, 2.5)
+            if m.end - m.start > kcfg.max_seconds:
+                m.end = m.start + kcfg.max_seconds  # the padding and the cut snapping must not push the clip over
             m.title = m.title or make_title(m.text, cfg)
             moments.append(m)
     return moments

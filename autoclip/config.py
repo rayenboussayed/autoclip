@@ -25,17 +25,20 @@ Position = Literal["top", "center", "lower", "bottom"]
 
 @dataclass
 class KindCfg:
-    """One kind of output clip ("short" or "long")."""
+    """One kind of output clip ("short" or "long"): the length range and the recommended length."""
 
     count: int = 5  # clips per scene type
-    min_seconds: float = 20
-    max_seconds: float = 60
+    min_seconds: float = 20  # a clip is never shorter than this
+    target_seconds: float | None = None  # the recommended length (a preference, not a limit)
+    max_seconds: float = 60  # a clip is never longer than this
     aspect: str = "9:16"  # 9:16 | 1:1 | 4:5 | 16:9 | original
     ranges: list[str] = field(default_factory=list)  # clips.mode = "ranges", e.g. ["00:01:00-00:01:45"]
 
     def __post_init__(self) -> None:
         if not 0 < self.min_seconds <= self.max_seconds:
             raise ConfigError("min_seconds must be > 0 and <= max_seconds")
+        if self.target_seconds is not None and not self.min_seconds <= self.target_seconds <= self.max_seconds:
+            raise ConfigError("target_seconds must be between min_seconds and max_seconds")
         if self.count < 1:
             raise ConfigError("count must be at least 1")
         if self.aspect != "original" and not re.fullmatch(r"\d+(\.\d+)?:\d+(\.\d+)?", self.aspect):

@@ -145,10 +145,11 @@ def render_clip(vclip: Any, job: RenderJob, store: Store, cache: Cache) -> tuple
     from moviepy import AudioArrayClip, CompositeVideoClip, ImageClip, afx, concatenate_videoclips, vfx
 
     moment, cfg, src, dst, threads, has_audio = job.moment, job.cfg, job.src, job.dst, job.threads, job.has_audio
+    kcfg = cfg.clips.kind(job.kind)  # the length the clip may have
     start, dur = moment.start, moment.end - moment.start
     words = [Word(w.start - start, w.end - start, w.text, w.pseudo) for w in store.window_words(moment.start, moment.end)]
     audio = enhance_audio(src, start, dur, cfg.audio, threads) if has_audio else None
-    keep = compute_keep(audio, words, dur, cfg.silence) if audio is not None else [(0.0, dur)]
+    keep = compute_keep(audio, words, dur, cfg.silence, kcfg.min_seconds) if audio is not None else [(0.0, dur)]
 
     parts, kept = [], []  # clamp to the real video stream: containers often report a slightly longer duration
     for a, b in keep:
@@ -160,6 +161,8 @@ def render_clip(vclip: Any, job: RenderJob, store: Store, cache: Cache) -> tuple
         raise ValueError(f"window {start:.1f}-{moment.end:.1f}s lies outside the video")
     fg = concatenate_videoclips(parts) if len(parts) > 1 else parts[0]
     moment.trimmed = round(float(fg.duration), 2)
+    if moment.trimmed < kcfg.min_seconds - 0.5:
+        log.info("clip is %.1fs, shorter than the requested %s minimum of %.0fs", moment.trimmed, job.kind, kcfg.min_seconds)
     size = canvas_size(job.aspect, cfg.video.short_side, vclip.w, vclip.h)
     overlays = []
     captions, lines = build_captions(words, Timeline(kept), cfg, cache, size, fg.duration) if cfg.captions.enabled and words else (None, [])

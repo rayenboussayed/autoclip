@@ -57,7 +57,18 @@ def make_jobs(
         enc = encoder or cpu_encoder(cfg.video)
         jobs.append(
             RenderJob(
-                clip_id, m, media.video, tmp_path / f"c{k}.mp4", "9:16", enc, True, cfg, store.path, log_file, parent_pid or os.getpid()
+                clip_id,
+                m,
+                media.video,
+                tmp_path / f"c{k}.mp4",
+                "short",
+                "9:16",
+                enc,
+                True,
+                cfg,
+                store.path,
+                log_file,
+                parent_pid or os.getpid(),
             )
         )
     return jobs, store, cfg
@@ -351,7 +362,10 @@ def test_main_config_errors_and_init(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert main([str(tmp_path / "nope.json")]) == 2 and "cannot read config" in capsys.readouterr().err
     target = tmp_path / "new.json"
     assert main(["--init", str(target)]) == 0
-    assert json.loads(target.read_text(encoding="utf-8"))["clips"]["scenes"] == ["best"]
+    starter = json.loads(target.read_text(encoding="utf-8"))["clips"]
+    assert starter["scenes"] == ["best"]
+    assert (starter["short"]["min_seconds"], starter["short"]["max_seconds"]) == (20, 60)  # the lengths are in the starter
+    assert (starter["long"]["min_seconds"], starter["long"]["max_seconds"]) == (180, 600)
     assert main(["--init", str(target)]) == 2 and "already exists" in capsys.readouterr().err
     full = tmp_path / "full.json"
     assert main(["--init-full", str(full)]) == 0

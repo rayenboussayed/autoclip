@@ -30,8 +30,8 @@ A kind that is not requested (or finds nothing) gets no folder. Several videos s
   "clips": {
     "kinds": ["short", "long"],
     "scenes": "all",
-    "short": {"count": 3, "min_seconds": 20,  "max_seconds": 60,  "aspect": "9:16"},
-    "long":  {"count": 1, "min_seconds": 180, "max_seconds": 600, "aspect": "16:9"}
+    "short": {"count": 3, "min_seconds": 20, "target_seconds": 35, "max_seconds": 60,  "aspect": "9:16"},
+    "long":  {"count": 1, "min_seconds": 180, "target_seconds": 240, "max_seconds": 600, "aspect": "16:9"}
   }
 }
 ```
@@ -41,6 +41,13 @@ A kind that is not requested (or finds nothing) gets no folder. Several videos s
   so in a short video the later ones may find fewer free moments than `count`.
 * Each kind has its own length range, count and `aspect` (`9:16`, `1:1`, `4:5`, `16:9`, `original`).
   If a video is too short for a kind (e.g. 2-minute video, long clips from 3 minutes) that kind is skipped with a warning.
+* **The length of a clip is `clip(minimum, recommended, maximum)`:**
+  * `min_seconds` is a hard floor: the clip is never shorter. If the pause removal would cut it below the minimum, the
+    least important cuts are given back (the fillers first, then the shortest pauses).
+  * `target_seconds` is the *recommended* length - a preference, not a limit. Candidates near it get a small score bonus,
+    so the clips tend to have that length while the scene type still decides the content. Leave it out (`null`) to take
+    whatever length the content offers.
+  * `max_seconds` is a hard ceiling: a clip is never longer, not even by the padding around it.
 * `mode: "ranges"` cuts your own ranges per kind (`clips.short.ranges`, `clips.long.ranges`, scene type `custom`);
   `mode: "split"` cuts equal parts into `long/{video}/`.
 * `input` is a path, a glob or a list. One broken video or clip never stops the batch. Exit status: `0` all done, `1` something

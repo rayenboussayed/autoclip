@@ -74,10 +74,12 @@ def test_text_candidates_use_the_length_range_of_their_kind() -> None:
     short = text_candidates(SEGS, c.clips, c.clips.short, duration=40)
     long = text_candidates(SEGS, c.clips, c.clips.long, duration=40)
     assert np.all((short.end - short.start >= 6) & (short.end - short.start <= 12))
-    assert np.all((long.end - long.start >= 12) & (long.end - long.start <= 30)) and long.end.max() - long.start.min() > 12
+    assert np.all((long.end - long.start >= 12) & (long.end - long.start <= 30)) and np.max(long.end) - np.min(long.start) > 12
     assert np.all(short.i <= short.j) and np.all(short.start == np.array([SEGS[i][0] for i in short.i]))
-    assert text_candidates(SEGS, cfg(clips={"skip_intro_seconds": 20}).clips, c.clips.short, 40).start.min() >= 20
-    assert text_candidates(SEGS, c.clips, c.clips.short, duration=15).end.max() <= 15  # a subtitle file longer than its video
+    late = text_candidates(SEGS, cfg(clips={"skip_intro_seconds": 20}).clips, c.clips.short, 40)
+    assert np.min(late.start) >= 20
+    # a subtitle file longer than its video
+    assert np.max(text_candidates(SEGS, c.clips, c.clips.short, duration=15).end) <= 15
     assert len(text_candidates(SEGS, c.clips, c.clips.long.__class__(min_seconds=50, max_seconds=60), 40)) == 0
     open_ended = [(0.0, 5.0, "no end", False), (5.0, 10.0, "still going", False), (10.0, 15.0, "Done.", True)]
     kind = c.clips.long.__class__(min_seconds=5, max_seconds=20)
@@ -88,7 +90,7 @@ def test_text_candidates_use_the_length_range_of_their_kind() -> None:
 def test_audio_candidates() -> None:
     c = cfg(clips={"skip_intro_seconds": 4})
     cands = audio_candidates(30, c.clips, c.clips.short)
-    assert np.all(cands.i == -1) and cands.start.min() == 4 and cands.end.max() <= 30
+    assert np.all(cands.i == -1) and np.min(cands.start) == 4 and np.max(cands.end) <= 30
     assert len(audio_candidates(3, c.clips, c.clips.short)) == 0
 
 
@@ -144,6 +146,24 @@ def test_pick_is_greedy_non_overlapping_and_respects_taken() -> None:
     assert cands.end[avoiding[0]] + 1.0 <= 5.0 or cands.start[avoiding[0]] >= 21.0  # stays clear of already-taken windows
     assert len(pick(cands, scores, 100, [])) < 100  # runs out of room instead of overlapping
     assert pick(cands, scores, 3, [(0.0, 100.0)]) == []
+
+
+def test_the_recommended_length_is_preferred_but_never_forced() -> None:
+    """``target_seconds`` is a preference: a candidate near it wins, the range stays the limit."""
+    c = cfg()
+    kind = c.clips.short.__class__(min_seconds=5, max_seconds=20, target_seconds=12.5)
+    cands = audio_candidates(40, c.clips, kind)
+    lengths = cands.end - cands.start
+    assert 12.5 in set(lengths.round(2))  # the recommended length is among the windows
+    bonus = moments.length_bonus(cands, kind)
+    assert bonus[np.isclose(lengths, 12.5)][0] == pytest.approx(moments.LENGTH_BONUS)
+    assert bonus[np.isclose(lengths, 5.0)][0] == pytest.approx(0.0)  # the minimum gets nothing
+    assert bonus[np.isclose(lengths, 20.0)][0] == pytest.approx(0.0)  # the maximum gets nothing
+    assert moments.length_bonus(cands, c.clips.short.__class__(min_seconds=5, max_seconds=20)).tolist() == [0.0] * len(cands)
+    # the same scene score, a different length: the one near the target wins
+    same = np.zeros(len(cands))
+    near = int(np.argmax(same + bonus))
+    assert lengths[near] == pytest.approx(12.5)
 
 
 @pytest.fixture
@@ -303,6 +323,14 @@ def test_snap_to_shot_changes(media: Media, pipeline: Any, tmp_path: Path, monke
     monkeypatch.setattr(moments, "scene_cuts", lambda _src: [8.0, 21.0])
     picks = select(media, pipeline, tmp_path, clips={"snap_to_cuts": True, "pad_start": 0.0, "pad_end": 0.0, "short": {"count": 3}})
     assert any(m.start in (8.0, 21.0) or m.end in (8.0, 21.0) for m in picks)
+
+
+def test_padding_never_pushes_a_moment_over_the_maximum(media: Media, pipeline: Any, tmp_path: Path) -> None:
+    """``pad_start``/``pad_end`` add time around a window: the result still respects ``max_seconds``."""
+    kind: dict[str, Any] = {"min_seconds": 6, "max_seconds": 12}
+    picks = select(media, pipeline, tmp_path, clips={"pad_start": 4, "pad_end": 4, "short": {"count": 2, **kind}})
+    assert len(picks) == 2 and all(m.end - m.start <= 12 for m in picks)
+    assert any(m.end - m.start == pytest.approx(12.0) for m in picks)  # padded to 14+ s, then clamped
 
 
 def test_llm_reranks_every_scene(

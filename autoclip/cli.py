@@ -120,7 +120,9 @@ def process_video(src: Path, cfg: Config, log_file: Path | None, encoder: Encode
                 n = numbers[m.scene] = numbers.get(m.scene, 0) + 1
                 dst = out / f"{src.stem}_{m.scene}_{n:02d}_{int(m.start)}s.mp4"
                 clip_id = store.save_moment(kind, m.scene, n, m)
-                jobs.append(RenderJob(clip_id, m, src, dst, kcfg.aspect, encoder, info.has_audio, cfg, store.path, log_file, os.getpid()))
+                jobs.append(
+                    RenderJob(clip_id, m, src, dst, kind, kcfg.aspect, encoder, info.has_audio, cfg, store.path, log_file, os.getpid())
+                )
                 needs = max(needs, estimate_render_bytes(size, m.end - m.start))
         if not jobs:
             raise AutoclipError("no clips found for any requested kind (is the video shorter than the length ranges?)")
@@ -144,7 +146,16 @@ def init_config(path: Path, full: bool) -> None:
     """Write a starter (or complete) config file; never overwrites an existing one."""
     if path.exists():
         raise ConfigError(f"{path} already exists (not overwriting)")
-    data = asdict(Config()) if full else {"input": ["video.mp4"], "clips": {"kinds": ["short", "long"], "scenes": ["best"]}}
+    starter = {
+        "input": ["video.mp4"],
+        "clips": {
+            "kinds": ["short", "long"],
+            "scenes": ["best"],
+            "short": {"count": 3, "min_seconds": 20, "max_seconds": 60, "aspect": "9:16"},
+            "long": {"count": 1, "min_seconds": 180, "max_seconds": 600, "aspect": "16:9"},
+        },
+    }
+    data = asdict(Config()) if full else starter
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"wrote {path}")
 

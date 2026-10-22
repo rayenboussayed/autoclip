@@ -142,6 +142,27 @@ def test_compute_keep_shortens_pauses_and_cuts_fillers() -> None:
     assert compute_keep(np.zeros(2 * AUDIO_SR, np.float32), [], 2.0, SilenceCfg()) == [(0.0, 2.0)]  # never gut a clip
 
 
+def test_compute_keep_never_cuts_below_the_requested_length() -> None:
+    """The trimming may not shorten the clip below the minimum the user asked for."""
+    x = np.concatenate([TONE, np.zeros(2 * AUDIO_SR, np.float32), TONE])
+    words = [Word(0.2, 0.5, "um,"), Word(0.6, 0.9, "uh,")]
+    free = compute_keep(x, words, 6.0, SilenceCfg())
+    assert sum(b - a for a, b in free) < 5.0
+    limited = compute_keep(x, words, 6.0, SilenceCfg(), 5.5)
+    assert sum(b - a for a, b in limited) >= 5.5  # the clip keeps its minimum
+    # the fillers are given back before the long pause
+    assert any(a < 0.3 < b for a, b in limited)
+
+
+def test_compute_keep_gives_back_as_little_as_possible() -> None:
+    """Only as much as needed is given back: a longer minimum keeps more of the trimming."""
+    x = np.concatenate([TONE, np.zeros(2 * AUDIO_SR, np.float32), TONE])
+    words = [Word(0.2, 0.5, "um,")]
+    a = compute_keep(x, words, 6.0, SilenceCfg(), 4.0)
+    b = compute_keep(x, words, 6.0, SilenceCfg(), 5.0)
+    assert sum(x1 - x0 for x0, x1 in a) <= sum(x1 - x0 for x0, x1 in b)
+
+
 def test_timeline_maps_time_and_drops_removed_parts() -> None:
     tl = Timeline([(0.0, 2.0), (5.0, 8.0)])
     assert tl.total == 5.0

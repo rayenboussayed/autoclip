@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pytest
@@ -77,6 +77,7 @@ def render(
     tmp_path: Path,
     moment: Moment,
     src: Path | None = None,
+    kind: Literal["short", "long"] = "short",
     aspect: str = "9:16",
     encoder: Encoder | None = None,
     **sections: dict[str, Any],
@@ -88,7 +89,19 @@ def render(
     cache = Cache(store, RESOURCES)
     dst = tmp_path / "clip.mp4"
     job = RenderJob(
-        1, moment, src, dst, aspect, encoder or cpu_encoder(cfg.video), probe(src).has_audio, cfg, store.path, None, os.getpid(), threads=1
+        1,
+        moment,
+        src,
+        dst,
+        kind,
+        aspect,
+        encoder or cpu_encoder(cfg.video),
+        probe(src).has_audio,
+        cfg,
+        store.path,
+        None,
+        os.getpid(),
+        threads=1,
     )
     vclip = VideoFileClip(str(src), audio=False)
     try:
@@ -119,6 +132,14 @@ def test_render_full_featured_clip(media: Media, tmp_path: Path) -> None:
 def test_render_without_audio_track_and_without_captions(media: Media, tmp_path: Path) -> None:
     dst, size, lines = render(media, tmp_path, moment(2, 9), src=media.silent, captions={"enabled": False})
     assert not probe(dst).has_audio and lines == [] and size == (144, 256)
+
+
+def test_a_rendered_clip_keeps_the_requested_minimum_length(media: Media, tmp_path: Path) -> None:
+    """The pause trimming may not cut the clip below the minimum of its kind."""
+    m = moment()
+    dst, _size, _lines = render(media, tmp_path, m, kind="short", clips={"short": {"min_seconds": 10, "max_seconds": 30}})
+    assert m.trimmed >= 10 - 0.5
+    assert probe(dst).duration == pytest.approx(m.trimmed, abs=0.4)
 
 
 def test_render_fill_layout_plain_settings(media: Media, tmp_path: Path) -> None:

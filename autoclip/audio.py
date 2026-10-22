@@ -80,27 +80,46 @@ def is_filler(text: str, fillers: set[str]) -> bool:
     return "".join(c for c in text.lower() if c.isalnum() or c == "_") in fillers
 
 
+def _within_minimum(cut: list[tuple[float, float]], dur: float, min_out: float) -> list[tuple[float, float]]:
+    """Give cuts back until what is left is at least ``min_out`` seconds long.
+
+    The smallest cuts are given back first - the fillers (a few hundred milliseconds) before the
+    long pauses - so the clip keeps the silence removal that matters most.
+    """
+    if min_out <= 0:
+        return cut
+    remaining = list(cut)
+    while remaining and dur - sum(b - a for a, b in remaining) < min_out:
+        remaining.remove(min(remaining, key=lambda c: c[1] - c[0]))
+    return remaining
+
+
 @traced("compute_keep", logging.DEBUG)
-def compute_keep(x: F32, words: Sequence[Word], dur: float, cfg: SilenceCfg) -> Keep:
-    """Ranges ``(a, b)`` of the window (seconds) to KEEP after shortening long pauses and cutting fillers."""
+def compute_keep(x: F32, words: Sequence[Word], dur: float, cfg: SilenceCfg, min_out: float = 0.0) -> Keep:
+    """Ranges ``(a, b)`` of the window (seconds) to KEEP after shortening long pauses and cutting fillers.
+
+    ``min_out`` is the length the clip must keep: when the trimming would go below it, the least
+    important cuts are given back, so a clip never ends up shorter than the user asked for.
+    """
     whole = [(0.0, dur)]
     if not cfg.remove:
         return whole
     db, step = frame_db(x), 0.02
     thr = cfg.threshold_db if cfg.threshold_db != "auto" else max(min(np.percentile(db, 10) + 8, np.percentile(db, 95) - 18), -70)
     edges = np.diff(np.concatenate([[0], (db < thr).astype(np.int8), [0]]))  # run-length encode the silent frames
-    cut = [
-        (i * step + cfg.keep_padding, j * step - cfg.keep_padding)
+    cut: list[tuple[float, float]] = [
+        (float(i) * step + cfg.keep_padding, float(j) * step - cfg.keep_padding)
         for i, j in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1), strict=True)
         if (j - i) * step >= cfg.min_silence
     ]
-    cut = [(float(a), float(b)) for a, b in cut if b - a > 0.05]
+    cut = [(a, b) for a, b in cut if b - a > 0.05]
     if cfg.remove_fillers:
         fillers = {f.lower() for f in cfg.fillers}
         cut += [(max(0.0, w.start - 0.03), min(dur, w.end + 0.03)) for w in words if not w.pseudo and is_filler(w.text, fillers)]
+    cut = _within_minimum(sorted(cut), dur, min_out)
     keep: Keep = []
     t = 0.0
-    for a, b in sorted(cut):  # sweep: the gaps between removed ranges are what we keep
+    for a, b in cut:  # sweep: the gaps between removed ranges are what we keep
         if a - t > 0.15:
             keep.append((t, a))
         t = max(t, b)

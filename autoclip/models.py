@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from .config import Config
 
@@ -78,6 +79,7 @@ class RenderJob:
     moment: Moment
     src: Path
     dst: Path
+    kind: Literal["short", "long"]  # decides which length limits (min/max) apply at render time
     aspect: str
     encoder: Encoder
     has_audio: bool

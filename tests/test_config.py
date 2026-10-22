@@ -54,6 +54,8 @@ def test_build_accepts_comments_and_int_for_float() -> None:
         ({"clips": {"kinds": ["short", "short"]}}, "clips.kinds"),
         ({"clips": {"split_seconds": 0}}, "split_seconds"),
         ({"clips": {"short": {"min_seconds": 50, "max_seconds": 10}}}, "min_seconds"),
+        ({"clips": {"short": {"target_seconds": 5}}}, "target_seconds"),
+        ({"clips": {"short": {"min_seconds": 5, "max_seconds": 10, "target_seconds": 20}}}, "target_seconds"),
         ({"clips": {"long": {"count": 0}}}, "at least 1"),
         ({"clips": {"short": {"ranges": ["bad"]}}}, "HH:MM:SS"),
         ({"clips": {"long": {"aspect": "wide"}}}, "aspect"),
@@ -88,9 +90,16 @@ def test_short_and_long_kinds_have_their_own_defaults() -> None:
     assert cc.kinds == ["short", "long"]
     assert (cc.short.aspect, cc.short.min_seconds, cc.short.max_seconds) == ("9:16", 20, 60)
     assert (cc.long.aspect, cc.long.min_seconds, cc.long.max_seconds) == ("16:9", 180, 600)
+    assert cc.short.target_seconds is None and cc.long.target_seconds is None  # no recommendation by default
     assert cc.kind("short") is cc.short and cc.kind("long") is cc.long
     custom = build(Config, {"clips": {"kinds": ["long"], "long": {"aspect": "original", "ranges": ["0:10-0:50"]}}})
     assert custom.clips.long.aspect == "original" and custom.clips.long.ranges == ["0:10-0:50"] and custom.clips.short.count == 5
+
+
+def test_the_recommended_length_is_optional_and_must_fit_the_range() -> None:
+    kind = build(Config, {"clips": {"short": {"min_seconds": 10, "max_seconds": 60, "target_seconds": 30}}}).clips.short
+    assert kind.target_seconds == 30
+    assert build(Config, {"clips": {"short": {"target_seconds": None}}}).clips.short.target_seconds is None
 
 
 def test_valid_unions_and_lists() -> None:

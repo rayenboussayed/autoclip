@@ -114,6 +114,8 @@ main()
 1. `text_candidates`: every run of consecutive transcript segments that starts and ends on a sentence boundary and
    fits the kind's `[min_seconds, max_seconds]` (ignores segments ending after the media duration - a subtitle file may
    be longer than its video). Falls back to `audio_candidates` (windows every 2 s) with a warning when none exist.
+   `target_seconds` (the recommended length) is a preference, not a limit: `length_bonus` gives candidates near it a
+   small score bonus, so the clips tend to have that length while the scene type still decides the content.
 2. Features are computed **once per kind** as NumPy arrays using prefix sums (O(1) per candidate regardless of window
    length): `audio_features` (energy, variety, pause) + `text_features` (rate, punct, digits, hook, one per lexicon, `kw`).
 3. For each scene: `scene_score` = sum of `weight * zscore(feature)` from `STYLES[scene]` (+ `kw` weight 1.5 if
@@ -129,6 +131,9 @@ Candidates are **not stored in SQLite** (an earlier design did; it exploded to m
 (shorten long pauses, cut fillers; skipped without audio) -> clamp sub-clips to the real stream length -> `layout`
 (fit on blurred/colour/image background, or fill) -> `build_captions` (sprites cached, one band track) -> optional title ->
 fades -> `encode` with the chosen `Encoder` -> JPEG cover. `render_job` writes the `.srt` sidecar and the DB outcome.
+
+`compute_keep` gets the kind's `min_seconds`: when the trimming would cut the clip below it, the smallest cuts are
+given back (the fillers first), so a clip never ends up shorter than the user asked for.
 
 ### Parallelism
 `render_all` plans workers from `RESOURCES.plan_workers(per_job_bytes, jobs, limit)` **before every submission**.
@@ -171,7 +176,8 @@ retried alone, in-process. Workers re-run `setup_logging(log_file, level, None)`
 `short: KindCfg`, `long: KindCfg`, `keywords`, `lexicon_file`, `skip_intro_seconds`, `snap_to_cuts`, `pad_*`,
 `split_seconds`), `transcript`, `llm`, `video` (`short_side`, `fps`, `layout`, `background`, `fade_seconds`, `gpu`,
 `crf`, `preset`, `maxrate_mbps`, `thumbnail`), `captions`, `title`, `audio`, `silence`, `processing`, `resources`,
-`storage`, `logging`. `KindCfg` = `count` (per scene), `min_seconds`, `max_seconds`, `aspect`, `ranges`.
+`storage`, `logging`. `KindCfg` = `count` (per scene), `min_seconds`, `target_seconds` (recommended, optional),
+`max_seconds`, `aspect`, `ranges` - the length of a clip is `clip(minimum, recommended, maximum)`.
 
 * `build(cls, data)` walks dataclass type hints; `_conforms` checks JSON values against `Literal`, `X | None`,
   `list[X]`, `int` vs `float` (bool is not an int/float). Validation lives in `__post_init__` and raises `ConfigError`.
@@ -272,16 +278,20 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
    every DPDFNet setting changed the text (CER 0.3-0.5 against the un-enhanced transcript, while the run-to-run noise
    of the same audio is ~0.1). That is why `enhance.snr_threshold_db` measures every chunk first and leaves clean
    audio alone. Only the DPDFNet models support `attenuation_limit_db`; a *larger* value allows *more* suppression.
-9. **Drawing text straight onto an RGBA canvas leaves dark fringes.** `render_text_image` draws text/outline/highlight on
+9. **The padding and the cut snapping can push a clip over its maximum.** `pad_start`/`pad_end` and `snap_to_cut`
+   add up to ~3 s to a window that was within the range, so the window is clamped to `max_seconds` again after the
+   snapping. The minimum is the harder half: the pause removal happens at render time, so `compute_keep` gets the
+   kind's `min_seconds` and gives the smallest cuts back when the clip would end up too short.
+10. **Drawing text straight onto an RGBA canvas leaves dark fringes.** `render_text_image` draws text/outline/highlight on
    separate pre-coloured transparent layers and alpha-composites them.
-10. **MoviePy's default resize is Pillow-LANCZOS (slow).** `render._resize_effect` swaps in OpenCV (~3x faster overall).
-11. **Containers report a slightly longer duration than the video stream;** sub-clips are clamped to `vclip.duration`.
-12. **Cache hooks and SQLite connections are per thread/process.** A hook from another thread's `Cache` raises; that is
+11. **MoviePy's default resize is Pillow-LANCZOS (slow).** `render._resize_effect` swaps in OpenCV (~3x faster overall).
+12. **Containers report a slightly longer duration than the video stream;** sub-clips are clamped to `vclip.duration`.
+13. **Cache hooks and SQLite connections are per thread/process.** A hook from another thread's `Cache` raises; that is
    why `after_operation` swallows hook exceptions. Never share a `Store` across threads.
-13. **Scenes compete for a finite set of moments.** In short videos later scenes may get fewer clips than `count`; this is
+14. **Scenes compete for a finite set of moments.** In short videos later scenes may get fewer clips than `count`; this is
     intended (and documented), not a bug.
-14. **Do not use `caplog` for CLI tests** (see section 8) and do not call `setup_logging` in library code.
-15. **Config key names matter:** `scenes` = scene types; `snap_to_cuts` = shot-change snapping. Do not reintroduce `style` or `snap_scenes`.
+15. **Do not use `caplog` for CLI tests** (see section 8) and do not call `setup_logging` in library code.
+16. **Config key names matter:** `scenes` = scene types; `snap_to_cuts` = shot-change snapping. Do not reintroduce `style` or `snap_scenes`.
 
 ## 10. Recipes
 
