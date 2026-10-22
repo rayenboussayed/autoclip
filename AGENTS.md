@@ -26,6 +26,7 @@ python -m autoclip --init config.json          # tiny starter config      (--ini
 python -m autoclip config.json                 # run (exit 0 = all ok, 1 = something failed, 2 = bad config)
 python -m autoclip --gui                       # the desktop app (same as: python -m autoclip.app)
 
+python -m PyInstaller autoclip.spec --noconfirm  # standalone build (needs pyinstaller; see the build workflow)
 ruff check . && ruff format --check .          # lint + format (line length 140)
 mypy autoclip tests tools                       # strict typing, tests and tools included
 pytest                                         # whole suite; FAILS if branch coverage < 95%
@@ -68,6 +69,8 @@ autoclip/
     session.py      the behaviour without widgets: read/write/validate the config, start/stop the pipeline
     window.py       the window: tabs, details panel, log, Run / Stop / Save / Load / Reset
 tests/            mirrors the modules; conftest.py generates the fixture video
+autoclip.spec     the PyInstaller spec: a standalone build (engine + command line + desktop app)
+tools/frozen_entry.py   the entry point of the frozen build (a frozen __main__ has no package around it)
 tools/            compare_stt.py - development aid: STT models x enhancement backends on one scene
                   verify_output.py - development aid: checks a finished output directory
 docs/             stt-comparison.md - the measured comparison of transcription models and denoisers
@@ -320,7 +323,12 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     intended (and documented), not a bug.
 15. **Do not use `caplog` for CLI tests** (see section 8) and do not call `setup_logging` in library code.
 16. **Config key names matter:** `scenes` = scene types; `snap_to_cuts` = shot-change snapping. Do not reintroduce `style` or `snap_scenes`.
-17. **Two ffmpegs are in play.** `media.ffmpeg_exe()` prefers the one on `PATH` (decoding, `split` mode), but MoviePy
+17. **A frozen build has no Python and no package.** `tools/frozen_entry.py` is its entry point (a frozen
+    `__main__` cannot use a relative import), and the app runs *itself* for a pipeline
+    (`session.pipeline_command` checks `sys.frozen`) instead of `python -m autoclip`. The bundle is a
+    folder, not a single file: numpy, OpenCV, the Whisper runtime and ffmpeg are big and a folder
+    starts much faster. The optional extras are not bundled - the app degrades gracefully without them.
+18. **Two ffmpegs are in play.** `media.ffmpeg_exe()` prefers the one on `PATH` (decoding, `split` mode), but MoviePy
     encodes with `FFMPEG_BINARY` or its bundled `imageio-ffmpeg` binary. The probe therefore uses
     `hardware.encoding_ffmpeg()`: probing with the `PATH` ffmpeg once "proved" NVENC on a machine whose bundled build
     rejects `-rc`, and every clip then died at render time.

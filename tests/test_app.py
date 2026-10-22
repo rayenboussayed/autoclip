@@ -1008,3 +1008,27 @@ def test_the_command_line_can_open_the_desktop_app(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr("autoclip.app.launch", fake_launch)
     assert cli.main(["--gui", "config.json"]) == 0
     assert called == [Path("config.json")]
+
+
+def test_a_frozen_build_runs_itself(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A frozen build has no Python around it: the binary runs the pipeline itself."""
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    command = pipeline_command(Path("config.json"))
+    assert command == [sys.executable, "config.json"]
+    monkeypatch.delattr(sys, "frozen", raising=False)
+
+
+def test_a_frozen_build_starts_no_python(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A frozen build puts no project path into the environment of the pipeline."""
+    started: list[dict[str, Any]] = []
+
+    class FakePopen:
+        def __init__(self, cmd: list[str], **kwargs: Any) -> None:
+            started.append({"cmd": cmd, **kwargs})
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    start_pipeline(tmp_path / "config.json")
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    assert started and started[0]["cmd"] == [sys.executable, str(tmp_path / "config.json")]
+    assert "PYTHONPATH" not in started[0]["env"]

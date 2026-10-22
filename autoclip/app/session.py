@@ -86,14 +86,21 @@ def check_config(data: dict[str, Any]) -> None:
 
 
 def pipeline_command(config_path: Path) -> list[str]:
-    """The command that runs the pipeline for a config file."""
+    """The command that runs the pipeline for a config file.
+
+    A frozen build is the command line itself, so it runs itself; an installed package runs the
+    module of the project.
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable, str(config_path)]
     return [sys.executable, "-m", "autoclip", str(config_path)]
 
 
 def start_pipeline(config_path: Path) -> subprocess.Popen[str]:
     """Start the pipeline as a child process (its output is the log of the app)."""
     env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(PROJECT_ROOT), env.get("PYTHONPATH", "")]))
+    if not getattr(sys, "frozen", False):
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(PROJECT_ROOT), env.get("PYTHONPATH", "")]))
     return subprocess.Popen(
         pipeline_command(config_path),
         cwd=str(config_path.parent),

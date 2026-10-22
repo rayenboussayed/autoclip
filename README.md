@@ -145,6 +145,28 @@ keyboard clicks or hum. `transcript.enhance` is enabled by default:
 * One SQLite database (WAL) per video, recreated empty at every start. Only the transcript JSON is kept between runs.
 * The log has START/END of every operation with wall time, RSS, free RAM, CPU and throughput; workers log into the same file.
 
+## Standalone binaries
+
+The build workflow (`.github/workflows/build.yml`) builds a standalone app for **Linux, macOS and
+Windows, on x64 and arm64** - no Python installation needed on the machine that runs it. Push a
+tag (`v1.2.3`) and the six builds are attached to the release.
+
+To build it yourself (for the machine you are on):
+
+```bash
+python -m pip install -e . "pyinstaller>=6.10"
+python -m PyInstaller autoclip.spec --noconfirm
+./dist/autoclip/autoclip --gui          # the desktop app
+./dist/autoclip/autoclip config.json    # the command line
+```
+
+`dist/autoclip/` holds the program and everything it needs, ffmpeg included. It is a folder and
+not a single file because the program is big (numpy, OpenCV, the Whisper runtime and ffmpeg are
+inside it) and a folder starts much faster.
+
+The optional extras - the speech enhancement and the spectral denoising - are not in the binary:
+they are optional, the app works without them, and they would make it noticeably bigger.
+
 ## Platform notes
 * **ffmpeg**: decoding uses the one on `PATH` if present, otherwise the binary bundled with `imageio-ffmpeg`. Encoding goes
   through MoviePy, which uses `FFMPEG_BINARY` if you set it, else its bundled binary - and the encoder is probed with that
