@@ -15,9 +15,9 @@ description: |
   The desktop app (autoclip --gui) shows every option of the config file with an explanation.
 grade: stable
 confinement: strict
-architectures:
-  - amd64
-  - arm64
+platforms:
+  amd64:
+  arm64:
 license: MIT
 compression: lzo
 
@@ -32,7 +32,6 @@ apps:
       - network
       - removable-media
       - audio-playback
-      - video-playback
 
 parts:
   # the standalone program (built by PyInstaller before snapcraft runs)
@@ -45,14 +44,15 @@ parts:
     stage:
       - usr/lib/autoclip
 
-  # the entry point, the desktop file and the icon
+  # the entry point, the desktop file and the icon (the source is the two files in assets/)
   launcher:
     plugin: nil
+    source: assets
     override-build: |
       install -d "$CRAFT_PART_INSTALL/bin" "$CRAFT_PART_INSTALL/usr/share/applications"
       install -d "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/512x512/apps"
-      install -D -m 0644 assets/autoclip.desktop "$CRAFT_PART_INSTALL/usr/share/applications/autoclip.desktop"
-      install -D -m 0644 assets/autoclip.png "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/512x512/apps/autoclip.png"
+      install -D -m 0644 autoclip.desktop "$CRAFT_PART_INSTALL/usr/share/applications/autoclip.desktop"
+      install -D -m 0644 autoclip.png "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/512x512/apps/autoclip.png"
       cat > "$CRAFT_PART_INSTALL/bin/autoclip" <<'LAUNCHER'
       #!/bin/sh
       # Without arguments the desktop app opens, with arguments the command line runs.
