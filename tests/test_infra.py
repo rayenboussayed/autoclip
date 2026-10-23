@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from autoclip.core import resources
 from autoclip.core.config import Config, parse
@@ -303,7 +304,7 @@ def test_two_tier_cache(tmp_path: Path) -> None:
     arr = np.arange(1000, dtype=np.float32)
     calls: list[int] = []
 
-    def produce() -> np.ndarray:
+    def produce() -> NDArray[np.float32]:
         calls.append(1)
         return arr
 

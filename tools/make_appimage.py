@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -67,7 +68,7 @@ def build(target: Path, out: Path, tool: str) -> int:
     (``autoclip.AppDir`` -> ``autoclip-x86_64.AppImage``), so the tool runs next to the AppDir and
     the file it leaves behind is moved to ``out``.
     """
-    env = dict(os.environ, ARCH=os.environ.get("ARCH") or os.uname().machine)
+    env = dict(os.environ, ARCH=os.environ.get("ARCH") or platform.machine())
     command = [tool, "--appimage-extract-and-run", str(target)]
     print(" ".join(command))
     result = subprocess.run(command, env=env, cwd=target.parent, check=False)

@@ -105,7 +105,12 @@ def compute_keep(x: F32, words: Sequence[Word], dur: float, cfg: SilenceCfg, min
     if not cfg.remove:
         return whole
     db, step = frame_db(x), 0.02
-    thr = cfg.threshold_db if cfg.threshold_db != "auto" else max(min(np.percentile(db, 10) + 8, np.percentile(db, 95) - 18), -70)
+    if cfg.threshold_db == "auto":
+        # 8 dB over the quiet tenth, at least 18 dB under the loud part, never below -70 dB
+        quiet = float(min(np.percentile(db, 10) + 8, np.percentile(db, 95) - 18))
+        thr = max(quiet, -70.0)
+    else:
+        thr = float(cfg.threshold_db)
     edges = np.diff(np.concatenate([[0], (db < thr).astype(np.int8), [0]]))  # run-length encode the silent frames
     cut: list[tuple[float, float]] = [
         (float(i) * step + cfg.keep_padding, float(j) * step - cfg.keep_padding)

@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from PIL import features
 
 from autoclip.core import captions, fonts
@@ -162,7 +163,7 @@ def test_balanced_lines() -> None:
 STYLE = CaptionsCfg(bg_opacity=0.0)
 
 
-def opaque(arr: np.ndarray) -> np.ndarray:
+def opaque(arr: NDArray[np.uint8]) -> NDArray[np.uint8]:
     return arr[arr[..., 3] > 250][:, :3]
 
 
@@ -244,7 +245,7 @@ def cache(tmp_path: Path):  # type: ignore[no-untyped-def]
     store.close()
 
 
-def solid(h: int, w: int, rgba: tuple[int, int, int, int]) -> np.ndarray:
+def solid(h: int, w: int, rgba: tuple[int, int, int, int]) -> NDArray[np.uint8]:
     return np.full((h, w, 4), rgba, np.uint8)
 
 

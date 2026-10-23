@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import webbrowser
@@ -117,7 +118,8 @@ def stop_pipeline(process: subprocess.Popen[str]) -> None:
     """Stop a running pipeline (the whole process group, so the workers die with it)."""
     try:
         if os.name != "nt":
-            os.killpg(os.getpgid(process.pid), 15)
+            # start_pipeline put the child in its own session, so its pid is the id of the group
+            os.kill(-process.pid, signal.SIGTERM)
         else:  # pragma: no cover - Windows
             process.terminate()
     except (OSError, ProcessLookupError):
@@ -130,8 +132,8 @@ def open_folder(path: Path) -> None:
     try:
         if sys.platform == "darwin":
             subprocess.run(["open", str(path)], check=False)  # noqa: S607
-        elif os.name == "nt":  # pragma: no cover - Windows
-            os.startfile(str(path))  # type: ignore[attr-defined]  # noqa: S606
+        elif os.name == "nt" and hasattr(os, "startfile"):  # pragma: no cover - Windows
+            os.startfile(str(path))  # noqa: S606
         else:
             subprocess.run(["xdg-open", str(path)], check=False)  # noqa: S607
     except OSError:

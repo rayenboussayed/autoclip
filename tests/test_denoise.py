@@ -11,19 +11,20 @@ from typing import Any
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from autoclip.core import denoise
 from autoclip.core.config import EnhanceCfg
 from autoclip.core.denoise import SpeechEnhancer, fetch_model
 
 
-def tone(seconds: float = 0.5, sr: int = 16000) -> np.ndarray:
+def tone(seconds: float = 0.5, sr: int = 16000) -> NDArray[np.float32]:
     """A short noisy tone, standing in for speech."""
     t = np.arange(int(seconds * sr)) / sr
     return (0.2 * np.sin(2 * np.pi * 440 * t) + 0.05 * np.random.default_rng(0).standard_normal(len(t))).astype(np.float32)
 
 
-def speech_like(seconds: float = 4.0, sr: int = 16000) -> np.ndarray:
+def speech_like(seconds: float = 4.0, sr: int = 16000) -> NDArray[np.float32]:
     """Tone bursts separated by digital silence - a clean recording with pauses."""
     audio = np.zeros(int(seconds * sr), dtype=np.float32)
     for start in (0.0, 2.0):
@@ -32,7 +33,7 @@ def speech_like(seconds: float = 4.0, sr: int = 16000) -> np.ndarray:
     return audio
 
 
-def noisy(seconds: float = 4.0, sr: int = 16000) -> np.ndarray:
+def noisy(seconds: float = 4.0, sr: int = 16000) -> NDArray[np.float32]:
     """The same speech with a constant noise floor of -30 dB."""
     rng = np.random.default_rng(1)
     hiss = np.asarray(10 ** (-30 / 20) * rng.standard_normal(int(seconds * sr)), dtype=np.float32)
@@ -49,7 +50,7 @@ def test_clean_audio_is_left_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     enhancer = SpeechEnhancer(EnhanceCfg(backend="noisereduce"), tmp_path)
     called: list[int] = []
 
-    def denoise(audio: np.ndarray) -> np.ndarray:
+    def denoise(audio: NDArray[np.float32]) -> NDArray[np.float32]:
         called.append(1)
         return audio
 
@@ -112,7 +113,7 @@ def test_noisereduce_backend_enhances_the_audio(tmp_path: Path) -> None:
 def test_a_failing_backend_is_disabled_after_the_first_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    def boom(_audio: np.ndarray) -> np.ndarray:
+    def boom(_audio: NDArray[np.float32]) -> NDArray[np.float32]:
         raise RuntimeError("model exploded")
 
     enhancer = SpeechEnhancer(EnhanceCfg(backend="noisereduce"), tmp_path)
@@ -184,7 +185,7 @@ def test_sherpa_backend_builds_a_denoiser(tmp_path: Path, monkeypatch: pytest.Mo
         def __init__(self, config: Any) -> None:
             built["denoiser"] = config
 
-        def run(self, audio: np.ndarray, sr: int) -> Any:
+        def run(self, audio: NDArray[np.float32], sr: int) -> Any:
             built["run"] = (len(audio), sr)
             return type("Out", (), {"samples": audio * 0.5})()
 

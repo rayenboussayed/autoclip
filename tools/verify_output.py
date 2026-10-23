@@ -58,8 +58,10 @@ def probe(path: Path) -> tuple[float, int, int, float, bool]:
 
     with av.open(str(path)) as container:
         video = container.streams.video[0]
-        fps = float(video.average_rate)
-        return float(container.duration) / 1e6, video.width, video.height, fps, bool(container.streams.audio)
+        duration, rate = container.duration, video.average_rate
+        if duration is None or rate is None:  # the container may not know either
+            raise RuntimeError(f"{path}: the container reports no duration or frame rate")
+        return float(duration) / 1e6, video.width, video.height, float(rate), bool(container.streams.audio)
 
 
 def trimmed_seconds(work_dir: Path) -> dict[str, float]:
