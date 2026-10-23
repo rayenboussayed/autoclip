@@ -125,10 +125,21 @@ def cfg_factory(media: Media, tmp_path: Path):  # type: ignore[no-untyped-def]
     return factory
 
 
+def _annotation(path: str, line: int, message: str) -> None:
+    """Print one GitHub Actions annotation (ASCII, one command per line, escaped by the runner's rules)."""
+    detail = message.encode("ascii", "backslashreplace").decode("ascii")
+    detail = detail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    # the command has to start its own line: pytest has just written the progress character
+    print(f"\n::error file={path},line={max(line, 1)}::{detail}", flush=True)
+
+
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     """Under GitHub Actions, report a failure as an annotation (the job log needs an account to read)."""
     if not report.failed or os.environ.get("GITHUB_ACTIONS") != "true":
         return
     path, line, _ = report.location
-    detail = str(report.longrepr).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-    print(f"::error file={path},line={line or 1}::{report.nodeid} ({report.when})%0A{detail[:4000]}")
+    line = (line or 0) + 1
+    text = str(report.longrepr)
+    summary = next((row.strip() for row in reversed(text.splitlines()) if row.strip()), text)
+    _annotation(path, line, f"{report.nodeid} ({report.when}): {summary[:200]}")
+    _annotation(path, line, text[:4000])
