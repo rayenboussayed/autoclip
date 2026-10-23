@@ -178,7 +178,8 @@ def test_start_pipeline_runs_the_cli(tmp_path: Path) -> None:
         assert process.stdout is not None
         assert process.wait(timeout=60) == 2  # no video matches: a configuration error
     finally:
-        process.kill()
+        if process.poll() is None:  # Windows refuses to kill a process that already exited
+            process.kill()
 
 
 def test_stop_pipeline_terminates_the_process(tmp_path: Path) -> None:
@@ -194,10 +195,32 @@ def test_open_folder_creates_the_folder(tmp_path: Path, monkeypatch: pytest.Monk
     """The output folder is created and handed to the file manager."""
     called: list[list[str]] = []
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: called.append(cmd))
+    monkeypatch.setattr("autoclip.app.session.sys.platform", "linux")
     target = tmp_path / "out"
     open_folder(target)
     assert target.is_dir()
-    assert called and called[0][0] in ("xdg-open", "open")
+    assert called == [["xdg-open", str(target)]]
+
+
+def test_open_folder_uses_open_on_macos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """macOS opens a folder with ``open``."""
+    called: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: called.append(cmd))
+    monkeypatch.setattr("autoclip.app.session.sys.platform", "darwin")
+    target = tmp_path / "out"
+    open_folder(target)
+    assert called == [["open", str(target)]]
+
+
+def test_open_folder_uses_startfile_on_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows opens a folder with ``os.startfile`` (no child process)."""
+    opened: list[str] = []
+    monkeypatch.setattr("autoclip.app.session.sys.platform", "win32")
+    monkeypatch.setattr(os, "startfile", opened.append, raising=False)
+    target = tmp_path / "out"
+    open_folder(target)
+    assert target.is_dir()
+    assert opened == [str(target)]
 
 
 # -- the window (needs a display) --------------------------------------------------------------
@@ -638,8 +661,43 @@ def test_stopping_a_pipeline_that_is_already_gone_terminates_it(monkeypatch: pyt
         def terminate(self) -> None:
             terminated.append(True)
 
+    def no_such_group(pid: int, sig: int) -> None:
+        raise ProcessLookupError(pid)
+
+    monkeypatch.setattr(os, "kill", no_such_group)
     stop_pipeline(Gone())  # type: ignore[arg-type]
     assert terminated
+
+
+def test_stopping_a_windows_pipeline_terminates_it_directly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows has no process groups: the child itself is terminated."""
+    terminated: list[bool] = []
+
+    class Live:
+        pid = 1234
+
+        def terminate(self) -> None:
+            terminated.append(True)
+
+    monkeypatch.setattr(os, "name", "nt")
+    stop_pipeline(Live())  # type: ignore[arg-type]
+    assert terminated
+
+
+def test_stopping_a_pipeline_that_is_gone_does_not_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A process that vanished in the meantime is not an error (Windows refuses to kill it)."""
+
+    class Vanished:
+        pid = 999_999
+
+        def terminate(self) -> None:
+            raise ProcessLookupError("already gone")
+
+    def no_such_group(pid: int, sig: int) -> None:
+        raise ProcessLookupError(pid)
+
+    monkeypatch.setattr(os, "kill", no_such_group)
+    stop_pipeline(Vanished())  # type: ignore[arg-type]
 
 
 def test_a_file_manager_that_is_not_there_opens_the_browser(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -650,6 +708,7 @@ def test_a_file_manager_that_is_not_there_opens_the_browser(tmp_path: Path, monk
         raise OSError("no xdg-open")
 
     monkeypatch.setattr(subprocess, "run", broken)
+    monkeypatch.setattr("autoclip.app.session.sys.platform", "linux")
     monkeypatch.setattr("autoclip.app.session.webbrowser.open", opened.append)
     open_folder(tmp_path / "out")
     assert opened and opened[0].endswith("out")

@@ -287,6 +287,10 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 * Every new behaviour needs a test that would fail without it; every bug fix needs a regression test. Assertions should
   state the contract (e.g. "no moment is reused under another label"), not incidental values.
 * Keep tests fast: prefer the 40 s fixture, `short_side` 96-144, `ultrafast`, `audio.denoise: "none"` unless denoise is the subject.
+* Platform-specific code is tested by *injecting* the platform: `sys.platform` for the open-folder branch of
+  `app.session`, `os.name` for its process group. Never let a test depend on the OS it happens to run on.
+* Under GitHub Actions `conftest.py` prints every failure as an `::error file=...,line=...` annotation, so the failing test
+  and its traceback appear on the commit page (a job log needs an account to read). Locally the hook does nothing.
 
 ## 9. Gotchas (learned the hard way)
 

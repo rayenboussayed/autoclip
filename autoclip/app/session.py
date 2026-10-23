@@ -7,6 +7,7 @@ pipeline and opening the output folder.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -116,13 +117,12 @@ def start_pipeline(config_path: Path) -> subprocess.Popen[str]:
 
 def stop_pipeline(process: subprocess.Popen[str]) -> None:
     """Stop a running pipeline (the whole process group, so the workers die with it)."""
-    try:
-        if os.name != "nt":
+    if os.name != "nt":
+        with contextlib.suppress(OSError):  # no such group any more: fall back to the process itself
             # start_pipeline put the child in its own session, so its pid is the id of the group
             os.kill(-process.pid, signal.SIGTERM)
-        else:  # pragma: no cover - Windows
-            process.terminate()
-    except (OSError, ProcessLookupError):
+            return
+    with contextlib.suppress(OSError):  # already gone (Windows refuses to kill an exited process)
         process.terminate()
 
 
@@ -132,7 +132,7 @@ def open_folder(path: Path) -> None:
     try:
         if sys.platform == "darwin":
             subprocess.run(["open", str(path)], check=False)  # noqa: S607
-        elif os.name == "nt" and hasattr(os, "startfile"):  # pragma: no cover - Windows
+        elif sys.platform == "win32" and hasattr(os, "startfile"):
             os.startfile(str(path))  # noqa: S606
         else:
             subprocess.run(["xdg-open", str(path)], check=False)  # noqa: S607

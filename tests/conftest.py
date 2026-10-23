@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import wave
 from collections.abc import Iterator
@@ -122,3 +123,12 @@ def cfg_factory(media: Media, tmp_path: Path):  # type: ignore[no-untyped-def]
         return make_cfg(media, tmp_path / "out", source, **sections)
 
     return factory
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Under GitHub Actions, report a failure as an annotation (the job log needs an account to read)."""
+    if not report.failed or os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    path, line, _ = report.location
+    detail = str(report.longrepr).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::error file={path},line={line or 1}::{report.nodeid} ({report.when})%0A{detail[:4000]}")
