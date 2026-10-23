@@ -152,7 +152,7 @@ def install_stub_whisper(
 def test_transcribe_cpu_with_stub(media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
-    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en"})
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en", "multilingual": False})
     segs = transcribe(media.video, cfg, *info_db)
     name, device, compute, threads = rec["init"]
     assert (name, device, compute) == ("tiny", "cpu", "int8") and threads == RESOURCES.cpu_budget()
