@@ -260,6 +260,9 @@ retried alone, in-process. Workers re-run `setup_logging(log_file, level, None)`
 Philosophy: **real ffmpeg, real files, real processes** wherever feasible; inject only what cannot exist in CI
 (a Whisper model, a GPU, other operating systems).
 
+* pytest runs with `--capture=sys` (see gotcha 21): pytest's default fd-level capture intermittently breaks the
+  Tcl file channels on Windows and fails the desktop-app tests at random.
+
 * `tests/conftest.py`
   * `media` (session): generates a 40 s 320x180 video (speech-like tone bursts, 3 s on / 1 s off, 10 known sentences)
     with the bundled ffmpeg, plus `talk.json` (word timings), `talk.srt` and a `silent.mp4` without audio.
@@ -353,6 +356,11 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     itself (past EOF on a new file is allowed); `log._appends_need_locking` turns this off on POSIX, where a `write`
     with `O_APPEND` is atomic. A lock that cannot be taken falls back to an unlocked write - a lost record is worse
     than an interleaved one. Do not replace the handler with a plain `logging.FileHandler`.
+21. **pytest's fd capture breaks Tcl on Windows.** With the default `--capture=fd`, the desktop-app tests fail at
+    random on the Windows runners (`Can't find a usable init.tcl ... couldn't read file ...: No error`, or
+    `ttk/utils.tcl: no such file or directory`) while other Tk tests in the same process pass: the fd capture dup2s
+    over the standard handles the Tcl channels depend on. `pyproject.toml` therefore sets `--capture=sys` (no test
+    asserts on output written straight to a file descriptor). Do not "restore" the default.
 
 ## 10. Recipes
 
