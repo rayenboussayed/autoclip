@@ -143,7 +143,7 @@ class TranscriptCfg(Section):
     model: str = "large-v3"  # tiny base small medium large-v3 (multilingual, NOT *.en)
     auto_downgrade: Bool = True  # pick a smaller model when free RAM cannot hold the chosen one
     language: str | None = None  # None = auto-detect
-    multilingual: Bool = False  # detect the language per segment (mixed-language audio)
+    multilingual: Bool = True  # detect the language per segment (mixed-language audio)
     device: Literal["auto", "cpu", "cuda"] = "auto"
     beam_size: Int = 5  # 1 = fastest, 5 = most accurate
     word_timestamps: Bool = True
