@@ -205,7 +205,7 @@ def test_render_all_with_real_spawned_workers(media: Media, tmp_path: Path) -> N
     assert statuses(store) == ["done", "done"]
     text = log_file.read_text(encoding="utf-8")
     pids = {line.split("pid=")[1].split()[0] for line in text.splitlines() if "rendering c" in line}
-    assert "rendering c1.mp4" in text and "rendering c2.mp4" in text
+    assert "rendering c1.mp4" in text and "rendering c2.mp4" in text, f"the spawned workers left the log incomplete:\n{text}"
     assert str(os.getpid()) not in pids and len(pids) >= 1  # rendered by spawned workers, not by this process
     store.close()
 

@@ -5,12 +5,15 @@ from __future__ import annotations
 import gc
 import logging
 import os
+import sys
+import types
 from pathlib import Path
 
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 
+from autoclip.core import log as log_module
 from autoclip.core import resources
 from autoclip.core.config import Config, parse
 from autoclip.core.log import LOG, setup_logging, speed_text, traced
@@ -164,6 +167,66 @@ def test_logging_file_console_and_levels(tmp_path: Path, capsys: pytest.CaptureF
     setup_logging(None, "INFO", None)  # no handlers requested -> NullHandler, nothing raises
     LOG.error("silent")
     assert isinstance(LOG.handlers[0], logging.NullHandler)
+
+
+class FakeMsvcrt(types.ModuleType):
+    """Stand-in for the Windows-only module: records the lock calls, optionally fails one."""
+
+    LK_LOCK = 1
+    LK_UNLCK = 2
+
+    def __init__(self, *, fail_lock: bool = False, fail_unlock: bool = False) -> None:
+        super().__init__("msvcrt")
+        self.fail_lock = fail_lock
+        self.fail_unlock = fail_unlock
+        self.calls: list[tuple[int, int]] = []
+
+    def locking(self, fd: int, mode: int, nbytes: int) -> None:
+        self.calls.append((mode, nbytes))
+        if (mode == self.LK_LOCK and self.fail_lock) or (mode == self.LK_UNLCK and self.fail_unlock):
+            raise OSError("the byte is locked by another process")
+
+
+def shared_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake: FakeMsvcrt) -> Path:
+    """Configure file logging as if this were Windows, where appends need an explicit lock."""
+    monkeypatch.setattr(log_module, "_appends_need_locking", lambda: True)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+    log_file = tmp_path / "shared.log"
+    setup_logging(log_file, "INFO", None)
+    return log_file
+
+
+def test_a_shared_log_file_locks_every_record_where_appends_are_not_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeMsvcrt()
+    log_file = shared_log(tmp_path, monkeypatch, fake)
+    LOG.info("first")
+    LOG.info("second")
+    assert fake.calls == [(fake.LK_LOCK, 1), (fake.LK_UNLCK, 1)] * 2
+    text = log_file.read_text(encoding="utf-8")
+    assert "first" in text and "second" in text
+
+
+def test_a_record_is_written_unlocked_when_the_shared_lock_cannot_be_taken(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeMsvcrt(fail_lock=True)
+    log_file = shared_log(tmp_path, monkeypatch, fake)
+    LOG.info("still written")
+    assert fake.calls == [(fake.LK_LOCK, 1)]  # there is no lock to release
+    assert "still written" in log_file.read_text(encoding="utf-8")
+
+
+def test_a_failed_unlock_does_not_lose_the_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeMsvcrt(fail_unlock=True)
+    log_file = shared_log(tmp_path, monkeypatch, fake)
+    LOG.info("written before the unlock")
+    assert fake.calls == [(fake.LK_LOCK, 1), (fake.LK_UNLCK, 1)]
+    assert "written before the unlock" in log_file.read_text(encoding="utf-8")
+
+
+def test_a_closed_shared_handler_drops_the_record_quietly(tmp_path: Path) -> None:
+    handler = log_module._SharedFileHandler(tmp_path / "closed.log", encoding="utf-8")
+    handler.close()
+    handler.emit(logging.LogRecord("autoclip", logging.INFO, __file__, 1, "lost", (), None))
+    assert (tmp_path / "closed.log").read_text(encoding="utf-8") == ""
 
 
 def test_traced_logs_start_end_and_failure(tmp_path: Path) -> None:

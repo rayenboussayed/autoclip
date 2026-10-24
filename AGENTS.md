@@ -347,6 +347,12 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     encodes with `FFMPEG_BINARY` or its bundled `imageio-ffmpeg` binary. The probe therefore uses
     `hardware.encoding_ffmpeg()`: probing with the `PATH` ffmpeg once "proved" NVENC on a machine whose bundled build
     rejects `-rc`, and every clip then died at render time.
+20. **Windows appends are not atomic, POSIX ones are.** The C runtime implements `O_APPEND` as seek-to-end *then* write,
+    so two workers logging at the same moment overwrite each other's line (worker START lines went missing on Windows
+    CI). `log._SharedFileHandler` therefore writes every record under a one-byte `msvcrt.locking` lock of the log file
+    itself (past EOF on a new file is allowed); `log._appends_need_locking` turns this off on POSIX, where a `write`
+    with `O_APPEND` is atomic. A lock that cannot be taken falls back to an unlocked write - a lost record is worse
+    than an interleaved one. Do not replace the handler with a plain `logging.FileHandler`.
 
 ## 10. Recipes
 

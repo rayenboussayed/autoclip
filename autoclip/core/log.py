@@ -2,20 +2,82 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
+import importlib
 import io
 import logging
+import os
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import ParamSpec, TypeVar
+from typing import ParamSpec, Protocol, TypeVar, cast
 
 from .resources import RESOURCES
 
 P = ParamSpec("P")
 R = TypeVar("R")
 LOG = logging.getLogger("autoclip")
+
+
+class _SharedFileHandler(logging.FileHandler):
+    """Append-only handler for a log file that several processes write to.
+
+    POSIX appends a ``write`` atomically. Windows does not: the C runtime seeks to the end of the file and
+    then writes, so two workers logging at the same moment can overwrite each other's line. Every record is
+    therefore written under a one-byte lock of the file (see ``_lock_writes``).
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        stream = self.stream
+        if stream is None:  # closed handler: there is no file left to write to
+            return
+        with _lock_writes(stream):
+            super().emit(record)
+
+
+class _Msvcrt(Protocol):
+    """The part of the Windows-only ``msvcrt`` module used here (its stub is empty on other platforms)."""
+
+    LK_LOCK: int
+    LK_UNLCK: int
+
+    def locking(self, fd: int, mode: int, nbytes: int, /) -> None: ...
+
+
+def _appends_need_locking() -> bool:
+    """Whether appends to a shared file need an explicit lock on this platform (Windows)."""
+    return os.name == "nt"
+
+
+@contextlib.contextmanager
+def _lock_writes(stream: io.TextIOBase) -> Iterator[None]:
+    """Serialise one write to ``stream`` where the OS needs the help.
+
+    The lock is a byte of the log file itself (locking past the end of a new file is allowed). It only
+    keeps *our* writers apart, which is enough: every process of the run logs through this handler. A
+    lock that cannot be taken must not lose the record, so the write then happens unlocked - an
+    interleaved line is better than a hole.
+    """
+    if not _appends_need_locking():
+        yield
+        return
+    msvcrt = cast(_Msvcrt, importlib.import_module("msvcrt"))  # no other platform ever loads it
+
+    fd = stream.fileno()
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+    except OSError:
+        yield
+        return
+    try:
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
 
 
 def setup_logging(log_file: Path | None, file_level: str, console_level: str | None) -> None:
@@ -33,7 +95,7 @@ def setup_logging(log_file: Path | None, file_level: str, console_level: str | N
         handler.close()
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_file, encoding="utf-8")
+        fh = _SharedFileHandler(log_file, encoding="utf-8")
         fh.setLevel(file_level)
         fh.setFormatter(
             logging.Formatter("%(asctime)s.%(msecs)03d | %(levelname)-7s | pid=%(process)-6d | %(message)s", "%Y-%m-%d %H:%M:%S")
