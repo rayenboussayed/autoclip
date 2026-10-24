@@ -28,7 +28,7 @@ python -m autoclip --gui                       # the desktop app (same as: pytho
 
 python -m PyInstaller autoclip.spec --noconfirm  # standalone build (needs pyinstaller; see the build workflow)
 python tools/make_appimage.py                   # the AppImage (Linux) from that build
-snapcraft --destructive-mode                    # the snap (Linux) from that build
+sudo snapcraft --destructive-mode               # the snap (Linux) from that build (needs root)
 pre-commit install                              # ruff, mypy and the test suite on every commit
 ruff check . && ruff format --check .          # lint + format (line length 140)
 mypy autoclip tests tools                       # strict typing, tests and tools included

@@ -177,8 +177,8 @@ they are optional, the app works without them, and they would make it noticeably
 # the AppImage (one file, runs everywhere, no installation)
 python tools/make_appimage.py --dist dist/autoclip --out dist/autoclip-x86_64.AppImage
 
-# the snap (needs snapcraft)
-snapcraft --destructive-mode
+# the snap (needs snapcraft; destructive mode installs snaps, so it needs root)
+sudo snapcraft --destructive-mode
 ```
 
 The build workflow does both for every Linux target and uploads them next to the other builds.

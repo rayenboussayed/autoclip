@@ -197,9 +197,13 @@ jobs:
           # the version of the snap is the version of the package
           VERSION="$(python -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
           sed -i "s/^version: .*/version: \"$VERSION\"/" snapcraft.yaml
-          # a failed snap build must say why in the check annotation: the job log needs an account
-          if ! snapcraft --destructive-mode 2>&1 | tee snapcraft.log; then
-            echo "::error file=snapcraft.yaml::snapcraft failed: $(tail -n 5 snapcraft.log | tr '\n' ' ' | cut -c1-800)"
+          # Destructive mode installs the extension's content snaps on the host (gtk-common-themes,
+          # gnome-46-2404, mesa-2404, gnome-46-2404-sdk) with `snap install`, which needs root.
+          # craft-parts hides the snapd error, so run snapcraft itself as root.
+          if ! sudo "$(command -v snapcraft)" --destructive-mode 2>&1 | tee snapcraft.log; then
+            # a failed snap build must say why in the check annotation: the job log needs an account
+            ERRORS="$(grep -iE 'error|failed|cannot' snapcraft.log | tail -n 3 | tr '\n' ' ' | cut -c1-800 || true)"
+            echo "::error file=snapcraft.yaml::snapcraft failed: ${ERRORS:-see the log}"
             exit 1
           fi
           mkdir -p packages
