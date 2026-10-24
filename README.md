@@ -58,7 +58,7 @@ A kind that is not requested (or finds nothing) gets no folder. Several videos s
   so in a short video the later ones may find fewer free moments than `count`.
 * Each kind has its own length range, count and `aspect` (`9:16`, `1:1`, `4:5`, `16:9`, `original`).
   If a video is too short for a kind (e.g. 2-minute video, long clips from 3 minutes) that kind is skipped with a warning.
-* **The length of a clip is `clip(minimum, recommended, maximum)`:**
+* **The length of a clip is `clip(minimum, target, maximum)`:**
   * `min_seconds` is a hard floor: the clip is never shorter. If the pause removal would cut it below the minimum, the
     least important cuts are given back (the fillers first, then the shortest pauses).
   * `target_seconds` is the *recommended* length - a preference, not a limit. Candidates near it get a small score bonus,
@@ -147,10 +147,13 @@ keyboard clicks or hum. `transcript.enhance` is enabled by default:
 
 ## Standalone binaries
 
-The build workflow (`.github/workflows/build.yml`) builds a standalone app for **Linux, macOS and
-Windows, on x64 and arm64** - no Python installation needed on the machine that runs it. Push a
-tag (`v1.2.3`) and the six builds are attached to the release (one zip each), plus the AppImage
-and the snap of the two Linux targets.
+The build workflow (`.github/workflows/build.yml`) builds a standalone app for **Linux and macOS on
+x64 and arm64, and Windows on x64** - no Python installation needed on the machine that runs it.
+To release, bump `version` in `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml` (they
+must match) and push to `main`: the workflow checks that `v<version>` is not tagged yet, builds all
+five targets, then creates the tag and publishes the release - one zip per target, plus the AppImage
+and the snap of the two Linux targets. A push to `main` that does not change the version skips the
+build; a pull request that touches the build still builds, without releasing.
 
 To build it yourself (for the machine you are on):
 

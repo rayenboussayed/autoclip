@@ -40,6 +40,11 @@ pytest tests/test_moments.py -k scene --no-cov # a focused run (always add --no-
 `mypy autoclip tests tools`, `pytest`. Coverage is currently 100%; the gate is 95% and must never be lowered.
 A full `pytest` takes about one minute (real ffmpeg encodes, real worker processes).
 
+**Release:** bump `version` in `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml` (they must match -
+`tests/test_version.py` checks it) and push to `main`. The build workflow checks that `v<version>` is not tagged
+yet, builds the five targets, then creates the tag and publishes the GitHub release. A push that does not change
+the version skips the build; a pull request builds without releasing.
+
 ## 3. Repository layout
 
 ```
@@ -72,6 +77,7 @@ autoclip/
     session.py      the behaviour without widgets: read/write/validate the config, start/stop the pipeline
     window.py       the window: tabs, details panel, log, Run / Stop / Save / Load / Reset
 tests/            mirrors the modules; conftest.py generates the fixture video
+                  test_version.py guards the three version files
 autoclip.spec     the PyInstaller spec: a standalone build (engine + command line + desktop app)
 snapcraft.yaml    the snap: the same build as a snap (linux, amd64 + arm64)
 assets/           the icon and the desktop file of the AppImage and the snap
