@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autoclip"
-version = "2.1.0"
+version = "2.1.1"
 description = "Cut long videos into the best short clips (TikTok / Reels / Shorts). Free, local, cross-platform."
 readme = "README.md"
 requires-python = ">=3.10"
