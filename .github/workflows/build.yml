@@ -189,11 +189,19 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          sudo snap install snapcraft --classic
+          if ! sudo snap install snapcraft --classic 2>&1 | tee snap-install.log; then
+            echo "::error::snap install snapcraft failed: $(tail -n 5 snap-install.log | tr '\n' ' ' | cut -c1-800)"
+            exit 1
+          fi
+          snapcraft --version
           # the version of the snap is the version of the package
           VERSION="$(python -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
           sed -i "s/^version: .*/version: \"$VERSION\"/" snapcraft.yaml
-          snapcraft --destructive-mode
+          # a failed snap build must say why in the check annotation: the job log needs an account
+          if ! snapcraft --destructive-mode 2>&1 | tee snapcraft.log; then
+            echo "::error file=snapcraft.yaml::snapcraft failed: $(tail -n 5 snapcraft.log | tr '\n' ' ' | cut -c1-800)"
+            exit 1
+          fi
           mkdir -p packages
           mv ./*.snap packages/
           ls -la packages/*.snap

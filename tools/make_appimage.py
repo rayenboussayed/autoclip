@@ -70,10 +70,13 @@ def build(target: Path, out: Path, tool: str) -> int:
     """
     env = dict(os.environ, ARCH=os.environ.get("ARCH") or platform.machine())
     # the tool runs in the AppDir's parent, so a relative path must be resolved against the caller's
-    # working directory before the child gets a different one
-    resolved = shutil.which(tool)
-    if resolved is not None:
-        tool = str(Path(resolved).resolve())
+    # working directory before the child gets a different one (shutil.which misses ./tool on Windows)
+    if Path(tool).is_file():
+        tool = str(Path(tool).resolve())
+    else:
+        found = shutil.which(tool)
+        if found is not None:
+            tool = str(Path(found).resolve())
     command = [tool, "--appimage-extract-and-run", str(target.resolve())]
     print(" ".join(command))
     result = subprocess.run(command, env=env, cwd=target.parent, check=False)
