@@ -133,6 +133,16 @@ def _annotation(path: str, line: int, message: str) -> None:
     print(f"\n::error file={path},line={max(line, 1)}::{detail}", flush=True)
 
 
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip ``network`` tests unless ``AUTOCLIP_NETWORK_TESTS=1`` (the suite is offline by default)."""
+    if os.environ.get("AUTOCLIP_NETWORK_TESTS") == "1":
+        return
+    skip = pytest.mark.skip(reason="network test: set AUTOCLIP_NETWORK_TESTS=1 to run it")
+    for item in items:
+        if "network" in item.keywords:
+            item.add_marker(skip)
+
+
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     """Under GitHub Actions, report a failure as an annotation (the job log needs an account to read)."""
     if not report.failed or os.environ.get("GITHUB_ACTIONS") != "true":

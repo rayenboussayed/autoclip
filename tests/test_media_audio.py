@@ -13,11 +13,23 @@ from typing import Any
 import numpy as np
 import pytest
 
+import autoclip.core.media as media_mod
 from autoclip.core import audio, media
 from autoclip.core.audio import Timeline, build_audio, compute_keep, enhance_audio, frame_db, is_filler, load_window_audio, piece_bounds
 from autoclip.core.config import AudioCfg, SilenceCfg
 from autoclip.core.errors import AutoclipError
-from autoclip.core.media import AUDIO_SR, FRAME, decode_audio, ffmpeg_exe, frame_energy_db, probe, scene_cuts, snap_to_cut, snap_to_quiet
+from autoclip.core.media import (
+    AUDIO_SR,
+    FRAME,
+    decode_audio,
+    ffmpeg_exe,
+    frame_energy_db,
+    probe,
+    scene_cuts,
+    snap_to_cut,
+    snap_to_quiet,
+    trim_video,
+)
 from autoclip.core.models import Word
 
 from .conftest import Media
@@ -60,6 +72,24 @@ def test_probe(media: Media, tmp_path: Path) -> None:
     (tmp_path / "junk.mp4").write_text("not a video")
     with pytest.raises(AutoclipError, match="cannot read"):
         probe(tmp_path / "junk.mp4")
+
+
+def test_trim_video_re_encodes_an_exact_range(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    out = trim_video(media.video, tmp_path / "cut.mkv", 2.0, 5.5)
+    assert out.exists() and probe(out).duration == pytest.approx(3.5, abs=0.35)
+    assert probe(out).has_audio
+    # the container duration alone can come from the audio stream, so check the video frames too
+    import av
+
+    with av.open(str(out)) as container:
+        video = container.streams.video[0]
+        stamps = [frame.pts * float(video.time_base) for frame in container.decode(video=0) if frame.pts is not None]
+    assert stamps and stamps[-1] - stamps[0] == pytest.approx(3.5, abs=0.35)
+    with pytest.raises(AutoclipError, match="cannot trim"):
+        trim_video(tmp_path / "missing.mp4", tmp_path / "x.mkv", 0.0, 1.0)
+    monkeypatch.setattr(media_mod, "ffmpeg_exe", lambda: "false")
+    with pytest.raises(AutoclipError, match="cannot trim"):
+        trim_video(media.video, tmp_path / "bad.mkv", 0.0, 1.0)
 
 
 def test_energy_track_sees_speech_and_pauses(media: Media) -> None:

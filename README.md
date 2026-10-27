@@ -16,13 +16,20 @@ python -m autoclip.app                 # the desktop app (same options, explaine
 `python -m autoclip.app` opens a native window (Tk, the look of your system) with **every option of
 the config file**:
 
-- eight tabs - *Videos, Clips, Transcript, Video, Captions, Audio, Speed, LLM & log* - each option
-  with a one-line summary under it;
+- nine tabs - *Videos, Download, Clips, Transcript, Video, Captions, Audio, Speed, LLM & log* - each
+  option with a one-line summary under it;
 - a details panel that explains the option you clicked: **what** it does, **why** you would change
   it and **when** it is the right moment;
 - *All options...* opens the same explanations in a searchable list;
 - *Run* writes the config and starts the pipeline (the log appears in the window), *Stop* ends it;
-  *Save config*, *Load config...* and *Reset* work on the config file.
+  *Save config*, *Load config...* and *Reset* work on the config file;
+- the first start offers the usual per-OS config folder (Linux `~/.config/autoclip/config.json`,
+  macOS `~/Library/Application Support/autoclip/config.json`, Windows `%APPDATA%\autoclip\config.json`)
+  and lets you pick another file instead; a broken config resets the form to the defaults without
+  overwriting the file;
+- *Copy error* and *Copy log* in the log header put the last error (or the whole log) on the clipboard;
+- `AUTOCLIP_DEBUG=1` makes an unexpected window error print its traceback, close the window and
+  re-raise it (the default keeps Tk's error dialog).
 
 The app and the command line share the same engine and the same config file - what the window builds
 is exactly what `python -m autoclip config.json` would run.
@@ -35,6 +42,7 @@ is exactly what `python -m autoclip config.json` would run.
   long/{video}/    same, for the long clips                                               (16:9, 3-10 min by default)
   logs/            autoclip_<timestamp>.log
   .work/{video}/   autoclip.db (recreated empty on every start) and the transcript cache
+  .work/downloads/ originals downloaded from URLs (reused by later runs; or download.original_dir)
 ```
 A kind that is not requested (or finds nothing) gets no folder. Several videos share the same `short/` and `long/` folders.
 
@@ -73,6 +81,59 @@ A kind that is not requested (or finds nothing) gets no folder. Several videos s
 * `input` is a path, a glob or a list. One broken video or clip never stops the batch. Exit status: `0` all done, `1` something
   failed, `2` bad configuration. With several videos `transcript.file` needs `{stem}` (e.g. `subs/{stem}.srt`).
   Unknown config keys are errors.
+
+## Downloading URLs (YouTube, TikTok, Vimeo, ...)
+`input` accepts **http(s) URLs next to files and globs**. A URL is downloaded with
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) (installed with autoclip) and then goes through exactly the
+same pipeline as a local file:
+
+```json
+{
+  "input": ["talks/*.mp4", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
+  "output_dir": "clips",
+  "download": {
+    "quality": 1080,
+    "prefer": "at_most",
+    "codec": "h264",
+    "container": "mp4",
+    "platforms": {"allow": ["@popular", "vimeo"], "deny": ["tiktok"]},
+    "subtitles": {"enabled": true, "languages": ["en"], "use_as_transcript": "manual"}
+  }
+}
+```
+
+* **Quality and format:** `quality` is a short side in pixels (144-4320) or `"best"`/`"worst"`; `fps`
+  (`null` = any), `codec` (`auto`, `h264`, `vp9`, `av1`, `h265`), `container` (`auto`, `mp4`, `mkv`,
+  `webm`; a preference, not a forced remux) and `audio_quality`/`audio_language`. `prefer` is
+  `closest` (default), `at_most` or `at_least`, and applies to quality and fps.
+* **Originals** are kept in `{output_dir}/.work/downloads/` (or `download.original_dir`) and reused
+  by later runs; the clip folders stay clips-only. The output name is `<title> [<video id>]`, and a
+  time range adds `[<start>-<end>]`.
+* **Platform policy:** `download.platforms.allow` / `deny` hold extractor families (`youtube`,
+  `tiktok`, `vimeo`, ...) or groups. `deny` wins, the default allow list is `@popular`, and the
+  `generic` family (any web page with a video) is only used when it is named - so a random link is
+  refused before a request is made. Built-in groups are `@popular`, `@social`, `@video` and `@all`;
+  define your own with `groups: {"@news": ["youtube", "vimeo"]}`. `settings` overrides options for
+  one family or group (`{"youtube": {"quality": 720}}`), and `group_by_platform` puts the originals
+  in one folder per platform.
+* **Lists and extras:** `playlist` is `single` (default; a playlist URL still expands, capped at one
+  entry) or `all` with `max_videos` (50). `metadata` writes `.info.json`/thumbnail/description next
+  to the original. `time_range` (`"MM:SS-MM:SS"`/`"HH:MM:SS-HH:MM:SS"`) downloads only that part
+  when ffmpeg *and* ffprobe are on `PATH`; otherwise the whole video is downloaded and trimmed
+  locally. `cookies` reads a browser store (`from_browser`) or a Netscape `cookies.txt` (`file`) -
+  never both and never a shell command. `network` sets proxy, rate limit, retries, socket timeout and
+  a pause between playlist entries. `js_runtime` selects/points at Deno, Node, Bun or QuickJS for
+  YouTube's signature challenges.
+* **Subtitles:** `download.subtitles` saves the platform's subtitles (`.srt` when offered, `.vtt`
+  converted) for `languages`. `use_as_transcript` is `never` (default; files only), `manual` (only
+  human-made subtitles may replace Whisper) or `always` (automatic captions too). An explicit
+  `transcript.file` always wins; `transcript.mode: "auto"` prefers a downloaded subtitle, then the
+  transcript cache, then Whisper; `"whisper"` ignores them unless `use_as_transcript` is `always`.
+* **Command line:** `--download-only config.json` downloads the URLs and stops; `--formats URL`
+  prints every available format and the one autoclip would choose (no config file needed);
+  `--platforms [URL]` prints the allow/deny policy and where a URL would go; `--allow a,b` and
+  `--deny c` override the loaded lists for one run. Inspection modes create no folders and configure
+  no logging. A run with only local files never imports yt-dlp and makes no network request.
 
 ## Where the work runs
 `compute.device` decides whether the GPU is used at all:
@@ -194,6 +255,20 @@ line - so `./autoclip-x86_64.AppImage config.json` still cuts clips.
   **Hindi / Thai / Khmer** need Pillow built with libraqm; a warning is logged when it is missing.
 * Worker processes use `spawn` everywhere, so behaviour is identical on all three systems.
 
+## Upgrading from 2.1
+2.2 is additive: the new `download` section has defaults, so a 2.1 config runs unchanged, and a run whose
+`input` holds only local files never imports yt-dlp and makes no network request. What is new:
+
+* `input` also accepts http(s) URLs; files and globs keep their old meaning. A URL is downloaded first and
+  then goes through the usual pipeline.
+* `download.*` controls quality and format, platform allow/deny, playlists, metadata, time ranges, cookies,
+  network settings, the JavaScript runtime and subtitles (see [Downloading URLs](#downloading-urls-youtube-tiktok-vimeo-)).
+* The command line gained `--download-only`, `--formats URL`, `--platforms [URL]`, `--allow` and `--deny`.
+* The desktop app gained the *Download* tab, the first-run save-folder prompt, *Copy error* / *Copy log*
+  and `AUTOCLIP_DEBUG=1`.
+
+Nothing was removed or renamed, so a 2.1 config is a valid 2.2 config.
+
 ## Upgrading from 2.0
 `clips.style/count/min_seconds/max_seconds/ranges` -> `clips.scenes` and `clips.short` / `clips.long`; `video.aspect` and
 `video.size` -> each kind's `aspect`; `clips.snap_scenes` -> `clips.snap_to_cuts`; clips now go to `{output_dir}/{short|long}/{video}/`.
@@ -202,6 +277,12 @@ A list of styles used to be *blended* into one ranking; now each gets separate c
 ## Security
 Config files are trusted input, but: no shell is ever invoked (argument lists only), `llm.base_url` must be http(s), the API key is
 never logged, SQL is parameterised, cached arrays load with `allow_pickle=False`, ruff's bandit rules are enforced.
+
+Downloading only happens for http(s) URLs in `input`; the platform policy is checked before any request, the
+`generic` family (any web page) is refused unless it is named, and `deny` always wins. The downloader exposes
+no `exec`/`netrc_cmd`-style option: cookies come from a browser store or a Netscape `cookies.txt`, never from a
+command. Metadata files (`.info.json`, thumbnail, description) are written next to the original in
+`.work/downloads/`, not into the clip folders.
 
 ## Development
 ```bash

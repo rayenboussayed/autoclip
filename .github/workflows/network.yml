@@ -1,0 +1,23 @@
+name: network
+
+# The downloader against the real platforms: the rest of the suite is offline, so only this weekly
+# (or manually started) job proves that the installed yt-dlp still talks to the real sites.
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"  # every Monday at 04:00 UTC
+  workflow_dispatch:
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: AUTOCLIP_NETWORK_TESTS=1 pytest -m network --no-cov

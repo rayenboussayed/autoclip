@@ -58,6 +58,17 @@ class MediaInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class Downloaded:
+    """One original downloaded from a URL (plus the subtitle picked for it, if any)."""
+
+    path: Path
+    name: str  # the title and id used for the output folders and file names
+    platform: str  # the canonical extractor family
+    subtitle: Path | None = None
+    subtitle_manual: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class Encoder:
     """A video encoder choice: ffmpeg codec name, the ``-preset`` MoviePy always passes, and extra arguments.
 

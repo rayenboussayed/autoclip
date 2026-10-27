@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 #: The kinds of control the form knows how to build.
-KINDS = ("bool", "choice", "int", "float", "str", "path", "dir", "csv", "lines")
+KINDS = ("bool", "choice", "int", "float", "str", "path", "dir", "csv", "lines", "json")
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +37,7 @@ class Option:
     advanced: bool = False  # shown in the "advanced" group of its section
     placeholder: str = ""  # the grey hint inside an empty entry
     csv_is_list: bool = True  # a csv field that may also be a single string ("best" is not ["b", "e", "s", "t"])
+    numeric: bool = False  # a text field that takes a number or a word ("1080", "best")
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,9 +62,10 @@ def _o(
     advanced: bool = False,
     placeholder: str = "",
     csv_is_list: bool = True,
+    numeric: bool = False,
 ) -> Option:
     """A short constructor for one option."""
-    return Option(path, label, kind, what, why, when, choices, visible_when, advanced, placeholder, csv_is_list)
+    return Option(path, label, kind, what, why, when, choices, visible_when, advanced, placeholder, csv_is_list, numeric)
 
 
 # --------------------------------------------------------------------------------------------
@@ -100,6 +102,308 @@ VIDEOS = Section(
             "`cpu` is the safe choice on a laptop (no heat, no driver trouble); a GPU is several times faster.",
             "Use `cpu` on shared or battery-powered machines, `auto` everywhere else.",
             choices=("auto", "cpu", "gpu"),
+        ),
+    ),
+)
+
+DOWNLOAD = Section(
+    "download",
+    "Download",
+    "What to download from a URL, and from which platforms",
+    (
+        _o(
+            "download.quality",
+            "Download quality",
+            "str",
+            "The short side of the video to download: a number such as `1080`, or `best` / `worst`.",
+            "The clips are rendered at the `video.short_side` of their kind, so downloading 4K costs time and disk "
+            "for pixels that are thrown away.",
+            "Lower it on a slow connection, raise it when the originals should stay at full size.",
+            placeholder="1080, best or worst",
+            numeric=True,
+        ),
+        _o(
+            "download.fps",
+            "Frame rate",
+            "float",
+            "The frame rate to prefer (`24`, `30`, `50`, `60`); empty takes whatever the platform offers.",
+            "Matching the rate of the source keeps motion smooth; a lower rate downloads faster.",
+            "Empty normally; set it when the platform offers several variants and you need one of them.",
+            placeholder="any",
+        ),
+        _o(
+            "download.prefer",
+            "Quality matching",
+            "choice",
+            "What to do when there is no stream at exactly the requested quality and frame rate: take the closest "
+            "one, never go above it or never go below it.",
+            "A hard cap saves bandwidth and disk; `at_least` avoids a soft result on a large screen.",
+            "Leave it at `closest` unless a quota or a minimum matters.",
+            choices=("closest", "at_most", "at_least"),
+        ),
+        _o(
+            "download.codec",
+            "Video codec",
+            "choice",
+            "The codec to prefer: `auto` ranks h264 first, then vp9, av1 and h265; a name restricts the choice to it.",
+            "h264 plays everywhere and edits fast; av1 and vp9 are smaller but slower to decode.",
+            "`auto` normally, `h264` when the clips have to play on old devices.",
+            choices=("auto", "h264", "vp9", "av1", "h265"),
+        ),
+        _o(
+            "download.container",
+            "Container",
+            "choice",
+            "The file extension to prefer: `auto` keeps the format's own container, `mkv` accepts anything.",
+            "mp4 is the friendliest for players and editors; mkv holds codecs mp4 cannot.",
+            "`auto` unless a tool downstream insists on a container.",
+            choices=("auto", "mp4", "mkv", "webm"),
+        ),
+        _o(
+            "download.audio_quality",
+            "Audio quality",
+            "choice",
+            "Whether to take the best or the worst audio track the platform offers.",
+            "The clips re-encode the audio anyway, so the worst track is smaller and often indistinguishable.",
+            "`best` for the archive, `worst` to save bandwidth on a long playlist.",
+            choices=("best", "worst"),
+            advanced=True,
+        ),
+        _o(
+            "download.audio_language",
+            "Audio language",
+            "str",
+            "The language of the audio track, for example `en`; empty takes the platform's default.",
+            "A video with several audio tracks may default to one you do not want.",
+            "Only for videos with more than one track.",
+            placeholder="platform default",
+            advanced=True,
+        ),
+        _o(
+            "download.original_dir",
+            "Originals folder",
+            "dir",
+            "Where the downloaded originals are kept; empty uses `<output>/.work/downloads/`, which later runs reuse.",
+            "A dedicated folder is easier to back up or to move to another disk.",
+            "Empty normally; set it when the originals should outlive the output folder.",
+        ),
+        _o(
+            "download.metadata.info_json",
+            "Save the metadata",
+            "bool",
+            "Write `<title> [<id>].info.json` next to every original.",
+            "The file holds the title, channel, upload date and every format the platform offered.",
+            "Keep it on - it documents where a clip came from.",
+        ),
+        _o(
+            "download.metadata.thumbnail",
+            "Save the thumbnail",
+            "bool",
+            "Write the platform's cover image next to the original.",
+            "A ready-made cover can be reused in an edit or as the still of the clip.",
+            "On when the thumbnails are part of the material.",
+        ),
+        _o(
+            "download.metadata.description",
+            "Save the description",
+            "bool",
+            "Write the video description to a text file next to the original.",
+            "The description often carries chapters, credits and links that the transcript lacks.",
+            "On for research, or when the description feeds a publish.",
+        ),
+        _o(
+            "download.subtitles.enabled",
+            "Download subtitles",
+            "bool",
+            "Download the subtitles the platform offers, as SRT files next to the original.",
+            "The platform's own subtitles avoid a Whisper pass and are often better on names and music.",
+            "On when the videos have subtitles and the transcription should be quick.",
+        ),
+        _o(
+            "download.subtitles.languages",
+            "Subtitle languages",
+            "csv",
+            "The language codes to ask for, in order of preference, for example `en, ar`.",
+            "Only these languages are requested, and the first usable one may become the transcript.",
+            "List every language you can work with.",
+            visible_when="download.subtitles.enabled=true",
+        ),
+        _o(
+            "download.subtitles.use_as_transcript",
+            "Use subtitles as transcript",
+            "choice",
+            "Whether a downloaded subtitle may replace the transcription: `never` keeps it as a file only, `manual` "
+            "lets human-made subtitles replace Whisper, `always` lets automatic ones replace it too.",
+            "Platform subtitles are free and fast, but automatic ones can be worse than Whisper.",
+            "`manual` is the safe choice when the platform has real subtitles; be careful with `always`.",
+            choices=("never", "manual", "always"),
+            visible_when="download.subtitles.enabled=true",
+        ),
+        _o(
+            "download.playlist",
+            "Playlist",
+            "choice",
+            "What to do with a URL that points at a playlist: `single` downloads the one video, `all` every entry.",
+            "A video URL often carries a playlist id, and `single` stops it from downloading a whole channel by accident.",
+            "`single` normally, `all` when the list is the material.",
+            choices=("single", "all"),
+        ),
+        _o(
+            "download.max_videos",
+            "Playlist limit",
+            "int",
+            "How many entries `all` downloads at most.",
+            "A channel can hold thousands of videos; the cap keeps a typo from filling the disk.",
+            "Raise it for a real archive run.",
+            visible_when="download.playlist=all",
+        ),
+        _o(
+            "download.time_range",
+            "Time range",
+            "str",
+            "Download only a part of the video, `MM:SS-MM:SS` or `HH:MM:SS-HH:MM:SS`; empty downloads all of it.",
+            "A long stream often has only a short interesting section, and the transfer is the slow part.",
+            "Set it when you know the section; the subtitle timings are shifted to match.",
+            placeholder="00:10:00-00:20:00",
+        ),
+        _o(
+            "download.cookies.from_browser",
+            "Cookies from a browser",
+            "str",
+            "Read the cookies of a signed-in browser (`chrome`, `firefox`, `edge`, `safari`, ...) to download "
+            "private or age-restricted videos.",
+            "Some videos need the session that already exists in the browser.",
+            "Only when a download fails asking to sign in; leave it empty otherwise.",
+            placeholder="chrome",
+            advanced=True,
+        ),
+        _o(
+            "download.cookies.file",
+            "Cookies file",
+            "path",
+            "A Netscape-format `cookies.txt`, as an alternative to reading a browser.",
+            "It works without the browser installed and can be stored apart from the browser profile.",
+            "When the browser is on another machine; set only one of the two sources.",
+            advanced=True,
+        ),
+        _o(
+            "download.network.proxy",
+            "Proxy",
+            "str",
+            "The proxy every request goes through: `http://host:port` or `socks5://host:port`.",
+            "Some networks only reach the internet through a proxy.",
+            "Empty normally; set it when downloading fails behind a corporate network.",
+            advanced=True,
+        ),
+        _o(
+            "download.network.rate_limit_mbps",
+            "Download limit",
+            "float",
+            "The maximum download rate in Mbit/s; empty means no limit.",
+            "Keeps a large playlist from saturating the connection.",
+            "Set it when a download runs next to a video call.",
+            placeholder="no limit",
+            advanced=True,
+        ),
+        _o(
+            "download.network.retries",
+            "Retries",
+            "int",
+            "How often a failed request is tried again.",
+            "A flaky connection recovers without losing the whole entry.",
+            "Raise it on a bad line, lower it to fail fast.",
+            advanced=True,
+        ),
+        _o(
+            "download.network.socket_timeout",
+            "Socket timeout",
+            "float",
+            "How long to wait for a silent connection before giving up, in seconds.",
+            "A hung connection would otherwise block the whole batch.",
+            "Raise it on a very slow connection.",
+            advanced=True,
+        ),
+        _o(
+            "download.network.sleep_between_seconds",
+            "Pause between videos",
+            "float",
+            "How long to wait between two playlist entries, in seconds.",
+            "A polite pause makes the platform less likely to rate-limit the batch.",
+            "A second or two for long playlists.",
+            advanced=True,
+        ),
+        _o(
+            "download.js_runtime.name",
+            "JavaScript runtime",
+            "choice",
+            "The runtime yt-dlp uses to solve YouTube's signature challenges; `auto` finds one on the PATH.",
+            "YouTube serves some formats only to clients that can run its JavaScript.",
+            "Leave `auto` when deno, node, bun or quickjs is installed; name one when several are.",
+            choices=("auto", "deno", "node", "bun", "quickjs"),
+            advanced=True,
+        ),
+        _o(
+            "download.js_runtime.path",
+            "Runtime path",
+            "path",
+            "The binary of the named runtime, when it is not on the PATH.",
+            "A runtime in a non-standard place can still be used.",
+            "Only with a named runtime - `auto` ignores the path.",
+            advanced=True,
+        ),
+        _o(
+            "download.js_runtime.remote_components",
+            "Remote components",
+            "choice",
+            "Whether yt-dlp may download the EJS challenge solver at run time.",
+            "The solver keeps YouTube working when the bundled one is out of date, but it is code fetched from the internet.",
+            "`none` unless YouTube starts failing without it.",
+            choices=("none", "ejs"),
+            advanced=True,
+        ),
+        _o(
+            "download.platforms.allow",
+            "Allowed platforms",
+            "csv",
+            "The platforms that may be downloaded: platform names (`youtube`, `vimeo`, ...) and the groups "
+            "`@popular`, `@social`, `@video`, `@all`, plus your own.",
+            "A URL is only downloaded when it is on this list - everything else is refused before a request is made.",
+            "Start with `@popular` and add the platforms you use.",
+        ),
+        _o(
+            "download.platforms.deny",
+            "Denied platforms",
+            "csv",
+            "Platforms that are never downloaded, even when an allow entry covers them.",
+            "Deny wins over allow, so a broad group can stay while one platform is excluded.",
+            "Add a platform that you do not want to support.",
+        ),
+        _o(
+            "download.platforms.groups",
+            "Your groups",
+            "json",
+            'Named groups of platform names, as a JSON object: `{"@news": ["youtube", "vimeo"]}`.',
+            "A group is allowed and overridden once and then reused everywhere a platform name is accepted.",
+            "When the allow list repeats the same set of platforms.",
+            advanced=True,
+        ),
+        _o(
+            "download.platforms.settings",
+            "Per-platform settings",
+            "json",
+            'Overrides for one platform or one of your groups, as a JSON object using the options above: `{"youtube": {"quality": 720}}`.',
+            "A short-video platform often needs a different quality or codec from the rest.",
+            "When one platform repeatedly needs other settings.",
+            advanced=True,
+        ),
+        _o(
+            "download.platforms.group_by_platform",
+            "Originals per platform",
+            "bool",
+            "Put the downloaded originals in `<downloads>/<platform>/` instead of one flat folder.",
+            "Keeps a mixed batch tidy and makes one platform's files easy to find.",
+            "On when the batch draws from many platforms.",
+            advanced=True,
         ),
     ),
 )
@@ -1071,10 +1375,13 @@ LLM = Section(
 )
 
 #: Every section, in the order the app shows them.
-SECTIONS: tuple[Section, ...] = (VIDEOS, CLIPS, TRANSCRIPT, VIDEO, CAPTIONS, AUDIO, SPEED, LLM)
+SECTIONS: tuple[Section, ...] = (VIDEOS, DOWNLOAD, CLIPS, TRANSCRIPT, VIDEO, CAPTIONS, AUDIO, SPEED, LLM)
 
 #: Every option, by its config path.
 OPTIONS: dict[str, Option] = {o.path: o for s in SECTIONS for o in s.options}
+
+#: Options that hold a whole JSON object: the form treats one as a single leaf, not as nested options.
+JSON_PATHS: frozenset[str] = frozenset(path for path, option in OPTIONS.items() if option.kind == "json")
 
 
 def option_paths() -> list[str]:

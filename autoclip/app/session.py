@@ -10,27 +10,34 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import platform
 import signal
 import subprocess
 import sys
 import webbrowser
+from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from ..core.config import Config, parse
 from ..core.errors import ConfigError
+from .fields import JSON_PATHS
 
 #: The folder of the project (the parent of the package), used to run the pipeline from a source checkout.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def flatten(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
-    """A nested config dict as ``{"clips.short.count": 5, ...}`` (lists stay lists)."""
+    """A nested config dict as ``{"clips.short.count": 5, ...}`` (lists stay lists).
+
+    A JSON option (``download.platforms.groups`` and the like) is one leaf: the form edits the whole
+    object in one control, so its keys must not become option paths of their own.
+    """
     flat: dict[str, Any] = {}
     for key, value in data.items():
         path = f"{prefix}{key}"
-        if isinstance(value, dict):
+        if isinstance(value, dict) and path not in JSON_PATHS:
             flat.update(flatten(value, f"{path}."))
         else:
             flat[path] = value
@@ -57,6 +64,34 @@ def split_csv(text: str) -> list[str]:
 def default_values() -> dict[str, Any]:
     """The values of a fresh config file (every option with its default)."""
     return flatten(asdict(Config()))
+
+
+def default_config_path(
+    system: str | None = None,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> Path:
+    """The config file the desktop app offers on its first run.
+
+    The folder follows the convention of the operating system: ``XDG_CONFIG_HOME`` (or
+    ``~/.config``) on Linux, ``Application Support`` on macOS and ``%APPDATA%`` on Windows.
+
+    Args:
+        system: the value of ``platform.system()`` (injected by the tests).
+        env: the environment to read (defaults to ``os.environ``).
+        home: the home folder (defaults to ``Path.home()``).
+    """
+    system = platform.system() if system is None else system
+    env = os.environ if env is None else env
+    home = Path.home() if home is None else Path(home)
+    if system == "Darwin":
+        return home / "Library" / "Application Support" / "autoclip" / "config.json"
+    if system == "Windows":
+        appdata = env.get("APPDATA")
+        base = Path(appdata) if appdata else home / "AppData" / "Roaming"
+        return base / "autoclip" / "config.json"
+    xdg = env.get("XDG_CONFIG_HOME")
+    return (Path(xdg) if xdg else home / ".config") / "autoclip" / "config.json"
 
 
 def read_config(path: Path) -> dict[str, Any]:

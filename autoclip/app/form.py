@@ -7,6 +7,7 @@ drift apart. Every row shows a one-line summary under the control; the full expl
 
 from __future__ import annotations
 
+import json
 import tkinter as tk
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -99,16 +100,43 @@ class Field:
             return split_csv(text) if "," in text else text.strip()
         if kind == "lines":
             return [line.strip() for line in self.text.get("1.0", "end").splitlines() if line.strip()] if self.text else []
-        return str(variable_value(self.var)) if self.var else ""
+        if kind == "json":
+            return self._json_value()
+        text = str(variable_value(self.var)).strip() if self.var else ""
+        if not text:
+            return None  # an empty text field means "not set"; every text option is nullable or required anyway
+        if self.option.numeric:
+            try:
+                return int(text)
+            except ValueError:
+                try:
+                    return float(text)
+                except ValueError:
+                    return text
+        return text
+
+    def _json_value(self) -> Any:
+        """The object typed into a JSON field, or the text itself when it does not parse."""
+        text = self.text.get("1.0", "end").strip() if self.text else ""
+        if not text:
+            return {}
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text  # the config check reports it with the option path, which a silent {} would hide
 
     def set(self, value: Any) -> None:
         """Put a value into the control."""
         kind = self.option.kind
-        if kind == "lines":
+        if kind in ("lines", "json"):
             if self.text is None:
                 return
             self.text.delete("1.0", "end")
-            self.text.insert("1.0", value if isinstance(value, str) else "\n".join(str(v) for v in value or []))
+            if kind == "json":
+                text = json.dumps(value, indent=2, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value or "{}")
+                self.text.insert("1.0", text)
+            else:
+                self.text.insert("1.0", value if isinstance(value, str) else "\n".join(str(v) for v in value or []))
             return
         if self.var is None:
             return
@@ -187,6 +215,10 @@ class Form(ttk.Frame):
             text = tk.Text(holder, height=3, width=52, wrap="none", font="TkFixedFont")
             text.bind("<KeyRelease>", self._text_reporter(option, text))
             return text, None, text
+        if kind == "json":
+            json_text = tk.Text(holder, height=6, width=52, wrap="none", font="TkFixedFont")
+            json_text.bind("<KeyRelease>", self._text_reporter(option, json_text))
+            return json_text, None, json_text
         text_var = tk.StringVar(value=self._as_text(option, self._values.get(option.path)))
         entry = ttk.Entry(holder, width=32, textvariable=text_var)
         text_var.trace_add("write", self._reporter(option, text_var))

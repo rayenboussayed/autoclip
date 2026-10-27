@@ -92,6 +92,56 @@ def snap_to_cut(t: float, cuts: Sequence[float], radius: float) -> float:
     return min(near, key=lambda c: abs(c - t)) if near else t
 
 
+@traced("trim_video")
+def trim_video(src: Path, dst: Path, start: float, end: float) -> Path:
+    """Cut ``[start, end]`` out of ``src`` into ``dst`` by re-encoding the video (accurate cuts).
+
+    yt-dlp downloads a range itself only when a real ``ffmpeg`` *and* ``ffprobe`` are on ``PATH``;
+    with the bundled imageio-ffmpeg the downloader takes the whole file and cuts it here.  A
+    re-encode (rather than a stream copy) keeps both cut points exact, so subtitle timings that
+    were shifted by ``start`` stay right.
+
+    Raises:
+        AutoclipError: if ffmpeg cannot produce the file.
+    """
+    lead = min(2.0, max(start, 0.0))
+    cmd = [
+        ffmpeg_exe(),
+        "-y",
+        "-v",
+        "error",
+        "-ss",
+        f"{max(start - lead, 0.0):.3f}",
+        "-i",
+        str(src),
+        # a second, output-side seek resets the timestamps (an input seek alone leaves the
+        # Matroska muxer with the original offset), while the first one keeps this fast
+        "-ss",
+        f"{lead:.3f}",
+        "-t",
+        f"{max(end - start, 0.1):.3f}",
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
+        "-c:v",
+        "libx264",
+        "-crf",
+        "18",
+        "-preset",
+        "veryfast",
+        "-c:a",
+        "copy",
+        str(dst),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+        raise AutoclipError(f"cannot trim '{src.name}': {detail[-1] if detail else 'ffmpeg failed'}") from e
+    return dst
+
+
 @traced("detect_scenes")
 def scene_cuts(path: Path) -> list[float]:
     """Scene-change times in seconds (PySceneDetect); empty with a warning if it is not installed."""

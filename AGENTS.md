@@ -7,13 +7,15 @@ Guidance for AI coding agents (and humans) working on this repository. Read it f
 
 `autoclip` turns long videos into the best **short** (default 9:16, 20-60 s) and **long** (default 16:9, 3-10 min)
 clips, per requested **scene type** (`best`, `funny`, `sad`, ... or `"all"`). One config file drives everything.
-Pipeline: transcribe (faster-whisper or .srt/.json) -> score sentence-aligned windows per scene -> pick the best
-non-overlapping ones -> render (enhance audio, cut pauses/fillers, layout, burn captions, encode on GPU if one really works).
+Pipeline: download the http(s) URLs of `input` with yt-dlp (only when there are any) -> transcribe (faster-whisper,
+a downloaded subtitle or .srt/.json) -> score sentence-aligned windows per scene -> pick the best non-overlapping ones ->
+render (enhance audio, cut pauses/fillers, layout, burn captions, encode on GPU if one really works).
 
-* Free, local, no service dependencies (optional local LLM re-rank over HTTP).
+* Free, local, no service dependencies (downloading is off unless `input` holds an http(s) URL; the optional local
+  LLM re-rank is the only other network use).
 * Runs on Linux, macOS and Windows, Python >= 3.10 (developed and verified on 3.12). No system ffmpeg required.
 * Three parts: `core` (the engine), `cli` (the command line) and `app` (the desktop app, Tk).
-* Version 2.1.0. ~5,200 lines of package code in 28 modules, ~3,700 lines of tests (284 tests, 100% statement + branch coverage).
+* Version 2.2.0. ~7,800 lines of package code in 31 modules, ~7,000 lines of tests (100% statement + branch coverage).
 
 ## 2. Commands
 
@@ -25,6 +27,10 @@ pip install -e .                               # optional: gives the `autoclip` 
 python -m autoclip --init config.json          # tiny starter config      (--init-full: every option + default)
 python -m autoclip config.json                 # run (exit 0 = all ok, 1 = something failed, 2 = bad config)
 python -m autoclip --gui                       # the desktop app (same as: python -m autoclip.app)
+python -m autoclip --formats URL               # every format of a URL and the one autoclip would pick (no config needed)
+python -m autoclip --platforms [URL] config.json        # the allow/deny policy (and where that URL would go)
+python -m autoclip --download-only config.json # download the URLs of `input` and stop (originals in .work/downloads)
+python -m autoclip --allow youtube,vimeo --deny tiktok config.json   # override the lists for one run
 
 python -m PyInstaller autoclip.spec --noconfirm  # standalone build (needs pyinstaller; see the build workflow)
 python tools/make_appimage.py                   # the AppImage (Linux) from that build
@@ -34,6 +40,7 @@ ruff check . && ruff format --check .          # lint + format (line length 140)
 mypy autoclip tests tools                       # strict typing, tests and tools included
 pytest                                         # whole suite; FAILS if branch coverage < 95%
 pytest tests/test_moments.py -k scene --no-cov # a focused run (always add --no-cov for partial runs)
+AUTOCLIP_NETWORK_TESTS=1 pytest -m network --no-cov   # the real-YouTube downloader checks (offline by default)
 ```
 
 **Definition of done** (all four must pass before you finish): `ruff check .`, `ruff format --check .`,
@@ -51,17 +58,20 @@ the version skips the build; a pull request builds without releasing.
 autoclip/
   __main__.py     python -m autoclip entry (freeze_support for frozen Windows builds)
   core/           THE ENGINE - no user interface, heavy imports stay inside functions
-    config.py       typed config dataclasses (Pydantic validates them), strict loader, input globbing
-    pipeline.py     process_video (probe -> transcript -> moments -> render), split_video, ranges_moments
+    config.py       typed config dataclasses (Pydantic validates them), strict loader, input globbing + URLs
+    platforms.py    download policy: extractor families, built-in/user groups, allow/deny, per-platform settings
+    formats.py      chooses one explicit yt-dlp format id (short-side quality, fps, codec, container, audio)
+    download.py     Downloader: yt-dlp parameters, originals cache, time ranges, subtitles, sidecars, naming
+    pipeline.py     process_video (probe -> transcript -> moments -> render; name/subtitle overrides), split_video, ranges_moments
     styles.py       DATA ONLY: STYLES (scene weights), STYLE_HELP, LEXICONS
-    models.py       small slotted dataclasses: Span/Word/Segment/Moment, MediaInfo, Encoder, RenderJob
-    errors.py       AutoclipError, ConfigError
+    models.py       small slotted dataclasses: Span/Word/Segment/Moment, MediaInfo, Encoder, RenderJob, Downloaded
+    errors.py       AutoclipError, ConfigError, DownloadError
     resources.py    ResourceMonitor + RESOURCES singleton: CPU/RAM -> worker plan, cache budget
     log.py          LOG, setup_logging, traced decorator, speed_text
     store.py        SQLite Store (WAL), MemoryLRU, Cache (RAM LRU in front of SQLite kv), is_boundary
-    media.py        ffmpeg discovery, probe (PyAV), energy track, decode_audio, scene cuts, snapping
+    media.py        ffmpeg discovery, probe (PyAV), energy track, decode_audio, scene cuts, snapping, trim_video
     audio.py        enhance_audio (denoise/loudness/limiter), compute_keep (pauses/fillers), Timeline, build_audio
-    transcript.py   parse srt/json, faster-whisper (chunked for long videos), disk cache, get_transcript
+    transcript.py   parse srt/json, downloaded subtitles, faster-whisper (chunked), disk cache, get_transcript
     denoise.py      speech enhancement before transcription: SpeechEnhancer (sherpa-onnx ONNX | noisereduce)
     moments.py      candidates, vectorised features, per-scene scoring, pick(), LLM re-rank, select_moments
     hardware.py     GPU/CPU encoder choice: probe by really encoding; Encoder builders; HW_MAX_WORKERS
@@ -70,15 +80,15 @@ autoclip/
     render.py       layout, OpenCV resize/blur, encode, render_clip
     runner.py       RenderJob execution: render_job (never raises), render_all (adaptive process pool)
   cli/            THE COMMAND LINE - python -m autoclip config.json
-    __init__.py     argument parsing, main(), --init / --init-full, --gui
+    __init__.py     argument parsing, main(), --init / --init-full, --gui, --formats / --platforms / --download-only
   app/            THE DESKTOP APP - python -m autoclip.app (Tk, native look)
     fields.py       the catalogue: every config option with what / why / when (the app is built from it)
-    form.py         the form: one row per option, the control that fits its kind, the scroll area
-    session.py      the behaviour without widgets: read/write/validate the config, start/stop the pipeline
-    window.py       the window: tabs, details panel, log, Run / Stop / Save / Load / Reset
-tests/            mirrors the modules; conftest.py generates the fixture video
+    form.py         the form: one row per option, the control that fits its kind (incl. JSON), the scroll area
+    session.py      the behaviour without widgets: read/write/validate the config, default_config_path, start/stop
+    window.py       the window: tabs, details panel, log, Run / Stop / Save / Load / Reset, first-run prompt, debug mode
+tests/            mirrors the modules; conftest.py generates the fixture video and gates the `network` marker
                   test_version.py guards the three version files
-autoclip.spec     the PyInstaller spec: a standalone build (engine + command line + desktop app)
+autoclip.spec     the PyInstaller spec: a standalone build (engine + command line + desktop app + yt-dlp/EJS)
 snapcraft.yaml    the snap: the same build as a snap (linux, amd64 + arm64)
 assets/           the icon and the desktop file of the AppImage and the snap
 tools/            frozen_entry.py - the entry point of the frozen build (a frozen __main__ has no package around it)
@@ -88,8 +98,9 @@ tools/            frozen_entry.py - the entry point of the frozen build (a froze
                   verify_output.py - development aid: checks a finished output directory
 docs/             stt-comparison.md - the measured comparison of transcription models and denoisers
 AGENTS.md        this file (guidance for coding agents)
-pyproject.toml    deps, ruff, mypy(strict), pytest(+coverage gate), coverage(multiprocessing)
-.github/workflows/ci.yml   ubuntu/macos/windows x py3.10/3.12, then re-run with Pillow>=12.3
+pyproject.toml    deps, ruff, mypy(strict), pytest(+coverage gate, `network` marker), coverage(multiprocessing)
+.github/workflows/ci.yml       ubuntu/macos/windows x py3.10/3.12, then re-run with Pillow>=12.3
+.github/workflows/network.yml  weekly (and manual) real-platform downloader tests
 ```
 
 ### Import layers (no cycles - keep it this way)
@@ -103,32 +114,42 @@ media             <- errors, log, models
 store             <- models, resources
 hardware, audio   <- config, log, media, models (+store for transcript/moments)
 denoise           <- config, errors, media
+platforms         <- errors (yt-dlp imported inside the functions that need its extractor list)
+formats           <- config, errors
+download          <- config, errors, formats, log, media, models, platforms
 transcript, moments, captions, render <- the layers above
 runner            <- hardware, log, models, render, resources, store
 pipeline          <- everything of the engine (the per-video run)
-cli               <- core.pipeline, core.config, core.errors, core.hardware, core.log, core.resources
+cli               <- core.pipeline, core.download, core.config, core.errors, core.hardware, core.log, core.resources
 app               <- core.config, core.errors (+ tkinter)
 ```
 `RenderJob` lives in `models.py` (not `runner.py`) precisely to avoid a `render <-> runner` cycle; `Encoder` is in
-`models.py` and its logic in `hardware.py` to avoid `models <-> media`. If you need a new shared type, put it in `models.py`.
+`models.py` and its logic in `hardware.py` to avoid `models <-> media`. `Downloaded` is in `models.py` for the same
+reason: the CLI and the app need its type without importing the downloader (and yt-dlp). If you need a new shared
+type, put it in `models.py`.
 
 Heavy libraries are imported **inside functions** (`moviepy`, `faster_whisper`, `cv2`, `noisereduce`, `scenedetect`,
-`imageio_ffmpeg`, `arabic_reshaper`, `bidi`) so `--init`, config errors and unit tests stay fast and optional extras
-degrade gracefully. Keep that pattern (ruff rule `PLC0415` is intentionally ignored).
+`imageio_ffmpeg`, `arabic_reshaper`, `bidi`, `yt_dlp`) so `--init`, config errors, local-only runs and unit tests stay
+fast and optional extras degrade gracefully. Keep that pattern (ruff rule `PLC0415` is intentionally ignored).
 
 ## 4. Data flow
 
 ```
 main()
   load_config -> setup_logging -> RESOURCES.configure -> pick_encoder (once per run; probes GPUs)
-  for each video in cfg.input (isolated: one failure never stops the batch):
-    process_video(src, cfg, log_file, encoder)
+  Downloader(cfg)                                only when input holds an http(s) URL; yt_dlp is imported here
+    download(url) -> [Downloaded(path, name, platform, subtitle, subtitle_manual)]
+                                                 original in {out}/.work/downloads (or download.original_dir),
+                                                 reused when the prefix (title [id] [format] + range) exists
+  for each input item (isolated: one failure never stops the batch):
+    local file -> one source; URL -> the downloaded entries (names deduplicated across the batch)
+    process_video(src, cfg, log_file, encoder, name=name, subtitle=subtitle, subtitle_manual=...)
       probe(src)                                   PyAV: duration, audio?, size, fps
       mode == "split": ffmpeg stream-copy parts -> {out}/long/{video}/   (done)
-      Store(.work/{video}/autoclip.db, fresh=True) + Cache
+      Store(.work/{video}/autoclip.db, fresh=True) + Cache      ({video} = name or src.stem)
       energy_track(src)                            0.5 s loudness track (cached in kv)
-      get_transcript(...)                          file | disk cache | faster-whisper (in 5 min chunks) -> SQLite
-                                             (each chunk is enhanced by `SpeechEnhancer` before it is transcribed)
+      get_transcript(...)                          file | downloaded subtitle | disk cache | faster-whisper (5 min
+                                             chunks) -> SQLite (each chunk is enhanced by `SpeechEnhancer` first)
       for kind in cfg.clips.kinds ("short", "long"):
         moments = ranges_moments(...)  if mode == "ranges"   (scene "custom")
                   select_moments(...)  otherwise              (one pass per scene type)
@@ -137,6 +158,18 @@ main()
       render_all(jobs)                             adaptive pool; results land in the `clips` table
       write {out}/{kind}/{video}/clips.json from the DB rows with status == "done"
 ```
+
+### Downloading (only for URLs in `input`)
+`Downloader` holds the whole flow so the CLI and the app behave identically: platform policy (`platforms.py`), the
+effective settings for the platform/group (`effective_download`), format choice (`formats.py`), the cache of originals
+and the yt-dlp parameters. A URL is identified by its host and the extractor that matches it (`identify`), checked
+against allow/deny **before** any request, and then extracted. `allowed_extractors` is passed to yt-dlp as a second
+line of defence. Each entry is downloaded with an explicit `<video>+<audio>` format id, moved out of yt-dlp's temporary
+name into `<safe title> [<id>] [<format id>]` (+ range suffix), and the selected subtitle is copied next to it as a real
+`.srt`. `metadata` sidecars (`.info.json`, thumbnail, description) land next to the original. A range is downloaded by
+yt-dlp only when the real `ffmpeg` *and* `ffprobe` are on `PATH`; otherwise (or when the result is short/long by more
+than `max(3 s, 10%)`) the whole video is downloaded and `media.trim_video` cuts it locally (the SRT is shifted and
+clipped too). `--download-only` stops after this stage.
 
 ### select_moments (per kind)
 1. `text_candidates`: every run of consecutive transcript segments that starts and ends on a sentence boundary and
@@ -172,8 +205,9 @@ retried alone, in-process. Workers re-run `setup_logging(log_file, level, None)`
 ## 5. Invariants - do not break these
 
 1. **Fresh database per video, every run.** `Store(..., fresh=True)` deletes the DB and its `-wal/-shm/-journal`.
-   The only thing persisted between runs is `{video}.transcript.json` (keyed by source name/size/mtime, model, language,
-   multilingual, word_timestamps and the enhancement settings; a mismatch re-transcribes).
+   The only things persisted between runs are `{video}.transcript.json` (keyed by source name/size/mtime, model,
+   language, multilingual, word_timestamps and the enhancement settings; a mismatch re-transcribes) and the downloaded
+   originals under `.work/downloads` (reused when the name prefix - title, id, format id, range - matches).
 2. **Results flow through SQLite, not return values.** `render_job` returns a bool but the truth is the `clips` row
    (`pending` -> `done`/`failed`). `clips.json` is built from rows. A row still `pending` after `render_all` means the
    worker never finished and is reported as failed.
@@ -193,34 +227,61 @@ retried alone, in-process. Workers re-run `setup_logging(log_file, level, None)`
 7. **Config is strict.** Unknown keys, wrong JSON types and invalid values raise `ConfigError` at load; `"_comment"`
    keys are ignored. All defaults live in the dataclass fields (single source of truth for `--init-full`).
 8. **Outputs:** `{output_dir}/{short|long}/{video}/` holds only clips (+ `.jpg`, `.srt`, `clips.json`);
-   `{output_dir}/.work/{video}/` holds the DB and transcript cache; `{output_dir}/logs/` holds run logs.
-   File names: `{video}_{scene}_{nn:02d}_{int(start)}s.mp4` (`nn` counts per kind+scene). Two inputs with the same file
-   stem are rejected at load time (they would share outputs).
+   `{output_dir}/.work/{video}/` holds the DB and transcript cache; `{output_dir}/.work/downloads/` (or
+   `download.original_dir`) holds downloaded originals and their sidecars; `{output_dir}/logs/` holds run logs.
+   File names: `{video}_{scene}_{nn:02d}_{int(start)}s.mp4` (`nn` counts per kind+scene). Two local inputs with the same
+   file stem are rejected at load time (they would share outputs); downloaded names are deduplicated per batch
+   (`Name (2)`).
 9. **Words/segments must be shorter than `store.MAX_SPAN` (120 s)**: window queries only look that far back.
 10. **No work on the GPU except encoding (and Whisper via CUDA).** Do not claim end-to-end GPU acceleration.
 11. **The desktop app shows every config option.** `app/fields.py` is the catalogue: one entry per option with
     *what* it does, *why* you would change it and *when*. `tests/test_app.py` compares it with the config
     dataclasses, so a new option that is not in the catalogue (or an entry that is not in the config) fails
     the suite. The app writes the same config file the command line reads - never a second format.
+12. **A local-only run never imports yt-dlp and never makes a network request.** `is_url` decides what is downloaded;
+    `yt_dlp` is imported inside `Downloader.__init__`/`platforms` helpers, and `Downloader` is only constructed when
+    `input` holds a URL (inspection modes included). `tests/test_cli_download.py` proves it with a poisoned
+    `sys.modules["yt_dlp"] = None`.
+13. **The platform policy runs before the request.** `identify` (host + extractor match) -> allow/deny (deny wins,
+    groups expand, aliases canonicalise) -> `check_families` raises `DownloadError`, and only then is yt-dlp asked
+    anything. `generic` (any web page) is never in a group and is refused unless named. `allowed_extractors` is also
+    handed to yt-dlp, but it is the second line of defence, not the policy.
+14. **The downloader never executes anything.** No `exec`, no `netrc_cmd`, no shell: `cookies` are a browser store or a
+    Netscape file, `js_runtime.path` is a file, `ffmpeg` paths come from `media.ffmpeg_exe` /
+    `hardware.encoding_ffmpeg`. Do not expose yt-dlp options that run commands.
+15. **Downloaded subtitles are a transcript source, never a forced one.** An explicit `transcript.file` wins;
+    `use_as_transcript` is `never` (default), `manual` (human subtitles only) or `always` (automatic captions too),
+    and `transcript.mode: "whisper"` ignores them unless it is `always`. Only a real `.srt` is handed to
+    `get_transcript` (other formats are converted or dropped); an empty one is unusable and falls back.
 
 ## 6. Configuration (`config.py`)
 
-`Config` = nested dataclasses: `input` (list; files or globs), `output_dir`, `clips` (`mode`, `kinds`, `scenes`,
-`short: KindCfg`, `long: KindCfg`, `keywords`, `lexicon_file`, `skip_intro_seconds`, `snap_to_cuts`, `pad_*`,
-`split_seconds`), `transcript`, `llm`, `video` (`short_side`, `fps`, `layout`, `background`, `fade_seconds`, `gpu`,
-`crf`, `preset`, `maxrate_mbps`, `thumbnail`), `captions`, `title`, `audio`, `silence`, `processing`, `resources`,
+`Config` = nested dataclasses: `input` (list; files, globs and http(s) URLs), `output_dir`, `clips` (`mode`, `kinds`,
+`scenes`, `short: KindCfg`, `long: KindCfg`, `keywords`, `lexicon_file`, `skip_intro_seconds`, `snap_to_cuts`, `pad_*`,
+`split_seconds`), `download`, `transcript`, `llm`, `video` (`short_side`, `fps`, `layout`, `background`, `fade_seconds`,
+`gpu`, `crf`, `preset`, `maxrate_mbps`, `thumbnail`), `captions`, `title`, `audio`, `silence`, `processing`, `resources`,
 `storage`, `logging`. `KindCfg` = `count` (per scene), `min_seconds`, `target_seconds` (recommended, optional),
 `max_seconds`, `aspect`, `ranges` - the length of a clip is `clip(minimum, recommended, maximum)`.
+`DownloadCfg` = `quality`, `fps`, `prefer`, `codec`, `container`, `audio_quality`, `audio_language`, `original_dir`,
+`metadata`, `subtitles`, `playlist`, `max_videos`, `time_range`, `cookies`, `network`, `js_runtime`, `platforms`;
+`PlatformsCfg` = `allow`, `deny`, `groups`, `settings`, `group_by_platform`.
 
 * **Pydantic validates the file** (`pydantic.dataclasses.dataclass` + `ConfigDict(extra="forbid")`): an unknown key, a
   wrong type or an out-of-range value becomes a `ConfigError` (`parse()` wraps the `ValidationError`). Numeric fields use
   `Annotated[int|float|bool, Strict()]` so JSON keeps its type (a bool is not an int, a string is not a number); formats
   use `StringConstraints(pattern=...)`; cross-field rules (min <= max, scene names) are `model_validator(mode="after")`.
   Keys starting with `_` are ignored, so a config file can carry `"_comment"` entries. **Do not hand-roll type checks.**
-* `load_config` resolves every path relative to the config file, expands `input` globs (sorted, de-duplicated, absolute),
-  and requires `{stem}` in `transcript.file` when several videos are given.
+* `load_config` resolves every path relative to the config file (including `download.original_dir`, `download.cookies.file`,
+  `download.js_runtime.path` and the same keys inside `download.platforms.settings`), expands `input` globs (sorted,
+  de-duplicated, absolute) and leaves http(s) URLs **verbatim**, and requires `{stem}` in `transcript.file` when several
+  videos are given.
 * `scenes`: `"all"` | one name | list; `ClipsCfg.scene_list()` expands it. `"scenes"` means the scene *types* (the keys of
   `STYLES`); shot-change snapping is `snap_to_cuts` (renamed from `snap_scenes` to avoid the clash).
+* `download.platforms`: names are extractor **families** (`youtube`, `tiktok`, ...), aliases (`x`, `vm.tiktok`, `html5`)
+  or groups. User groups must match `@[a-z0-9][a-z0-9_-]*`, may not shadow a built-in group, are checked for unknown
+  members and cycles at load time (a cycle is a `ConfigError`); family names are checked against yt-dlp at run time
+  (a missing yt-dlp is a `DownloadError`). `settings` entries are merged over the top-level section (`null` inherits)
+  and re-validated as a `DownloadCfg`; `platforms` and `js_runtime` cannot be overridden per platform.
 
 ### Adding a config option (checklist)
 1. Add a typed field with a default (and a comment) to the right dataclass. Put the constraint in the type
@@ -282,6 +343,14 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
   * Process pool: `ThreadPool(ThreadPoolExecutor)` monkeypatched over `runner.ProcessPoolExecutor` so scheduling logic runs
     (and is measured) in-process; one test uses real `spawn` workers.
   * LLM: the `llm_server` fixture is a real local `http.server` speaking Ollama and OpenAI-compatible formats.
+  * Downloader: `tests/test_download.py` replaces `yt_dlp.YoutubeDL` with `FakeYtDlp`, a scripted session that records
+    every parameter, extracts synthetic info dicts and writes the **real fixture video** where yt-dlp would have (so
+    probing, caching and trimming really run). The yt-dlp exceptions are the real classes (`YoutubeDLError` and its
+    subclasses), so error handling is not faked. `tests/test_cli_download.py` drives the flags that keep the downloader
+    out of a run (local-only batches, `--allow`/`--deny`, inspection modes).
+  * Network: tests that need the real internet carry `@pytest.mark.network`; `conftest.pytest_collection_modifyitems`
+    skips them unless `AUTOCLIP_NETWORK_TESTS=1`. `tests/test_network.py` uses yt-dlp's own test video, and
+    `.github/workflows/network.yml` runs them weekly (the normal suite stays offline).
   * OS-specific logic (font folders, GPU priority per OS, cgroups) is tested by **passing the platform/paths in**
     (`font_dirs(system, env, home)`, `pick_encoder(cfg, system)`, `cgroup_*(root)`), never by running on that OS.
   * Hardware: `hardware.works` is `functools.cache`d - the test module clears it (`_fresh_probe_cache`). A software
@@ -292,7 +361,9 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 * Coverage uses `branch = true`, `concurrency = ["multiprocessing", "thread"]`, `parallel = true`: code that runs inside
   spawned workers is measured. `if __name__ == "__main__":` is excluded; `__main__.py` is exercised with `runpy`.
 * The desktop app: the behaviour lives in `app/session.py` and is tested without a display; the widgets need one, so
-  those tests skip when there is none (`has_display()`). CI runs them under `xvfb-run` on Linux.
+  those tests skip when there is none (`has_display()`). CI runs them under `xvfb-run` on Linux. The first-run flow is
+  tested by injecting the platform (`default_config_path(system, env, home)`) and patching `messagebox`; an autouse
+  fixture sets `AUTOCLIP_DEBUG=1` so a widget error fails the test with its traceback instead of opening a dialog.
 * Every new behaviour needs a test that would fail without it; every bug fix needs a regression test. Assertions should
   state the contract (e.g. "no moment is reused under another label"), not incidental values.
 * Keep tests fast: prefer the 40 s fixture, `short_side` 96-144, `ultrafast`, `audio.denoise: "none"` unless denoise is the subject.
@@ -367,6 +438,27 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     `ttk/utils.tcl: no such file or directory`) while other Tk tests in the same process pass: the fd capture dup2s
     over the standard handles the Tcl channels depend on. `pyproject.toml` therefore sets `--capture=sys` (no test
     asserts on output written straight to a file descriptor). Do not "restore" the default.
+22. **Two different `DownloadError` classes exist.** yt-dlp has `yt_dlp.utils.DownloadError` (and it is *not* a
+    subclass of autoclip's), and importing it into `download.py` would shadow `errors.DownloadError`. The downloader
+    keeps yt-dlp's base class as `self._ytdl_error = YoutubeDLError` and catches that; anything else would either
+    miss yt-dlp's failures or swallow autoclip's own. Never `except DownloadError` around a yt-dlp call.
+23. **The bundled imageio-ffmpeg has no ffprobe.** `download.time_range` is handed to yt-dlp only when a *real*
+    `ffmpeg` **and** `ffprobe` are on `PATH` (`Downloader._range_supported`); otherwise the whole video is downloaded
+    and `media.trim_video` cuts it locally (the SRT is shifted and clipped too). yt-dlp needs both binaries to cut a
+    range itself, so a "range" that looks supported is not: verify the duration after the download.
+24. **The format id is part of the originals cache prefix** (`<safe title> [<id>] [<format id>]`). Changing `quality`,
+    `fps`, `codec`, `container` or a `time_range` therefore downloads a new file instead of reusing one that no longer
+    matches the request. The price is that the cache is only checked *after* extraction - the format id can only come
+    from yt-dlp - so even a fully cached URL makes a small network request.
+25. **YouTube needs a JavaScript runtime to offer every format.** `js_runtime.name: "auto"` probes `deno -> node ->
+    bun -> quickjs` and logs a warning when none is installed; `remote_components: "ejs"` lets yt-dlp fetch its EJS
+    component from GitHub. A machine without a runtime still works but may only see the SABR/muxed formats - do not
+    treat "few formats" as a bug in `formats.choose`.
+26. **The offline suite proves our code, not yt-dlp compatibility.** `tests/test_download.py` replaces `YoutubeDL`
+    with a scripted fake, so a yt-dlp release can rename an internal import (`yt_dlp.globals`,
+    `yt_dlp.utils.dfxp2srt`, `download_range_func`) without a failure here. `tests/test_network.py`
+    (`@pytest.mark.network`, gated by `AUTOCLIP_NETWORK_TESTS=1`, run weekly by `.github/workflows/network.yml`)
+    is the check that the real API still works. Keep both: never mark a fake-based test `network`.
 
 ## 10. Recipes
 
@@ -377,6 +469,13 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
   test arguments in `tests/test_hardware.py`. If it needs its own `-preset` names, put them in `params`.
 * **New clip kind:** add a `KindCfg` field on `ClipsCfg` with defaults, extend the `kinds` `Literal`, `ClipsCfg.kind()`, and
   the output-folder logic in `cli.process_video`; update tests and README.
+* **New download option:** add a typed field to the right `download.*` dataclass (default included), use it in
+  `Downloader._base_params` / `_media_params` / `formats`, add its entry to `app/fields.py` (the suite fails without it),
+  document it in README's "Downloading URLs" and cover it in `tests/test_config.py` (valid + invalid) and
+  `tests/test_download.py` (the recorded yt-dlp parameters).
+* **New platform family, alias or group:** edit `platforms.py` (`FAMILIES`, `ALIASES`, `GROUPS`), test it offline in
+  `tests/test_platforms.py` and update the README table. Family names are checked against yt-dlp only at run time, so
+  none of this needs the network.
 * **DB schema change:** edit `store.SCHEMA` (the DB is recreated every run - no migrations), update `Store` methods and
   `tests/test_infra.py`. Remember workers open their own connection.
 * **Caption styling:** `captions.render_text_image` takes a `CaptionsCfg`; sprite cache keys include the whole style
@@ -399,6 +498,10 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 ### What is verified vs not
 * Verified here: Linux; real ffmpeg encode/decode; spawned workers; GPU *detection and CPU fallback*; chunked
   transcription with a stub; per-OS logic through injected platforms; 100% branch coverage.
+* Downloader: the yt-dlp **Python API** was exercised here with the installed version against a small YouTube
+  video (format listing/choice, extractor filtering, subtitle attachment, sidecars, imageio-ffmpeg merge, range
+  trimming and the originals cache) - see the release notes for the exact checks. Every other platform, real
+  cookies, proxies and JS runtimes beyond the one installed here were **not** exercised end to end.
 * **Not verified on real systems:** Windows and macOS execution (CI matrix exists), real GPU encoders (NVENC/QSV/AMF/
   VideoToolbox arguments are unit-tested and probe-guarded but never ran on hardware), real Whisper inference.
   Never state these as verified.
@@ -410,19 +513,27 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 * Add/adjust tests with every change; update `README.md` (and this file when architecture, invariants or commands change).
 * Keep config backward-compatibility notes in the README "Upgrading" section when keys change.
 * Preserve cross-platform behaviour (paths, encodings, spawn, optional dependencies).
+* Keep the clip folders clips-only: downloaded originals, subtitles and metadata sidecars live in
+  `.work/downloads/` (or `download.original_dir`), never next to the clips.
+* Keep the downloader policy (allow/deny, groups, aliases, format choice) offline-testable: no test in the normal
+  suite may need the network.
 
 **Ask first**
 * Adding or upgrading dependencies; raising the minimum Python version.
 * Breaking changes to config keys, output layout or exit codes.
 * Changing DB persistence semantics (fresh-per-run) or the transcript-cache key.
 * Anything that touches how GPU encoders are selected or how workers are capped.
+* Changing the originals cache key, the platform policy defaults (`@popular`), or the subtitle precedence rules.
 
 **Never**
-* `shell=True`, `eval`/`exec`, pickle/`allow_pickle=True`, string-built SQL with user data, network calls other than the configured LLM URL.
+* `shell=True`, `eval`/`exec`, pickle/`allow_pickle=True`, string-built SQL with user data, network calls other than the
+  configured LLM URL and the downloader of URLs that are in `input`.
 * Log or print secrets; weaken `llm.base_url` validation.
 * Lower the coverage gate, add `# pragma: no cover` to dodge a test, or silence mypy/ruff globally to get green.
 * Rebind `RESOURCES`, share a `Store` across threads, use `fork`, or hard-code POSIX paths/separators.
 * Reintroduce candidate storage in SQLite, blended multi-style ranking, or file-level video splitting for chunking.
+* Bypass the platform policy, expose a yt-dlp option that runs a command (`netrc_cmd`, `exec`, ...), or claim the
+  fake-based downloader tests prove compatibility with a real yt-dlp release.
 * Claim GPU, Windows, macOS or real-Whisper behaviour is tested when it is not.
 
 ## 13. Glossary
@@ -435,3 +546,9 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 * **energy track** - per-0.5 s loudness (dB) of the whole file, used for scoring, snapping and chunk boundaries.
 * **sprite** - a pre-rendered RGBA caption image cached compressed and blitted by `CaptionTrack`.
 * **work dir** - `{output_dir}/.work/{video}/`: database and transcript cache for one video.
+* **originals cache** - `{output_dir}/.work/downloads/` (or `download.original_dir`): the downloaded files and their
+  sidecars, reused between runs when the name prefix (title, id, format id, range) matches.
+* **platform family** - the canonical yt-dlp extractor family of a URL (`youtube`, `tiktok`, ...); what
+  `download.platforms` allow/deny and per-platform settings talk about. `generic` means "any other web page".
+* **group** - a named set of families (`@popular`, `@social`, `@video`, `@all` or a user group) usable in
+  `allow`/`deny` and for per-group settings.

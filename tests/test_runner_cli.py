@@ -19,10 +19,9 @@ import pytest
 
 from autoclip.cli import main
 from autoclip.core import runner
-from autoclip.core.config import Config
+from autoclip.core.config import Config, parse_hms
 from autoclip.core.hardware import HW_MAX_WORKERS, cpu_encoder
 from autoclip.core.models import Encoder, Moment, RenderJob
-from autoclip.core.pipeline import parse_hms
 from autoclip.core.resources import RESOURCES, WorkerPlan
 from autoclip.core.runner import _srt_time, render_all, render_job
 from autoclip.core.store import Store
@@ -255,7 +254,7 @@ def test_main_processes_several_videos_into_the_short_long_video_structure(media
         assert (out / ".work" / stem / "autoclip.db").exists()  # shared work files stay out of the short/long folders
     (log_file,) = (out / "logs").glob("autoclip_*.log")
     text = log_file.read_text(encoding="utf-8")
-    assert "video 1/2" in text and "video 2/2" in text and "finished: 2 clip(s) done, 0 failed" in text and "START render_all" in text
+    assert "input 1/2" in text and "input 2/2" in text and "finished: 2 clip(s) done, 0 failed" in text and "START render_all" in text
 
 
 def test_main_short_and_long_clips_for_several_scene_types(media: Media, tmp_path: Path) -> None:

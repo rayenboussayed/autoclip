@@ -9,19 +9,31 @@ stopped at any time and the app stays responsive.
 from __future__ import annotations
 
 import contextlib
+import os
 import platform
 import queue
 import subprocess
 import threading
 import tkinter as tk
+import traceback
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from types import TracebackType
 from typing import Any
 
 from ..core.errors import ConfigError
 from .fields import SECTIONS, Option
 from .form import Form, ScrollFrame, unflatten
-from .session import check_config, default_values, open_folder, read_config, start_pipeline, stop_pipeline, write_config
+from .session import (
+    check_config,
+    default_config_path,
+    default_values,
+    open_folder,
+    read_config,
+    start_pipeline,
+    stop_pipeline,
+    write_config,
+)
 
 
 def system_theme() -> str:
@@ -38,17 +50,30 @@ def system_theme() -> str:
     return style.theme_use()
 
 
+def debug_enabled(env: dict[str, str] | None = None) -> bool:
+    """Is the app in debug mode? ``AUTOCLIP_DEBUG=1`` (or true/yes/on) turns it on.
+
+    In debug mode an error in a Tk callback prints its traceback, closes the window and is raised
+    again, so a test fails instead of passing with the error only in the console.
+    """
+    if env is None:
+        env = dict(os.environ)
+    return env.get("AUTOCLIP_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class AutoclipApp(tk.Tk):
     """The application window."""
 
-    def __init__(self, config_path: Path | None = None) -> None:
+    def __init__(self, config_path: Path | None = None, *, debug: bool | None = None) -> None:
         super().__init__()
+        self._debug = debug_enabled() if debug is None else debug
         self.title("autoclip - cut long videos into clips")
         self.geometry("1060x760")
         self.minsize(900, 620)
         self._configure_style()
 
-        self.config_path = Path(config_path) if config_path else Path("config.json").resolve()
+        self._explicit_path = config_path is not None
+        self.config_path = Path(config_path) if config_path is not None else default_config_path()
         self.values: dict[str, Any] = default_values()
         self._forms: list[Form] = []
         self._process: subprocess.Popen[str] | None = None
@@ -57,6 +82,7 @@ class AutoclipApp(tk.Tk):
         self._build_header()
         self._build_body()
         self._build_footer()
+        self._startup()
         self._load_into_form()
         self._after_id = self.after(100, self._drain_log)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -137,11 +163,86 @@ class AutoclipApp(tk.Tk):
 
         log_frame = ttk.Frame(self, padding=(14, 0, 14, 10))
         log_frame.pack(fill="x")
-        self.log = tk.Text(log_frame, height=9, wrap="word", font="TkFixedFont", state="disabled")
-        scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log.yview)
+        log_bar = ttk.Frame(log_frame)
+        log_bar.pack(fill="x", pady=(0, 2))
+        ttk.Label(log_bar, text="Log", style="Sub.TLabel").pack(side="left")
+        ttk.Button(log_bar, text="Copy log", command=self._copy_log).pack(side="right")
+        ttk.Button(log_bar, text="Copy error", command=self._copy_error).pack(side="right", padx=(0, 6))
+        text_frame = ttk.Frame(log_frame)
+        text_frame.pack(fill="both", expand=True)
+        self.log = tk.Text(text_frame, height=9, wrap="word", font="TkFixedFont", state="disabled")
+        scroll = ttk.Scrollbar(text_frame, orient="vertical", command=self.log.yview)
         self.log.configure(yscrollcommand=scroll.set)
         self.log.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
+
+    # -- startup -----------------------------------------------------------------------------
+
+    def _startup(self) -> None:
+        """Load the config file, reset a broken one, or offer the default folder of the system.
+
+        A path the user named on the command line (or typed into the config field) is where Save
+        will put the file, so a missing file there needs no dialog: the defaults are enough. On a
+        first run the app offers the per-OS folder and only opens a save dialog when that is
+        declined; cancelling that dialog keeps the defaults without writing anything.
+        """
+        path = self.config_path
+        if path.is_file():
+            self._load_at_startup(path)
+            return
+        if self._explicit_path:
+            self._set_status("New config - the defaults are loaded.")
+            self._append(f"{path} does not exist yet: the defaults are loaded.")
+            return
+        if messagebox.askyesno(
+            "autoclip",
+            f"Save the config file to the default folder?\n\n{path}\n\n"
+            "No: choose another folder. Cancel the next dialog to start without a config file.",
+        ):
+            self._save_new_config(path)
+            return
+        picked = filedialog.asksaveasfilename(
+            parent=self,
+            title="Where should the config file be saved?",
+            initialdir=str(path.parent),
+            initialfile=path.name,
+            defaultextension=".json",
+            filetypes=[("JSON config", "*.json"), ("All files", "*.*")],
+        )
+        if not picked:
+            self.config_path = path
+            self._path_var.set(str(path))
+            self._set_status("No config file yet - the defaults are loaded.")
+            self._append(f"No config file at {path}: the defaults are loaded. Save config to create one.")
+            return
+        self._save_new_config(Path(picked).expanduser())
+
+    def _save_new_config(self, path: Path) -> None:
+        """Adopt ``path`` and write the defaults there, reporting a failure without raising."""
+        self.config_path = path
+        self._path_var.set(str(path))
+        try:
+            write_config(path, unflatten(self.values))
+        except OSError as e:
+            self._append(f"error: cannot write {path}: {e}")
+            self._set_status("The config file could not be written - use Save config.")
+            return
+        self._set_status(f"New config saved to {path}")
+        self._append(f"New config file: {path}")
+
+    def _load_at_startup(self, path: Path) -> None:
+        """Use a valid file as it is; a file that is not a valid config falls back to the defaults."""
+        try:
+            values = read_config(path)
+            check_config(unflatten({**self.values, **values}))
+        except (OSError, ValueError, ConfigError) as e:
+            self.values = default_values()
+            self._append(f"error: {path} is not a valid config: {e}")
+            self._append("Reset to the defaults. Save config (or Run) to replace the file.")
+            self._set_status("The config file was not valid - reset to the defaults.")
+            return
+        self.values.update(values)
+        self._set_status(f"Loaded {path.name}")
 
     # -- values ------------------------------------------------------------------------------
 
@@ -317,11 +418,52 @@ class AutoclipApp(tk.Tk):
         """Show a message in the status bar."""
         self.status.configure(text=text)
 
+    def _log_text(self) -> str:
+        """Everything the log window shows (without the trailing newline Tk keeps)."""
+        return self.log.get("1.0", "end-1c").removesuffix("\n")
+
+    def _copy(self, text: str, message: str) -> None:
+        """Put ``text`` on the clipboard."""
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self._set_status(message)
+
+    def _copy_error(self) -> None:
+        """Put the last error line on the clipboard (a disabled log cannot be selected)."""
+        errors = [line for line in self._log_text().splitlines() if line.strip() and "error" in line.lower()]
+        if not errors:
+            self._set_status("There is no error in the log to copy.")
+            return
+        self._copy(errors[-1], "Copied the error to the clipboard.")
+
+    def _copy_log(self) -> None:
+        """Put the whole log on the clipboard."""
+        text = self._log_text()
+        if not text.strip():
+            self._set_status("The log is empty.")
+            return
+        self._copy(text, "Copied the log to the clipboard.")
+
     def _on_close(self) -> None:
         """Stop a running pipeline and close the window."""
         if self._process is not None:
             self._stop()
         self.destroy()
+
+    def report_callback_exception(self, exc: type[BaseException], value: BaseException, tb: TracebackType | None) -> None:
+        """Handle an error in a Tk callback.
+
+        Normally Tk prints the traceback and keeps running (the default). In debug mode the
+        traceback is printed, the window is closed and the error is raised again, so a test that
+        triggered the callback fails instead of passing with the error only in the console.
+        """
+        if not self._debug:
+            super().report_callback_exception(exc, value, tb)
+            return
+        traceback.print_exception(exc, value, tb)
+        with contextlib.suppress(tk.TclError):
+            self.destroy()
+        raise value.with_traceback(tb)
 
     def destroy(self) -> None:
         """Close the window (the pending timer is cancelled first)."""

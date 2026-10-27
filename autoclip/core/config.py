@@ -8,15 +8,18 @@ and expands ``input`` globs into the list of videos to process.
 from __future__ import annotations
 
 import json
-from dataclasses import field
+import re
+from dataclasses import asdict, field
 from glob import glob
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeVar
+from urllib.parse import urlsplit
 
 from pydantic import ConfigDict, Field, Strict, StringConstraints, TypeAdapter, ValidationError, model_validator
 from pydantic.dataclasses import dataclass
 
 from .errors import ConfigError
+from .platforms import BUILTIN_GROUPS, canonical, deep_merge
 from .styles import STYLES
 
 Level = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
@@ -34,6 +37,16 @@ Aspect = Annotated[str, StringConstraints(pattern=r"^(\d+(\.\d+)?:\d+(\.\d+)?|or
 Range = Annotated[str, StringConstraints(pattern=r"^[\d:.]+-[\d:.]+$")]
 #: The URL of the LLM server: http or https.
 Url = Annotated[str, StringConstraints(pattern=r"(?i)^https?://\S+$")]
+#: A proxy URL for the downloader (http(s) or SOCKS).
+Proxy = Annotated[str, StringConstraints(pattern=r"(?i)^(https?|socks[45]h?)://\S+$")]
+
+
+def parse_hms(text: str) -> float:
+    """``[[HH:]MM:]SS[.ms]`` -> seconds."""
+    seconds = 0.0
+    for part in text.split(":"):
+        seconds = seconds * 60 + float(part)
+    return seconds
 
 
 @dataclass(config=SCHEMA)
@@ -289,12 +302,191 @@ class ComputeCfg(Section):
 
 
 @dataclass(config=SCHEMA)
+class MetadataCfg(Section):
+    """Extra files saved next to a downloaded original."""
+
+    info_json: Bool = True  # <title> [<id>].info.json (the metadata yt-dlp found)
+    thumbnail: Bool = False  # <title> [<id>].webp/.jpg
+    description: Bool = False  # <title> [<id>].description
+
+
+@dataclass(config=SCHEMA)
+class SubtitlesCfg(Section):
+    """Subtitles downloaded from the platform."""
+
+    enabled: Bool = False  # download the subtitles the platform offers
+    languages: list[str] = field(default_factory=lambda: ["en"])  # language codes, e.g. ["en", "ar"]
+    use_as_transcript: Literal["never", "manual", "always"] = "never"
+    # never = keep the files only; manual = human-made subtitles may replace Whisper; always = auto-generated too
+
+    @model_validator(mode="after")
+    def _languages_when_enabled(self) -> SubtitlesCfg:
+        """A download with no language has nothing to request, and was never asked for."""
+        if self.enabled and not self.languages:
+            raise ConfigError("download.subtitles.languages must not be empty when subtitles are enabled")
+        if self.use_as_transcript != "never" and not self.enabled:
+            raise ConfigError("download.subtitles.use_as_transcript needs download.subtitles.enabled: true")
+        return self
+
+
+@dataclass(config=SCHEMA)
+class CookiesCfg(Section):
+    """Where yt-dlp takes cookies from (some platforms need a signed-in session)."""
+
+    from_browser: str | None = None  # chrome, firefox, edge, ... (the browser's cookie store is read locally)
+    file: str | None = None  # a Netscape-format cookies.txt
+
+    @model_validator(mode="after")
+    def _one_source(self) -> CookiesCfg:
+        """One cookie source is enough and two would be ambiguous."""
+        if self.from_browser and self.file:
+            raise ConfigError("download.cookies: set either from_browser or file, not both")
+        return self
+
+
+@dataclass(config=SCHEMA)
+class NetworkCfg(Section):
+    """Network behaviour of the downloader."""
+
+    proxy: Proxy | None = None
+    rate_limit_mbps: Annotated[Float, Field(gt=0)] | None = None  # None = no cap
+    retries: Annotated[Int, Field(ge=0, le=20)] = 3
+    socket_timeout: Annotated[Float, Field(gt=0, le=300)] = 20
+    sleep_between_seconds: Annotated[Float, Field(ge=0, le=60)] = 0  # pause between playlist entries
+
+
+@dataclass(config=SCHEMA)
+class JsRuntimeCfg(Section):
+    """JavaScript runtime for YouTube's signature challenges (yt-dlp's EJS support)."""
+
+    name: Literal["auto", "deno", "node", "bun", "quickjs"] = "auto"  # auto = find one on PATH
+    path: str | None = None  # an explicit binary; only with a named runtime
+    remote_components: Literal["none", "ejs"] = "none"  # "ejs" lets yt-dlp fetch the EJS challenge solver
+
+    @model_validator(mode="after")
+    def _path_needs_a_name(self) -> JsRuntimeCfg:
+        """``auto`` finds a runtime itself, so a path would be ignored."""
+        if self.path and self.name == "auto":
+            raise ConfigError("download.js_runtime.path needs download.js_runtime.name (auto cannot use a path)")
+        return self
+
+
+@dataclass(config=SCHEMA)
+class PlatformsCfg(Section):
+    """Which platforms may be downloaded, and their per-platform overrides."""
+
+    allow: list[str] = field(default_factory=lambda: ["@popular"])  # families or @groups that may be used
+    deny: list[str] = field(default_factory=list)  # families or @groups that never may (deny wins)
+    groups: dict[str, list[str]] = field(default_factory=dict)  # user groups: {"@news": ["youtube", ...]}
+    settings: dict[str, dict[str, Any]] = field(default_factory=dict)  # partial download settings per family/@group
+    group_by_platform: Bool = False  # download to .work/downloads/<platform>/...
+
+    @model_validator(mode="after")
+    def _names_and_groups(self) -> PlatformsCfg:
+        """Group names, references and cycles are checked here; families need yt-dlp and are checked at run time."""
+        if not self.allow:
+            raise ConfigError("download.platforms.allow must name at least one platform or group")
+        for name in (*self.allow, *self.deny):
+            if not name.strip():
+                raise ConfigError("download.platforms.allow/deny must not contain empty names")
+        known = set(BUILTIN_GROUPS) | set(self.groups)
+        for name in (*self.allow, *self.deny):
+            if name.startswith("@") and name not in known:
+                raise ConfigError(f"download.platforms: unknown group {name}")
+        for name, members in self.groups.items():
+            if not re.fullmatch(r"@[a-z0-9][a-z0-9_-]*", name):
+                raise ConfigError(f"download.platforms.groups.{name}: a group name must look like '@name'")
+            if name in BUILTIN_GROUPS:
+                raise ConfigError(f"download.platforms.groups.{name}: a built-in group cannot be redefined")
+            if not members:
+                raise ConfigError(f"download.platforms.groups.{name}: a group needs at least one member")
+            for member in members:
+                if not member.strip():
+                    raise ConfigError(f"download.platforms.groups.{name}: a member must not be empty")
+                if member.startswith("@") and member not in known:
+                    raise ConfigError(f"download.platforms.groups.{name}: unknown group {member}")
+        done: set[str] = set()
+
+        def visit(name: str, path: tuple[str, ...]) -> None:
+            if name in done:
+                return
+            if name in path:
+                raise ConfigError("download.platforms.groups has a cycle: " + " -> ".join((*path, name)))
+            for member in self.groups[name]:
+                if member.startswith("@") and member in self.groups:
+                    visit(member, (*path, name))
+            done.add(name)
+
+        for name in self.groups:
+            visit(name, ())
+        seen: dict[str, str] = {}
+        for name in self.settings:
+            if not name.strip():
+                raise ConfigError("download.platforms.settings must not contain an empty platform name")
+            if name.startswith("@"):
+                if name not in known:
+                    raise ConfigError(f"download.platforms.settings: unknown group {name}")
+                continue
+            family = canonical(name)
+            if family in seen:
+                raise ConfigError(f"download.platforms.settings: '{seen[family]}' and '{name}' name the same platform")
+            seen[family] = name
+        return self
+
+
+@dataclass(config=SCHEMA)
+class DownloadCfg(Section):
+    """Downloading the http(s) URLs found in ``input`` with yt-dlp."""
+
+    quality: Annotated[Int, Field(ge=144, le=4320)] | Literal["best", "worst"] = 1080  # short side, or best/worst
+    fps: Annotated[Float, Field(gt=0, le=240)] | None = None  # None = any
+    prefer: Literal["closest", "at_most", "at_least"] = "closest"  # how quality/fps are matched
+    codec: Literal["auto", "h264", "vp9", "av1", "h265"] = "auto"  # auto = h264, then vp9, av1, h265, other
+    container: Literal["auto", "mp4", "mkv", "webm"] = "auto"  # auto = the format's own container
+    audio_quality: Literal["best", "worst"] = "best"
+    audio_language: str | None = None  # e.g. "en"; None = the platform's default track
+    original_dir: str | None = None  # None = <output_dir>/.work/downloads
+    metadata: MetadataCfg = field(default_factory=MetadataCfg)
+    subtitles: SubtitlesCfg = field(default_factory=SubtitlesCfg)
+    playlist: Literal["single", "all"] = "single"  # single = the one video; all = every entry, up to max_videos
+    max_videos: Annotated[Int, Field(ge=1)] = 50
+    time_range: Range | None = None  # "MM:SS-MM:SS" / "HH:MM:SS-HH:MM:SS"
+    cookies: CookiesCfg = field(default_factory=CookiesCfg)
+    network: NetworkCfg = field(default_factory=NetworkCfg)
+    js_runtime: JsRuntimeCfg = field(default_factory=JsRuntimeCfg)
+    platforms: PlatformsCfg = field(default_factory=PlatformsCfg)
+
+    @model_validator(mode="after")
+    def _range_and_platform_settings(self) -> DownloadCfg:
+        """The time range must make sense and every per-platform override must be a valid download section."""
+        if self.time_range:
+            try:
+                lo, hi = (parse_hms(part) for part in self.time_range.split("-"))
+            except ValueError as e:
+                raise ConfigError(f"download.time_range is not a valid time range: {e}") from e
+            if hi <= lo:
+                raise ConfigError("download.time_range must end after it starts")
+        base = asdict(self)
+        base.pop("platforms")
+        base.pop("js_runtime")
+        for name, entry in self.platforms.settings.items():
+            if "platforms" in entry or "js_runtime" in entry:
+                raise ConfigError(f"download.platforms.settings.{name}: platforms and js_runtime cannot be overridden per platform")
+            try:
+                parse(DownloadCfg, deep_merge(base, entry))
+            except ConfigError as e:
+                raise ConfigError(f"download.platforms.settings.{name}: {e}") from e
+        return self
+
+
+@dataclass(config=SCHEMA)
 class Config(Section):
     """The whole configuration file."""
 
-    input: list[str] = field(default_factory=lambda: ["video.mp4"])  # files or glob patterns
+    input: list[str] = field(default_factory=lambda: ["video.mp4"])  # files, glob patterns or http(s) URLs
     output_dir: str = "clips"  # one sub-folder per video is created inside
     compute: ComputeCfg = field(default_factory=ComputeCfg)
+    download: DownloadCfg = field(default_factory=DownloadCfg)
     clips: ClipsCfg = field(default_factory=ClipsCfg)
     transcript: TranscriptCfg = field(default_factory=TranscriptCfg)
     llm: LlmCfg = field(default_factory=LlmCfg)
@@ -338,23 +530,35 @@ def _abs(base: Path, value: str) -> str:
     return str(p if p.is_absolute() else base / p)
 
 
+def is_url(value: str) -> bool:
+    """True for an http(s) URL: an input item to download, never a path to resolve or glob."""
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return False
+    return parts.scheme.lower() in ("http", "https") and bool(parts.netloc)
+
+
 def expand_inputs(patterns: list[str], base: Path) -> list[str]:
-    """Resolve files / glob patterns to a sorted, de-duplicated list of absolute video paths.
+    """Resolve local files / glob patterns to absolute paths and keep URLs verbatim.
 
     Raises:
-        ConfigError: if a pattern matches nothing or two videos share a file name (they would share outputs).
+        ConfigError: if a local pattern matches nothing or two local videos share a file name (they would share outputs).
     """
-    videos: dict[str, None] = {}
+    items: dict[str, None] = {}
     for pattern in patterns:
+        if is_url(pattern):
+            items[pattern] = None
+            continue
         full = _abs(base, pattern)
         hits = [full] if Path(full).is_file() else sorted(p for p in glob(full) if Path(p).is_file())
         if not hits:
-            raise ConfigError(f"input '{pattern}' matches no file")
-        videos.update(dict.fromkeys(hits))
-    stems = [Path(v).stem for v in videos]
+            raise ConfigError(f"input '{pattern}' matches no file or URL")
+        items.update(dict.fromkeys(hits))
+    stems = [Path(item).stem for item in items if not is_url(item)]
     if len(set(stems)) != len(stems):
         raise ConfigError("two input videos share the same file name; rename one (outputs are keyed by name)")
-    return list(videos)
+    return list(items)
 
 
 def load_config(path: str | Path) -> Config:
@@ -390,4 +594,16 @@ def load_config(path: str | Path) -> Config:
         cfg.clips.lexicon_file = _abs(base, cfg.clips.lexicon_file)
     if cfg.video.background.image:
         cfg.video.background.image = _abs(base, cfg.video.background.image)
+    if cfg.download.original_dir:
+        cfg.download.original_dir = _abs(base, cfg.download.original_dir)
+    if cfg.download.cookies.file:
+        cfg.download.cookies.file = _abs(base, cfg.download.cookies.file)
+    if cfg.download.js_runtime.path:
+        cfg.download.js_runtime.path = _abs(base, cfg.download.js_runtime.path)
+    for entry in cfg.download.platforms.settings.values():
+        if entry.get("original_dir"):
+            entry["original_dir"] = _abs(base, entry["original_dir"])
+        cookies = entry.get("cookies")
+        if isinstance(cookies, dict) and cookies.get("file"):
+            cookies["file"] = _abs(base, cookies["file"])
     return cfg

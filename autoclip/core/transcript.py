@@ -199,18 +199,39 @@ def _cache_key(src: Path, cfg: TranscriptCfg, proc: ProcessingCfg) -> dict[str, 
 
 
 @traced("get_transcript")
-def get_transcript(src: Path, cfg: Config, work_dir: Path, store: Store, info: MediaInfo, db: F32, need_text: bool) -> bool:
-    """Put the transcript of ``src`` into ``store`` (file, disk cache or Whisper). Returns whether one exists."""
+def get_transcript(
+    src: Path,
+    cfg: Config,
+    work_dir: Path,
+    store: Store,
+    info: MediaInfo,
+    db: F32,
+    need_text: bool,
+    subtitle: Path | None = None,
+    subtitle_manual: bool = False,
+    name: str | None = None,
+) -> bool:
+    """Put the transcript of ``src`` into ``store`` (file, downloaded subtitles, disk cache or Whisper).
+
+    ``transcript.file`` wins over everything. A ``subtitle`` the downloader picked for this video is
+    used next (its policy already decided whether automatic captions are acceptable), then the disk
+    cache, then Whisper. Returns whether a transcript exists.
+    """
     tc = cfg.transcript
     if tc.mode == "off" or not need_text:
         return False
-    if tc.mode == "file" and not tc.file:
-        raise AutoclipError("transcript.mode is 'file' but transcript.file is not set")
+    if tc.mode == "file" and not tc.file and subtitle is None:
+        raise AutoclipError("transcript.mode is 'file' but neither transcript.file nor a downloaded subtitle is available")
+    stem = name or src.stem
     if tc.file:
-        segments = load_transcript_file(Path(tc.file.replace("{stem}", src.stem)))
+        segments = load_transcript_file(Path(tc.file.replace("{stem}", stem)))
         log.info("loaded transcript: %d segments", len(segments))
     else:
-        cache_file, key = work_dir / f"{src.stem}.transcript.json", _cache_key(src, tc, cfg.processing)
+        segments = _downloaded_segments(subtitle, tc.mode, subtitle_manual) if subtitle is not None else []
+        if segments:
+            store.put_segments(segments)
+            return True
+        cache_file, key = work_dir / f"{stem}.transcript.json", _cache_key(src, tc, cfg.processing)
         segments = []
         if tc.cache and cache_file.exists():
             data = json.loads(cache_file.read_text(encoding="utf-8"))
@@ -233,6 +254,21 @@ def get_transcript(src: Path, cfg: Config, work_dir: Path, store: Store, info: M
             )
     store.put_segments(segments)
     return bool(segments)
+
+
+def _downloaded_segments(path: Path, mode: str, manual: bool) -> list[Segment]:
+    """The segments of a downloaded subtitle file, or ``[]`` when it cannot be used (an error in "file" mode)."""
+    try:
+        segments = load_transcript_file(path)
+        if not segments:
+            raise ValueError("it has no cues")
+    except Exception as e:  # a broken subtitle must not cost the video when Whisper can replace it
+        if mode == "file":
+            raise AutoclipError(f"cannot use the downloaded subtitles '{path.name}': {type(e).__name__}: {e}") from e
+        log.warning("the downloaded subtitles '%s' cannot be used (%s: %s); using another source", path.name, type(e).__name__, e)
+        return []
+    log.info("using the downloaded %s subtitles as the transcript (%d segments)", "manual" if manual else "automatic", len(segments))
+    return segments
 
 
 def _model_dir(cfg: TranscriptCfg, work_dir: Path) -> Path:

@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autoclip"
-version = "2.1.1"
+version = "2.2.0"
 description = "Cut long videos into the best short clips (TikTok / Reels / Shorts). Free, local, cross-platform."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.26", "psutil>=5.9", "av>=12", "moviepy>=2.1,<3", "Pillow>=10.1", "opencv-python-headless>=4.8",
     "fonttools>=4.40", "faster-whisper>=1.1", "arabic-reshaper>=3.0", "python-bidi>=0.4.2", "pydantic>=2.14,<3",
+    "yt-dlp[default]>=2026.10.21",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +44,9 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "network: talks to the real internet (skipped unless AUTOCLIP_NETWORK_TESTS=1)",
+]
 # Capture at the Python level, not the fd level: pytest's default fd capture replaces the standard OS
 # handles, and on Windows that intermittently breaks Tcl's file-channel reads ("couldn't read file
 # .../init.tcl: No error"), failing the desktop-app tests at random. Nothing here asserts on output

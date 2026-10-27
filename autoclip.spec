@@ -50,11 +50,19 @@ HIDDEN = [
     "scenedetect",
     "scenedetect.detectors",
     "scenedetect.scene_manager",
+    "yt_dlp",
 ]
-hiddenimports = HIDDEN + collect_submodules("moviepy") + collect_submodules("scenedetect")
+hiddenimports = (
+    HIDDEN
+    + collect_submodules("moviepy")
+    + collect_submodules("scenedetect")
+    + collect_submodules("yt_dlp")
+    + collect_submodules("yt_dlp_ejs")
+)
 
-#: The ffmpeg binary of imageio-ffmpeg (used when there is no ffmpeg on the PATH).
-datas = collect_data_files("imageio_ffmpeg")
+#: The ffmpeg binary of imageio-ffmpeg (used when there is no ffmpeg on the PATH) and the EJS solver
+#: scripts of yt-dlp (the JavaScript challenge solver is data, not a Python module).
+datas = collect_data_files("imageio_ffmpeg") + collect_data_files("yt_dlp_ejs")
 
 a = Analysis(  # noqa: F821 - PyInstaller injects these names
     [str(Path(SPECPATH) / "tools" / "frozen_entry.py")],

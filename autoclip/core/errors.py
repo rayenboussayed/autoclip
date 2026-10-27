@@ -7,3 +7,7 @@ class AutoclipError(Exception):
 
 class ConfigError(AutoclipError):
     """The configuration file (or an input path it names) is invalid."""
+
+
+class DownloadError(AutoclipError):
+    """A URL cannot be downloaded (platform policy, missing yt-dlp, extraction or format failure)."""

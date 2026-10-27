@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import tkinter as tk
 import types
 from dataclasses import is_dataclass
 from pathlib import Path
@@ -21,6 +22,7 @@ import pytest
 from autoclip.app.fields import KINDS, OPTIONS, SECTIONS, option_paths
 from autoclip.app.session import (
     check_config,
+    default_config_path,
     default_values,
     flatten,
     open_folder,
@@ -64,6 +66,12 @@ def has_display() -> bool:
 
 
 needs_display = pytest.mark.skipif(not has_display(), reason="no display for a window")
+
+
+@pytest.fixture(autouse=True)
+def _debug_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the window in debug mode: a Tk callback error prints its traceback and fails the test."""
+    monkeypatch.setenv("AUTOCLIP_DEBUG", "1")
 
 
 # -- the catalogue ----------------------------------------------------------------------------
@@ -223,6 +231,25 @@ def test_open_folder_uses_startfile_on_windows(tmp_path: Path, monkeypatch: pyte
     assert opened == [str(target)]
 
 
+@pytest.mark.parametrize(
+    ("system", "env", "expected"),
+    [
+        ("Linux", {"XDG_CONFIG_HOME": "/xdg"}, Path("/xdg/autoclip/config.json")),
+        ("Linux", {}, Path("/home/rayen/.config/autoclip/config.json")),
+        ("Darwin", {}, Path("/home/rayen/Library/Application Support/autoclip/config.json")),
+        (
+            "Windows",
+            {"APPDATA": "C:/Users/rayen/AppData/Roaming"},
+            Path("C:/Users/rayen/AppData/Roaming/autoclip/config.json"),
+        ),
+        ("Windows", {}, Path("/home/rayen/AppData/Roaming/autoclip/config.json")),
+    ],
+)
+def test_the_default_config_folder_follows_the_operating_system(system: str, env: dict[str, str], expected: Path) -> None:
+    """The first run offers the folder each OS uses for application data."""
+    assert default_config_path(system, env, Path("/home/rayen")) == expected
+
+
 # -- the window (needs a display) --------------------------------------------------------------
 
 
@@ -345,11 +372,11 @@ def test_stopping_the_pipeline_is_possible(tmp_path: Path, monkeypatch: pytest.M
 
 
 @needs_display
-def test_the_details_panel_explains_the_focused_option() -> None:
+def test_the_details_panel_explains_the_focused_option(tmp_path: Path) -> None:
     """Focusing an option fills the what / why / when panel."""
     from autoclip.app.window import AutoclipApp
 
-    app = AutoclipApp()
+    app = AutoclipApp(tmp_path / "config.json")
     try:
         app.show_details(OPTIONS["clips.short.target_seconds"])
         assert "preference" in app.what_label.cget("text").lower()
@@ -360,11 +387,11 @@ def test_the_details_panel_explains_the_focused_option() -> None:
 
 
 @needs_display
-def test_the_reference_window_lists_and_filters_the_options() -> None:
+def test_the_reference_window_lists_and_filters_the_options(tmp_path: Path) -> None:
     """The reference shows every option and can be searched."""
     from autoclip.app.window import AutoclipApp, ReferenceWindow
 
-    app = AutoclipApp()
+    app = AutoclipApp(tmp_path / "config.json")
     try:
         window = ReferenceWindow(app)
         assert len(window.tree.get_children()) == len(option_paths())
@@ -446,6 +473,7 @@ def test_the_controls_read_and_write_every_kind_of_option() -> None:
             "dir": "/tmp/folder",
             "csv": "one, two",
             "lines": "first\nsecond",
+            "json": '{"@news": ["youtube"]}',
         }
         for kind, option in kinds.items():
             field = form.fields[option.path]
@@ -461,6 +489,8 @@ def test_the_controls_read_and_write_every_kind_of_option() -> None:
                 assert value == ["one", "two"]
             elif kind == "lines":
                 assert value == ["first", "second"]
+            elif kind == "json":
+                assert value == {"@news": ["youtube"]}
             else:
                 assert value == samples[kind]
         assert changed  # every change was reported
@@ -484,6 +514,27 @@ def test_a_control_that_holds_nothing_is_none() -> None:
         assert field.value() is None
         field.set("not a number")
         assert field.value() is None
+    finally:
+        root.destroy()
+
+
+@needs_display
+def test_an_empty_json_control_is_an_empty_object_and_invalid_json_is_kept_as_text() -> None:
+    """``{}`` is the "nothing here" value; broken JSON survives so validation can name the option."""
+    import tkinter as tk
+
+    from autoclip.app.form import Form
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        form = Form(root, (OPTIONS["download.platforms.groups"],), {}, lambda path, value: None)
+        field = form.fields["download.platforms.groups"]
+        assert field.text is not None
+        field.text.delete("1.0", "end")
+        assert field.value() == {}
+        field.text.insert("1.0", '{"@news": ["youtube"')  # truncated on purpose
+        assert field.value() == '{"@news": ["youtube"'
     finally:
         root.destroy()
 
@@ -607,6 +658,278 @@ def test_a_broken_config_file_is_reported(tmp_path: Path, monkeypatch: pytest.Mo
         app._read_config(broken)
         app._read_config(tmp_path / "missing.json")
         assert len(errors) == 2
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_a_valid_config_is_loaded_at_startup(tmp_path: Path) -> None:
+    """An existing, valid config file fills the form when the app opens."""
+    from autoclip.app.window import AutoclipApp
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"clips": {"short": {"count": 9}}}), encoding="utf-8")
+    app = AutoclipApp(path)
+    try:
+        assert app.values["clips.short.count"] == 9
+        assert app.values["clips.long.count"] == default_values()["clips.long.count"]
+        assert app.status.cget("text") == "Loaded config.json"
+    finally:
+        app.destroy()
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["{broken", '{"clips": {"short": {"count": 0}}}', '{"not_an_option": true}'],
+    ids=["invalid-json", "invalid-value", "unknown-option"],
+)
+@needs_display
+def test_a_corrupt_config_is_reset_at_startup(tmp_path: Path, content: str) -> None:
+    """A file that is not a valid config falls back to the defaults, without a dialog."""
+    from autoclip.app.window import AutoclipApp
+
+    path = tmp_path / "config.json"
+    path.write_text(content, encoding="utf-8")
+    app = AutoclipApp(path)
+    try:
+        assert app.values == default_values()
+        assert "reset to the defaults" in app.status.cget("text")
+        assert "error:" in app.log.get("1.0", "end")
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_a_config_in_the_default_folder_is_loaded_at_startup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The per-OS default file is used when it already exists, without asking anything."""
+    from autoclip.app import window
+    from autoclip.app.window import AutoclipApp
+
+    path = tmp_path / "config" / "config.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"clips": {"short": {"count": 9}}}), encoding="utf-8")
+    monkeypatch.setattr(window, "default_config_path", lambda: path)
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: pytest.fail("asked to save"))
+    monkeypatch.setattr(filedialog, "asksaveasfilename", lambda **kw: pytest.fail("asked for a folder"))
+    app = AutoclipApp()
+    try:
+        assert app.values["clips.short.count"] == 9
+        assert app.status.cget("text") == "Loaded config.json"
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_the_first_run_offers_to_save_in_the_default_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A first run asks about the default folder; accepting writes the config there."""
+    from autoclip.app import window
+    from autoclip.app.window import AutoclipApp
+
+    path = tmp_path / "config" / "config.json"
+    monkeypatch.setattr(window, "default_config_path", lambda: path)
+    asked: list[tuple[str, str]] = []
+
+    def ask(title: str, text: str) -> bool:
+        asked.append((title, text))
+        return True
+
+    monkeypatch.setattr(messagebox, "askyesno", ask)
+    monkeypatch.setattr(filedialog, "asksaveasfilename", lambda **kw: pytest.fail("asked for another folder"))
+    app = AutoclipApp()
+    try:
+        assert asked and str(path) in asked[0][1]
+        assert app.config_path == path
+        assert app._path_var.get() == str(path)
+        assert read_config(path)["clips.short.count"] == default_values()["clips.short.count"]
+        assert app.status.cget("text").startswith("New config saved")
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_the_first_run_can_save_somewhere_else(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Declining the default folder opens a save dialog there, and the picked file is written."""
+    from autoclip.app import window
+    from autoclip.app.window import AutoclipApp
+
+    default = tmp_path / "config" / "config.json"
+    monkeypatch.setattr(window, "default_config_path", lambda: default)
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: False)
+    picked = tmp_path / "chosen.json"
+    asked: list[dict[str, Any]] = []
+
+    def ask(**kwargs: Any) -> str:
+        asked.append(kwargs)
+        return str(picked)
+
+    monkeypatch.setattr(filedialog, "asksaveasfilename", ask)
+    app = AutoclipApp()
+    try:
+        assert asked and Path(asked[0]["initialdir"]) == default.parent
+        assert asked[0]["initialfile"] == "config.json"
+        assert app.config_path == picked
+        assert read_config(picked)["clips.short.count"] == default_values()["clips.short.count"]
+        assert app.status.cget("text").startswith("New config saved")
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_the_first_run_can_be_cancelled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Declining the default folder and cancelling the dialog leaves the defaults and writes nothing."""
+    from autoclip.app import window
+    from autoclip.app.window import AutoclipApp
+
+    default = tmp_path / "config" / "config.json"
+    monkeypatch.setattr(window, "default_config_path", lambda: default)
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: False)
+    monkeypatch.setattr(filedialog, "asksaveasfilename", lambda **kw: "")
+    app = AutoclipApp()
+    try:
+        assert app.config_path == default
+        assert not default.exists()
+        assert app.values == default_values()
+        assert "No config file yet" in app.status.cget("text")
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_the_first_run_save_failure_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A default config that cannot be written is reported, the app stays usable."""
+    from autoclip.app import window
+    from autoclip.app.window import AutoclipApp
+
+    monkeypatch.setattr(window, "default_config_path", lambda: tmp_path / "config" / "config.json")
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: True)
+
+    def broken(path: Path, data: Any) -> None:
+        raise OSError("read-only")
+
+    monkeypatch.setattr(window, "write_config", broken)
+    app = AutoclipApp()
+    try:
+        assert app.values == default_values()
+        assert "error:" in app.log.get("1.0", "end")
+        assert "could not be written" in app.status.cget("text")
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_a_missing_explicit_config_path_needs_no_dialog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A path the user named is where Save goes: a missing file there just starts from the defaults."""
+    from autoclip.app.window import AutoclipApp
+
+    monkeypatch.setattr(filedialog, "asksaveasfilename", lambda **kw: pytest.fail("asked for a path"))
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: pytest.fail("asked about the default folder"))
+    app = AutoclipApp(tmp_path / "new.json")
+    try:
+        assert app.values == default_values()
+        assert app.status.cget("text") == "New config - the defaults are loaded."
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_a_callback_error_closes_the_app_in_debug_mode(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Debug mode prints the traceback, closes the window and raises the error (a test fails)."""
+    from autoclip.app.window import AutoclipApp
+
+    app = AutoclipApp(tmp_path / "config.json", debug=True)
+    error = RuntimeError("boom")
+    with pytest.raises(RuntimeError, match="boom"):
+        app.report_callback_exception(RuntimeError, error, error.__traceback__)
+    assert "RuntimeError: boom" in capsys.readouterr().err
+    with pytest.raises(tk.TclError):
+        app.winfo_exists()
+
+
+@needs_display
+def test_a_callback_error_keeps_the_app_alive_without_debug(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Without debug the Tk default is kept: the traceback is printed and the window stays open."""
+    from autoclip.app.window import AutoclipApp
+
+    app = AutoclipApp(tmp_path / "config.json", debug=False)
+    try:
+        error = RuntimeError("boom")
+        app.report_callback_exception(RuntimeError, error, error.__traceback__)
+        assert "RuntimeError: boom" in capsys.readouterr().err
+        assert app.winfo_exists()
+    finally:
+        app.destroy()
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({"AUTOCLIP_DEBUG": "1"}, True),
+        ({"AUTOCLIP_DEBUG": "YES"}, True),
+        ({"AUTOCLIP_DEBUG": "on"}, True),
+        ({"AUTOCLIP_DEBUG": "0"}, False),
+        ({}, False),
+    ],
+)
+def test_debug_mode_can_be_switched_with_the_environment(env: dict[str, str], expected: bool) -> None:
+    """``AUTOCLIP_DEBUG`` is the switch of the debug mode; values are case-insensitive."""
+    from autoclip.app.window import debug_enabled
+
+    assert debug_enabled(env) is expected
+
+
+@needs_display
+def test_the_last_error_can_be_copied(tmp_path: Path) -> None:
+    """The log cannot be selected while it is disabled, so the error has a Copy button."""
+    from autoclip.app.window import AutoclipApp
+
+    app = AutoclipApp(tmp_path / "config.json")
+    try:
+        app._append("working")
+        app._append("error: the video has no audio stream")
+        app._copy_error()
+        assert app.clipboard_get() == "error: the video has no audio stream"
+        assert "clipboard" in app.status.cget("text")
+    finally:
+        app.destroy()
+
+
+def clear_log(app: Any) -> None:
+    """Empty the log window (startup may already have written a line)."""
+    app.log.configure(state="normal")
+    app.log.delete("1.0", "end")
+    app.log.configure(state="disabled")
+
+
+@needs_display
+def test_copying_an_error_that_is_not_there_says_so(tmp_path: Path) -> None:
+    """Without an error there is nothing to copy, and the status line says that."""
+    from autoclip.app.window import AutoclipApp
+
+    app = AutoclipApp(tmp_path / "config.json")
+    try:
+        clear_log(app)
+        app._append("all good")
+        app._copy_error()
+        assert app.status.cget("text") == "There is no error in the log to copy."
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_the_whole_log_can_be_copied(tmp_path: Path) -> None:
+    """Copy log puts every line on the clipboard; an empty log says so."""
+    from autoclip.app.window import AutoclipApp
+
+    app = AutoclipApp(tmp_path / "config.json")
+    try:
+        clear_log(app)
+        app._copy_log()
+        assert app.status.cget("text") == "The log is empty."
+        app._append("one")
+        app._append("two")
+        app._copy_log()
+        assert app.clipboard_get() == "one\ntwo"
+        assert "clipboard" in app.status.cget("text")
     finally:
         app.destroy()
 
@@ -781,11 +1104,11 @@ def test_the_pipeline_cannot_be_started_twice(tmp_path: Path, monkeypatch: pytes
 
 
 @needs_display
-def test_the_reference_window_ignores_an_empty_selection() -> None:
+def test_the_reference_window_ignores_an_empty_selection(tmp_path: Path) -> None:
     """Selecting nothing shows nothing."""
     from autoclip.app.window import AutoclipApp, ReferenceWindow
 
-    app = AutoclipApp()
+    app = AutoclipApp(tmp_path / "config.json")
     try:
         window = ReferenceWindow(app)
         window._show()
@@ -882,12 +1205,12 @@ def test_a_field_without_a_control_ignores_its_value() -> None:
 
 
 @needs_display
-def test_focusing_an_option_tells_the_window() -> None:
+def test_focusing_an_option_tells_the_window(tmp_path: Path) -> None:
     """Focusing a control fills the details panel of the window."""
     from autoclip.app.form import Form
     from autoclip.app.window import AutoclipApp
 
-    app = AutoclipApp()
+    app = AutoclipApp(tmp_path / "config.json")
     try:
         form = Form(app, (OPTIONS["clips.short.count"],), app.values, app._on_change)
         form._focused(OPTIONS["clips.short.count"])
@@ -981,11 +1304,11 @@ def test_the_button_that_opens_the_option_reference(tmp_path: Path) -> None:
 
 
 @needs_display
-def test_the_reference_window_ignores_an_unknown_option() -> None:
+def test_the_reference_window_ignores_an_unknown_option(tmp_path: Path) -> None:
     """A selection that is not in the catalogue shows nothing."""
     from autoclip.app.window import AutoclipApp, ReferenceWindow
 
-    app = AutoclipApp()
+    app = AutoclipApp(tmp_path / "config.json")
     try:
         window = ReferenceWindow(app)
         window.options.clear()

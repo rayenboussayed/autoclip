@@ -194,8 +194,77 @@ def test_get_transcript_file_modes(media: Media, tmp_path: Path, store: Store, i
     (tmp_path / "talk.srt").write_text(media.srt.read_text())
     assert get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True)
     assert len(store.light_segments()) == len(SENTENCES)
-    with pytest.raises(AutoclipError, match="transcript.file is not set"):
+    with pytest.raises(AutoclipError, match="neither transcript.file nor a downloaded subtitle"):
         get_transcript(media.video, cfg_for(media, tmp_path, mode="file"), tmp_path, store, *info_db, need_text=True)
+
+
+def test_get_transcript_prefers_a_downloaded_subtitle_over_cache_and_whisper(
+    media: Media,
+    tmp_path: Path,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    info_db: tuple[MediaInfo, F32],
+) -> None:
+    """A subtitle the downloader picked is used as-is: no cache file and no Whisper call."""
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec)
+    subtitle = tmp_path / "downloaded.srt"
+    subtitle.write_text(media.srt.read_text(encoding="utf-8"), encoding="utf-8")
+    cfg = cfg_for(media, tmp_path, mode="auto", model="tiny")
+    with caplog.at_level(logging.INFO, logger="autoclip"):
+        assert get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=subtitle, subtitle_manual=True)
+    assert len(store.light_segments()) == len(SENTENCES)
+    assert "using the downloaded manual subtitles" in caplog.text
+    assert "init" not in rec and not (tmp_path / "talk.transcript.json").exists()
+
+
+def test_file_mode_accepts_a_downloaded_subtitle_as_its_transcript(
+    media: Media, tmp_path: Path, store: Store, info_db: tuple[MediaInfo, F32]
+) -> None:
+    subtitle = tmp_path / "downloaded.srt"
+    subtitle.write_text(media.srt.read_text(encoding="utf-8"), encoding="utf-8")
+    cfg = cfg_for(media, tmp_path, mode="file")  # transcript.file is not set
+    assert get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=subtitle)
+    assert len(store.light_segments()) == len(SENTENCES)
+
+
+def test_a_missing_downloaded_subtitle_falls_back_or_fails_in_file_mode(
+    media: Media,
+    tmp_path: Path,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    info_db: tuple[MediaInfo, F32],
+) -> None:
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec)
+    missing = tmp_path / "missing.srt"
+    with caplog.at_level(logging.WARNING, logger="autoclip"):
+        assert get_transcript(
+            media.video, cfg_for(media, tmp_path, mode="auto"), tmp_path, store, *info_db, need_text=True, subtitle=missing
+        )
+    assert "cannot be used" in caplog.text and "init" in rec  # Whisper replaced the broken subtitle
+    with pytest.raises(AutoclipError, match="cannot use the downloaded subtitles"):
+        get_transcript(media.video, cfg_for(media, tmp_path, mode="file"), tmp_path, store, *info_db, need_text=True, subtitle=missing)
+
+
+def test_an_empty_downloaded_subtitle_is_rejected(media: Media, tmp_path: Path, store: Store, info_db: tuple[MediaInfo, F32]) -> None:
+    empty = tmp_path / "empty.srt"
+    empty.write_text("", encoding="utf-8")
+    with pytest.raises(AutoclipError, match="it has no cues"):
+        get_transcript(media.video, cfg_for(media, tmp_path, mode="file"), tmp_path, store, *info_db, need_text=True, subtitle=empty)
+
+
+def test_an_explicit_transcript_file_wins_over_a_downloaded_subtitle(
+    media: Media, tmp_path: Path, store: Store, info_db: tuple[MediaInfo, F32]
+) -> None:
+    cfg = cfg_for(media, tmp_path, mode="file", file=str(tmp_path / "{stem}.srt"))
+    (tmp_path / "talk.srt").write_text(media.srt.read_text(encoding="utf-8"), encoding="utf-8")
+    one_cue = tmp_path / "one.srt"
+    one_cue.write_text("1\n00:00:01,000 --> 00:00:02,000\nOnly one\n", encoding="utf-8")
+    assert get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=one_cue)
+    assert len(store.light_segments()) == len(SENTENCES)  # the configured file, not the single downloaded cue
 
 
 def test_whisper_result_is_cached_reused_and_invalidated(

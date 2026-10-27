@@ -11,6 +11,7 @@ fonttools>=4.40        # checks that a font really covers a caption's glyphs
 faster-whisper>=1.1    # local transcription (99+ languages)
 arabic-reshaper>=3.0   # right-to-left captions on Pillow builds without libraqm (Windows / macOS wheels)
 python-bidi>=0.4.2
+yt-dlp[default]>=2026.10.21   # downloading the http(s) URLs in `input` (lazy import: local runs never load it)
 
 # optional: speech denoising, scene-cut snapping and speech enhancement (all degrade gracefully when absent)
 noisereduce>=3.0
