@@ -83,7 +83,9 @@ def test_trim_video_re_encodes_an_exact_range(media: Media, tmp_path: Path, monk
 
     with av.open(str(out)) as container:
         video = container.streams.video[0]
-        stamps = [frame.pts * float(video.time_base) for frame in container.decode(video=0) if frame.pts is not None]
+        time_base = video.time_base
+        assert time_base is not None
+        stamps = [frame.pts * float(time_base) for frame in container.decode(video=0) if frame.pts is not None]
     assert stamps and stamps[-1] - stamps[0] == pytest.approx(3.5, abs=0.35)
     with pytest.raises(AutoclipError, match="cannot trim"):
         trim_video(tmp_path / "missing.mp4", tmp_path / "x.mkv", 0.0, 1.0)
