@@ -280,23 +280,24 @@ def select_moments(
     log.info("%s: %d candidate windows, scenes: %s", kind, len(cands), ", ".join(cc.scene_list()))
     lex, kwfn = build_lexicons(cfg)
     feats = audio_features(cands, db) | (text_features(cands, segs, lex, kwfn) if text_mode else {})
+    use_llm = cfg.llm.enabled and not cfg.skip.llm
     st = src.stat()
     cuts = (
         cache.memoize_array(f"cuts:{src.name}:{st.st_size}:{st.st_mtime_ns}", lambda: np.array(scene_cuts(src))).tolist()
-        if cc.snap_to_cuts
+        if cc.snap_to_cuts and not cfg.skip.snap
         else []
     )
     moments: list[Moment] = []
     taken: list[tuple[float, float]] = []
     for scene in cc.scene_list():
         scores = scene_score(feats, scene, kwfn is not None) + length_bonus(cands, kcfg)
-        picks = pick(cands, scores, max(kcfg.count, cfg.llm.top_k) if cfg.llm.enabled and text_mode else kcfg.count, taken)
+        picks = pick(cands, scores, max(kcfg.count, cfg.llm.top_k) if use_llm and text_mode else kcfg.count, taken)
         found = [
             Moment(float(cands.start[k]), float(cands.end[k]), store.segment_text(int(cands.i[k]), int(cands.j[k])) if text_mode else "",
                    score=float(scores[k]), scene=scene, i=int(cands.i[k]), j=int(cands.j[k]))
             for k in picks
         ]  # fmt: skip
-        if cfg.llm.enabled and text_mode:
+        if use_llm and text_mode:
             found = _rerank(found, kcfg.count, cfg, scene)
         taken += [(m.start, m.end) for m in found]
         for m in sorted(found, key=lambda m: m.score or 0.0, reverse=True):

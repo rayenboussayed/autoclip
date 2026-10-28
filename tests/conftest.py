@@ -7,56 +7,17 @@ import os
 import subprocess
 import wave
 from collections.abc import Iterator
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
-from autoclip.core.config import Config, parse
+from autoclip.core.config import Config
 from autoclip.core.log import LOG, setup_logging
 from autoclip.core.media import ffmpeg_exe
 
-SENTENCES = [
-    "Welcome everyone to this big talk today.",
-    "Why does this matter so much, honestly?",
-    "Um I never listened to my customers ever.",
-    "haha that was so funny lol I laughed.",
-    "My mother passed away and I cried alone.",
-    "Here is how to learn step by step today.",
-    "Wow that was incredible we finally won!",
-    "Never give up on your dream and believe.",
-    "They say it is a scam but they are wrong.",
-    "Thank you so much for listening goodbye.",
-]
-SR = 22050
-
-
-@dataclass(frozen=True)
-class Media:
-    """Paths of the generated fixtures."""
-
-    video: Path  # 40 s, 320x180, speech-like tone bursts (3 s) separated by 1 s of silence
-    silent: Path  # same picture, no audio track
-    transcript: Path  # word-level JSON transcript matching ``video``
-    srt: Path  # sentence-level SRT matching ``video``
-
-
-def _segments() -> list[dict[str, Any]]:
-    segs = []
-    for k, text in enumerate(SENTENCES):
-        start, words = k * 4.0, text.split()
-        step = 3.0 / len(words)
-        segs.append(
-            {"start": start, "end": start + 3.0, "text": text,
-             "words": [{"start": start + n * step, "end": start + (n + 1) * step, "word": w} for n, w in enumerate(words)]}
-        )  # fmt: skip
-    return segs
-
-
-def _srt_time(t: float) -> str:
-    return f"00:00:{int(t):02d},{round(t % 1 * 1000):03d}"
+from .support import SR, Media, _segments, _srt_time, make_cfg
 
 
 @pytest.fixture(autouse=True)
@@ -91,30 +52,6 @@ def media(tmp_path_factory: pytest.TempPathFactory) -> Media:
     return Media(root / "talk.mp4", root / "silent.mp4", root / "talk.json", root / "talk.srt")
 
 
-def merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
-    """``base`` with ``over`` laid on top, recursing into nested objects (so ``clips={"short": {...}}`` keeps the rest)."""
-    return {k: merge(base[k], v) if isinstance(v, dict) and isinstance(base.get(k), dict) else v for k, v in {**base, **over}.items()}
-
-
-def make_cfg(media: Media, out: Path, source: Path | None = None, **sections: dict[str, Any]) -> Config:
-    """A small, fast configuration for ``source`` (default: the fixture video) with per-section overrides."""
-    data: dict[str, Any] = {
-        "clips": {
-            "kinds": ["short"],
-            "short": {"count": 2, "min_seconds": 6, "max_seconds": 12},
-            "long": {"min_seconds": 12, "max_seconds": 30},
-        },
-        "transcript": {"mode": "file", "file": str(media.transcript)},
-        "video": {"short_side": 144, "preset": "ultrafast", "thumbnail": False, "gpu": "off"},
-        "logging": {"enabled": False, "console_level": "ERROR"},
-        "resources": {"max_workers": 1},
-    }
-    cfg = parse(Config, merge(data, sections))
-    cfg.input = [str(source or media.video)]
-    cfg.output_dir = str(out)
-    return cfg
-
-
 @pytest.fixture
 def cfg_factory(media: Media, tmp_path: Path):  # type: ignore[no-untyped-def]
     """``cfg_factory(**sections)`` -> Config writing into this test's tmp folder."""
@@ -134,13 +71,16 @@ def _annotation(path: str, line: int, message: str) -> None:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip ``network`` tests unless ``AUTOCLIP_NETWORK_TESTS=1`` (the suite is offline by default)."""
-    if os.environ.get("AUTOCLIP_NETWORK_TESTS") == "1":
-        return
-    skip = pytest.mark.skip(reason="network test: set AUTOCLIP_NETWORK_TESTS=1 to run it")
+    """Skip ``e2e`` and ``network`` tests unless their environment flag opts in (the suite is offline by default)."""
+    e2e_on = os.environ.get("AUTOCLIP_E2E_TESTS") == "1"
+    network_on = e2e_on or os.environ.get("AUTOCLIP_NETWORK_TESTS") == "1"
+    skip_e2e = pytest.mark.skip(reason="e2e test: set AUTOCLIP_E2E_TESTS=1 to run it")
+    skip_network = pytest.mark.skip(reason="network test: set AUTOCLIP_NETWORK_TESTS=1 (or AUTOCLIP_E2E_TESTS=1) to run it")
     for item in items:
-        if "network" in item.keywords:
-            item.add_marker(skip)
+        if "e2e" in item.keywords and not e2e_on:
+            item.add_marker(skip_e2e)
+        elif "network" in item.keywords and not network_on:
+            item.add_marker(skip_network)
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:

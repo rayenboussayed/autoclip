@@ -11,6 +11,7 @@ import pytest
 from moviepy import ColorClip, VideoFileClip
 from PIL import Image
 
+from autoclip.core import render as render_mod
 from autoclip.core.config import VideoCfg, parse
 from autoclip.core.hardware import cpu_encoder
 from autoclip.core.media import probe
@@ -20,7 +21,7 @@ from autoclip.core.resources import RESOURCES
 from autoclip.core.store import Cache, Store
 from autoclip.core.transcript import load_transcript_file
 
-from .conftest import Media, make_cfg
+from ..support import Media, make_cfg
 
 
 def test_even_and_canvas_size() -> None:
@@ -189,3 +190,69 @@ def test_render_with_a_gpu_style_encoder_definition(media: Media, tmp_path: Path
     cpu, _, _ = render(media, tmp_path / "b", moment(0, 5), encoder=cpu_encoder(VideoCfg(preset="ultrafast", crf=18)))
     assert probe(low).duration == pytest.approx(probe(cpu).duration, abs=0.3)
     assert low.stat().st_size < cpu.stat().st_size  # the placeholder preset was overridden and the custom arguments reached ffmpeg
+
+
+# ---- skip.* gates --------------------------------------------------------------------------------
+def test_skip_audio_mutes_the_clip_and_keeps_the_window(media: Media, tmp_path: Path) -> None:
+    m = moment()
+    dst, _, lines = render(media, tmp_path, m, skip={"audio": True})
+    assert not probe(dst).has_audio
+    assert m.trimmed == pytest.approx(m.end - m.start, abs=0.2)  # without audio there is no pause removal
+    assert lines  # captions still work on a muted clip
+
+
+def test_skip_caption_burns_no_captions(media: Media, tmp_path: Path) -> None:
+    dst, _, lines = render(media, tmp_path, moment(), skip={"caption": True})
+    assert lines == [] and probe(dst).has_audio
+
+
+def test_skip_title_draws_no_title(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    drawn: list[str] = []
+    real = getattr(render_mod, "render_text_image")
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        drawn.append(str(args[0]))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(render_mod, "render_text_image", spy)
+    dst, _, lines = render(media, tmp_path, moment(), title={"enabled": True}, skip={"title": True})
+    assert drawn == [] and lines and dst.exists()  # the captions still go through captions.render_text_image
+
+
+def test_skip_thumbnail_writes_no_cover(media: Media, tmp_path: Path) -> None:
+    dst, _, _ = render(media, tmp_path, moment(), video={"thumbnail": True}, skip={"thumbnail": True})
+    assert dst.exists() and not dst.with_suffix(".jpg").exists()
+
+
+def test_skip_pauses_keeps_the_whole_window(media: Media, tmp_path: Path) -> None:
+    m = moment()
+    dst, _, _ = render(media, tmp_path, m, skip={"pauses": True})
+    assert m.trimmed == pytest.approx(m.end - m.start, abs=0.2)
+    assert probe(dst).duration == pytest.approx(m.end - m.start, abs=0.4)
+
+
+def test_render_passes_the_audio_skips(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = getattr(render_mod, "enhance_audio")
+    seen: list[dict[str, Any]] = []
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(render_mod, "enhance_audio", spy)
+    render(media, tmp_path, moment(0, 4), skip={"audio_enhance": True, "denoise": True})
+    assert seen == [{"enhance": False, "denoise": False}]
+
+
+def first_frame_mean(path: Path) -> float:
+    clip = VideoFileClip(str(path))
+    try:
+        return float(np.asarray(clip.get_frame(0.0), dtype=np.float64).mean())
+    finally:
+        clip.close()
+
+
+def test_skip_fade_does_not_darken_the_start(media: Media, tmp_path: Path) -> None:
+    faded, _, _ = render(media, tmp_path / "a", moment(0, 4), video={"fade_seconds": 1.0})
+    plain, _, _ = render(media, tmp_path / "b", moment(0, 4), video={"fade_seconds": 1.0}, skip={"fade": True})
+    assert first_frame_mean(faded) < first_frame_mean(plain) - 30

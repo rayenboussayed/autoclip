@@ -47,14 +47,18 @@ def frame_db(x: F32, win: float = 0.02) -> NDArray[np.float64]:
 
 
 @traced("enhance_audio")
-def enhance_audio(src: Path, start: float, dur: float, cfg: AudioCfg, threads: int) -> F32:
-    """Window audio, high-passed, denoised, loudness-normalised (speech frames only) and soft-limited."""
-    if not cfg.enhance:
+def enhance_audio(src: Path, start: float, dur: float, cfg: AudioCfg, threads: int, *, enhance: bool = True, denoise: bool = True) -> F32:
+    """Window audio, high-passed, denoised, loudness-normalised (speech frames only) and soft-limited.
+
+    ``cfg.enhance`` is the master off switch; ``enhance`` and ``denoise`` let the caller skip one
+    half independently (``skip.audio_enhance`` / ``skip.denoise``).  Denoising without enhancement
+    still removes noise but keeps the original level and high-pass.
+    """
+    if not cfg.enhance or (not enhance and not denoise):
         return load_window_audio(src, start, dur)
-    use_nr = cfg.denoise == "noisereduce" or (cfg.denoise == "auto" and importlib.util.find_spec("noisereduce") is not None)
-    x: F32 = load_window_audio(
-        src, start, dur, cfg.highpass_hz, fft_denoise=cfg.denoise == "ffmpeg" or (cfg.denoise == "auto" and not use_nr)
-    )
+    use_nr = denoise and (cfg.denoise == "noisereduce" or (cfg.denoise == "auto" and importlib.util.find_spec("noisereduce") is not None))
+    fft = denoise and (cfg.denoise == "ffmpeg" or (cfg.denoise == "auto" and not use_nr))
+    x: F32 = load_window_audio(src, start, dur, cfg.highpass_hz if enhance else 0, fft_denoise=fft)
     if use_nr and len(x) >= AUDIO_SR:  # clips under a second are too short to estimate noise from
         import noisereduce
 
@@ -63,6 +67,8 @@ def enhance_audio(src: Path, start: float, dur: float, cfg: AudioCfg, threads: i
             for a, b in piece_bounds(len(x), DENOISE_CHUNK_SECONDS * AUDIO_SR, AUDIO_SR)
         ]
         x = np.concatenate(pieces).astype(np.float32)
+    if not enhance:
+        return x
     db = frame_db(x)
     active = db > np.percentile(db, 95) - 25  # speech frames only
     n = int(AUDIO_SR * 0.02)

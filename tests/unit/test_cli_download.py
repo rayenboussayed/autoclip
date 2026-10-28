@@ -22,8 +22,7 @@ from autoclip.core.errors import ConfigError, DownloadError
 from autoclip.core.models import Downloaded
 from autoclip.core.resources import RESOURCES
 
-from .conftest import Media
-from .test_runner_cli import write_config
+from ..support import Media, write_config
 
 URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 OTHER = "https://vimeo.com/12345"

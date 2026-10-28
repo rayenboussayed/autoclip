@@ -184,7 +184,7 @@ def transcribe(src: Path, cfg: Config, info: MediaInfo, db: F32, enhancer: Speec
     return to_segments(raw)
 
 
-def _cache_key(src: Path, cfg: TranscriptCfg, proc: ProcessingCfg) -> dict[str, Any]:
+def _cache_key(src: Path, cfg: TranscriptCfg, proc: ProcessingCfg, *, denoise: bool = True) -> dict[str, Any]:
     """Identity of a transcription run: the cached transcript is reused only while this is unchanged."""
     st = src.stat()
     return {
@@ -194,6 +194,7 @@ def _cache_key(src: Path, cfg: TranscriptCfg, proc: ProcessingCfg) -> dict[str, 
         "multilingual": cfg.multilingual,
         "word_timestamps": cfg.word_timestamps,
         "enhance": cfg.enhance.fingerprint(),
+        "denoise": denoise,
         "chunk_minutes": proc.chunk_minutes,
     }
 
@@ -216,6 +217,10 @@ def get_transcript(
     ``transcript.file`` wins over everything. A ``subtitle`` the downloader picked for this video is
     used next (its policy already decided whether automatic captions are acceptable), then the disk
     cache, then Whisper. Returns whether a transcript exists.
+
+    ``skip.stt`` stops before Whisper: the file, downloaded subtitle and disk cache are still used,
+    and a run without any of them simply continues without text. ``skip.denoise`` builds no speech
+    enhancer (and changes the cache key, so an enhanced cache is not reused for raw audio).
     """
     tc = cfg.transcript
     if tc.mode == "off" or not need_text:
@@ -231,7 +236,8 @@ def get_transcript(
         if segments:
             store.put_segments(segments)
             return True
-        cache_file, key = work_dir / f"{stem}.transcript.json", _cache_key(src, tc, cfg.processing)
+        denoise = not cfg.skip.denoise
+        cache_file, key = work_dir / f"{stem}.transcript.json", _cache_key(src, tc, cfg.processing, denoise=denoise)
         segments = []
         if tc.cache and cache_file.exists():
             data = json.loads(cache_file.read_text(encoding="utf-8"))
@@ -240,8 +246,11 @@ def get_transcript(
                 log.info("reusing cached transcript %s (%d segments)", cache_file.name, len(segments))
             else:
                 log.warning("cached transcript is stale (input, model or language changed): transcribing again")
+        if not segments and cfg.skip.stt:
+            log.info("skip.stt is set: no transcript is available without Whisper")
+            return False
         if not segments:
-            enhancer = SpeechEnhancer(tc.enhance, _model_dir(tc, work_dir))
+            enhancer = SpeechEnhancer(tc.enhance, _model_dir(tc, work_dir)) if denoise else None
             try:
                 segments = transcribe(src, cfg, info, db, enhancer)
             except Exception as e:

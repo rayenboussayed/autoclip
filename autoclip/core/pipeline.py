@@ -64,6 +64,11 @@ def ranges_moments(store: Store, kcfg: KindCfg, info: MediaInfo, cfg: Config, ha
     return out
 
 
+def needs_text(cfg: Config) -> bool:
+    """Whether the run needs a transcript: highlights select on text, captions and titles read it."""
+    return cfg.clips.mode == "highlights" or (cfg.captions.enabled and not cfg.skip.caption) or (cfg.title.enabled and not cfg.skip.title)
+
+
 def process_video(
     src: Path,
     cfg: Config,
@@ -103,7 +108,7 @@ def process_video(
             store,
             info,
             db,
-            cfg.captions.enabled or cc.mode == "highlights" or cfg.title.enabled,
+            needs_text(cfg),
             subtitle=subtitle,
             subtitle_manual=subtitle_manual,
             name=stem,

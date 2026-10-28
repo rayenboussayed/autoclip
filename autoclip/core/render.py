@@ -147,9 +147,14 @@ def render_clip(vclip: Any, job: RenderJob, store: Store, cache: Cache) -> tuple
     moment, cfg, src, dst, threads, has_audio = job.moment, job.cfg, job.src, job.dst, job.threads, job.has_audio
     kcfg = cfg.clips.kind(job.kind)  # the length the clip may have
     start, dur = moment.start, moment.end - moment.start
+    has_audio = has_audio and not cfg.skip.audio  # a muted clip needs no decoding either
+    title_on = cfg.title.enabled and not cfg.skip.title
     words = [Word(w.start - start, w.end - start, w.text, w.pseudo) for w in store.window_words(moment.start, moment.end)]
-    audio = enhance_audio(src, start, dur, cfg.audio, threads) if has_audio else None
-    keep = compute_keep(audio, words, dur, cfg.silence, kcfg.min_seconds) if audio is not None else [(0.0, dur)]
+    if has_audio:
+        audio = enhance_audio(src, start, dur, cfg.audio, threads, enhance=not cfg.skip.audio_enhance, denoise=not cfg.skip.denoise)
+    else:
+        audio = None
+    keep = compute_keep(audio, words, dur, cfg.silence, kcfg.min_seconds) if audio is not None and not cfg.skip.pauses else [(0.0, dur)]
 
     parts, kept = [], []  # clamp to the real video stream: containers often report a slightly longer duration
     for a, b in keep:
@@ -165,27 +170,31 @@ def render_clip(vclip: Any, job: RenderJob, store: Store, cache: Cache) -> tuple
         log.info("clip is %.1fs, shorter than the requested %s minimum of %.0fs", moment.trimmed, job.kind, kcfg.min_seconds)
     size = canvas_size(job.aspect, cfg.video.short_side, vclip.w, vclip.h)
     overlays = []
-    captions, lines = build_captions(words, Timeline(kept), cfg, cache, size, fg.duration) if cfg.captions.enabled and words else (None, [])
+    captions, lines = (
+        build_captions(words, Timeline(kept), cfg, cache, size, fg.duration)
+        if cfg.captions.enabled and not cfg.skip.caption and words
+        else (None, [])
+    )
     if captions is not None:
         overlays.append(captions)
-    if cfg.title.enabled and moment.title:
+    if title_on and moment.title:
         cc = cfg.captions
         art = render_text_image(moment.title, find_font(moment.title, cc.font), int(min(size) / 13), cc, int(size[0] * 0.92))
         top = safe_top(Y_CENTER[cfg.title.position], size[1], size[0], cc, art.shape[0])
         overlays.append(ImageClip(art).with_duration(min(cfg.title.seconds, fg.duration)).with_position(("center", top)))
 
     comp = CompositeVideoClip(layout(fg, size, cfg.video, fg.duration) + overlays, size=size).with_duration(fg.duration)
-    if cfg.video.fade_seconds > 0:
+    if cfg.video.fade_seconds > 0 and not cfg.skip.fade:
         comp = comp.with_effects([vfx.FadeIn(cfg.video.fade_seconds), vfx.FadeOut(cfg.video.fade_seconds)])
     if audio is not None:
         mono = build_audio(audio, kept, fg.duration)
         sound = AudioArrayClip(np.stack([mono, mono], axis=1), fps=AUDIO_SR)
-        if cfg.audio.fade_seconds > 0:
+        if cfg.audio.fade_seconds > 0 and not cfg.skip.fade:
             sound = sound.with_effects([afx.AudioFadeIn(cfg.audio.fade_seconds), afx.AudioFadeOut(cfg.audio.fade_seconds)])
         comp = comp.with_audio(sound)
     fps = min(cfg.video.fps or vclip.fps, vclip.fps)
     encode(comp, dst, float(fps), job.encoder, threads)
-    if cfg.video.thumbnail:
-        cover_t = min(max(0.5, cfg.title.seconds / 2 if cfg.title.enabled else 1.0), max(0.0, fg.duration - 0.1))
+    if cfg.video.thumbnail and not cfg.skip.thumbnail:
+        cover_t = min(max(0.5, cfg.title.seconds / 2 if title_on else 1.0), max(0.0, fg.duration - 0.1))
         comp.save_frame(str(dst.with_suffix(".jpg")), t=cover_t, with_mask=False)
     return size, lines

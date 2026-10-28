@@ -1191,6 +1191,102 @@ AUDIO = Section(
     ),
 )
 
+SKIP = Section(
+    "skip",
+    "Skip",
+    "Steps to leave out of this run",
+    (
+        _o(
+            "skip.stt",
+            "Skip speech recognition",
+            "bool",
+            "Do not run Whisper. An explicit transcript file, a downloaded subtitle and the transcript cache are still used.",
+            "Whisper is the slowest step; a video with subtitles or a cached transcript does not need it again.",
+            "On when you know the text comes from elsewhere. Without any text source, highlights fall back to audio-only selection.",
+        ),
+        _o(
+            "skip.denoise",
+            "Skip noise reduction",
+            "bool",
+            "Do not enhance the audio before Whisper and do not reduce the noise of the clip audio.",
+            "Denoising clean audio can change what the model hears; a studio recording does not need it.",
+            "On for clean recordings, or when a transcript came out worse after denoising.",
+        ),
+        _o(
+            "skip.audio_enhance",
+            "Skip the audio clean-up",
+            "bool",
+            "Keep the raw audio: no high-pass, no loudness normalisation and no limiter.",
+            "The original mix may be exactly what you want, and normalisation can change the balance.",
+            "On for music or carefully mixed material; leave it off for speech recorded on a phone.",
+        ),
+        _o(
+            "skip.audio",
+            "Mute the clips",
+            "bool",
+            "Write the clips without an audio track.",
+            "Some clips are used as silent background, or the sound is added later.",
+            "On for B-roll and silent social posts. Pauses cannot be removed without audio, so the clip keeps its full length.",
+        ),
+        _o(
+            "skip.pauses",
+            "Keep the pauses",
+            "bool",
+            "Do not shorten long pauses or cut filler words.",
+            "The rhythm of an interview or a comedy bit often depends on the pauses.",
+            "On when the cut should keep every breath and every `um`.",
+        ),
+        _o(
+            "skip.caption",
+            "Skip the captions",
+            "bool",
+            "Do not burn captions into the picture.",
+            "A clean picture is sometimes wanted, or the platform adds its own captions.",
+            "On when `captions.enabled` is normally on but this run should stay clean.",
+        ),
+        _o(
+            "skip.title",
+            "Skip the hook title",
+            "bool",
+            "Do not show the hook title at the start of the clips.",
+            "A title costs the first seconds of a clip; some platforms show the opening frame as the cover.",
+            "On when `title.enabled` is normally on but this run needs the picture from the first frame.",
+        ),
+        _o(
+            "skip.fade",
+            "Skip the fades",
+            "bool",
+            "Do not fade the picture or the sound in and out.",
+            "Hard cuts feel snappier, and a fade hides the first frame that a platform may use as a cover.",
+            "On for fast-paced edits; off for a softer opening.",
+        ),
+        _o(
+            "skip.thumbnail",
+            "Skip the cover image",
+            "bool",
+            "Do not write the `.jpg` next to each clip.",
+            "The image costs a little time, and the platform generates its own cover anyway.",
+            "On when only the videos are needed.",
+        ),
+        _o(
+            "skip.llm",
+            "Skip the model re-rank",
+            "bool",
+            "Ignore `llm.enabled` and keep the heuristic ranking for this run.",
+            "The model can be slow or unreachable, and the heuristic order is a good fallback.",
+            "On to compare the heuristic choice with the model's, or to keep a run entirely offline.",
+        ),
+        _o(
+            "skip.snap",
+            "Skip cut snapping",
+            "bool",
+            "Do not move the cut points to the nearest shot change.",
+            "Shot detection costs time and can move a cut away from the spoken word.",
+            "On when `clips.snap_to_cuts` is normally on but the cuts already land well.",
+        ),
+    ),
+)
+
 SPEED = Section(
     "speed",
     "Speed",
@@ -1375,7 +1471,7 @@ LLM = Section(
 )
 
 #: Every section, in the order the app shows them.
-SECTIONS: tuple[Section, ...] = (VIDEOS, DOWNLOAD, CLIPS, TRANSCRIPT, VIDEO, CAPTIONS, AUDIO, SPEED, LLM)
+SECTIONS: tuple[Section, ...] = (VIDEOS, DOWNLOAD, CLIPS, TRANSCRIPT, VIDEO, CAPTIONS, AUDIO, SKIP, SPEED, LLM)
 
 #: Every option, by its config path.
 OPTIONS: dict[str, Option] = {o.path: o for s in SECTIONS for o in s.options}

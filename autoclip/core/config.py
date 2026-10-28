@@ -295,6 +295,23 @@ class LoggingCfg(Section):
 
 
 @dataclass(config=SCHEMA)
+class SkipCfg(Section):
+    """Leave individual pipeline steps out (nothing is skipped by default)."""
+
+    stt: Bool = False  # no Whisper; an explicit, downloaded or cached transcript is still used
+    denoise: Bool = False  # no speech enhancement before Whisper and no noise reduction of the clip audio
+    audio_enhance: Bool = False  # keep the raw audio (no high-pass, loudness normalisation or limiter)
+    audio: Bool = False  # mute the clips (and skip audio decoding, so pauses cannot be removed)
+    pauses: Bool = False  # keep pauses and filler words in the clip audio
+    caption: Bool = False  # no burned-in captions
+    title: Bool = False  # no hook title
+    fade: Bool = False  # no video or audio fades
+    thumbnail: Bool = False  # no .jpg cover next to each clip
+    llm: Bool = False  # no LLM re-ranking (even when llm.enabled is true)
+    snap: Bool = False  # no snapping of cut points to shot changes
+
+
+@dataclass(config=SCHEMA)
 class ComputeCfg(Section):
     """Where the heavy work runs."""
 
@@ -495,10 +512,18 @@ class Config(Section):
     title: TitleCfg = field(default_factory=TitleCfg)
     audio: AudioCfg = field(default_factory=AudioCfg)
     silence: SilenceCfg = field(default_factory=SilenceCfg)
+    skip: SkipCfg = field(default_factory=SkipCfg)
     processing: ProcessingCfg = field(default_factory=ProcessingCfg)
     resources: ResourcesCfg = field(default_factory=ResourcesCfg)
     storage: StorageCfg = field(default_factory=StorageCfg)
     logging: LoggingCfg = field(default_factory=LoggingCfg)
+
+    @model_validator(mode="after")
+    def _skip_is_possible(self) -> Config:
+        """Skipping Whisper while forcing it would leave nothing to transcribe with."""
+        if self.skip.stt and self.transcript.mode == "whisper":
+            raise ConfigError("skip.stt cannot be combined with transcript.mode: 'whisper' (nothing would transcribe)")
+        return self
 
 
 T = TypeVar("T")

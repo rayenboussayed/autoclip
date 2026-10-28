@@ -97,6 +97,8 @@ def test_parse_accepts_comments_and_int_for_float() -> None:
         ({"download": {"time_range": "1::2-2:00"}}, "not a valid time range"),
         ({"download": {"metadata": {"embed": True}}}, "download.metadata.embed: Unexpected keyword"),
         ({"download": {"nope": 1}}, "download.nope: Unexpected keyword"),
+        ({"skip": {"stt": "yes"}}, "skip.stt:"),
+        ({"skip": {"everything": True}}, "skip.everything: Unexpected keyword"),
     ],
 )
 def test_invalid_config_is_rejected(data: dict[str, object], fragment: str) -> None:
@@ -133,6 +135,23 @@ def test_valid_unions_and_lists() -> None:
     cfg = parse(Config, {"clips": {"scenes": ["best", "funny"]}, "silence": {"threshold_db": -40}, "video": {"fps": None, "gpu": "nvenc"}})
     assert cfg.clips.scene_list() == ["best", "funny"] and KindCfg().aspect == "9:16"
     assert cfg.silence.threshold_db == -40 and cfg.video.fps is None and cfg.video.gpu == "nvenc"
+
+
+SKIP_KEYS = frozenset({"stt", "denoise", "audio_enhance", "audio", "pauses", "caption", "title", "fade", "thumbnail", "llm", "snap"})
+
+
+def test_nothing_is_skipped_by_default() -> None:
+    """Every step runs unless the user asks otherwise: all eleven switches exist and are false."""
+    skip = asdict(Config().skip)
+    assert skip.keys() == SKIP_KEYS
+    assert not any(skip.values())
+
+
+def test_skip_switches_parse_and_reject_a_contradiction() -> None:
+    cfg = parse(Config, {"skip": {"caption": True, "thumbnail": True}})
+    assert cfg.skip.caption and cfg.skip.thumbnail and not cfg.skip.stt
+    with pytest.raises(ConfigError, match="skip.stt cannot be combined with transcript.mode: 'whisper'"):
+        parse(Config, {"skip": {"stt": True}, "transcript": {"mode": "whisper"}})
 
 
 def test_expand_inputs_globs_dedupes_and_sorts(tmp_path: Path) -> None:

@@ -6,7 +6,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 from typing import Any
 
 import numpy as np
@@ -33,7 +33,7 @@ from autoclip.core.transcript import (
     transcribe,
 )
 
-from .conftest import SENTENCES, Media, make_cfg
+from ..support import FIXTURE_SAMPLES, SENTENCES, Media, install_stub_whisper, make_cfg
 
 SRT = (
     "1\n00:00:01,000 --> 00:00:03,500\nHello there.\n\n"
@@ -104,49 +104,10 @@ def info_db(media: Media) -> tuple[MediaInfo, F32]:
     return probe(media.video), db
 
 
-FIXTURE_SAMPLES = 40 * 16000  # the fixture video is 40 s long
-
-
 def asr_cfg(media: Media, tmp_path: Path, **sections: Any) -> Config:
     """A configuration that transcribes with Whisper (the default of ``make_cfg`` reads a file)."""
     transcript = {"mode": "auto", **sections.pop("transcript", {})}
     return make_cfg(media, tmp_path / "out", transcript=transcript, **sections)
-
-
-def install_stub_whisper(
-    monkeypatch: pytest.MonkeyPatch, media: Media, record: dict[str, Any], cuda: int = 0, full_samples: int = FIXTURE_SAMPLES
-) -> None:
-    """A stand-in for faster-whisper / ctranslate2 with the real call signatures (the model host is offline in CI)."""
-    segments = json.loads(media.transcript.read_text())
-
-    class WhisperModel:
-        def __init__(self, name: str, device: str, compute_type: str, cpu_threads: int) -> None:
-            record["init"] = (name, device, compute_type, cpu_threads)
-
-        def transcribe(self, audio: Any, **options: Any) -> tuple[Any, Any]:
-            record["options"] = options
-            if isinstance(audio, np.ndarray) and len(audio) < full_samples - 16000:  # a chunk, not the whole file
-                record.setdefault("chunks", []).append((len(audio), options["language"]))
-                seg = SimpleNamespace(start=0.5, end=2.5, text=" chunk", words=[SimpleNamespace(start=0.5, end=1.5, word=" chunk")])
-                return iter([seg]), SimpleNamespace(language="en", language_probability=0.9, duration=len(audio) / 16000)
-            record["samples"] = len(audio)
-            record["audio_sum"] = float(np.asarray(audio, dtype=np.float64).sum())
-            gen = (
-                SimpleNamespace(
-                    start=s["start"],
-                    end=s["end"],
-                    text=f" {s['text']}",
-                    words=[SimpleNamespace(start=w["start"], end=w["end"], word=f" {w['word']}") for w in s["words"]],
-                )
-                for s in segments
-            )
-            return gen, SimpleNamespace(language="en", language_probability=0.99, duration=40.0)
-
-    fw, ct = ModuleType("faster_whisper"), ModuleType("ctranslate2")
-    fw.WhisperModel = WhisperModel  # type: ignore[attr-defined]
-    ct.get_cuda_device_count = lambda: cuda  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "faster_whisper", fw)
-    monkeypatch.setitem(sys.modules, "ctranslate2", ct)
 
 
 def test_transcribe_cpu_with_stub(media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path) -> None:
@@ -334,6 +295,77 @@ def test_cache_key_covers_the_chunk_length(media: Media) -> None:
     assert transcript._cache_key(media.video, cfg, ProcessingCfg()) != transcript._cache_key(
         media.video, cfg, ProcessingCfg(chunk_minutes=2)
     )
+
+
+def test_cache_key_covers_the_denoise_switch(media: Media) -> None:
+    """An enhanced transcript must not be reused when ``skip.denoise`` asks for the raw audio."""
+    proc = ProcessingCfg()
+    assert transcript._cache_key(media.video, TranscriptCfg(), proc) != transcript._cache_key(
+        media.video, TranscriptCfg(), proc, denoise=False
+    )
+
+
+def test_skip_stt_never_calls_whisper_but_uses_a_file_or_the_cache(
+    media: Media,
+    tmp_path: Path,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    info_db: tuple[MediaInfo, F32],
+) -> None:
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec)
+    explicit = cfg_for(media, tmp_path, mode="file", file=str(tmp_path / "talk.srt"))
+    (tmp_path / "talk.srt").write_text(media.srt.read_text(encoding="utf-8"), encoding="utf-8")
+    explicit.skip.stt = True
+    assert get_transcript(media.video, explicit, tmp_path, store, *info_db, need_text=True)
+    assert "init" not in rec and len(store.light_segments()) == len(SENTENCES)
+
+    cached = cfg_for(media, tmp_path, mode="auto", model="tiny")
+    assert get_transcript(media.video, cached, tmp_path, store, *info_db, need_text=True) and "init" in rec
+    rec.clear()
+    cached.skip.stt = True
+    with caplog.at_level(logging.INFO, logger="autoclip"):
+        assert get_transcript(media.video, cached, tmp_path, store, *info_db, need_text=True)
+    assert "init" not in rec and "reusing cached transcript" in caplog.text
+
+
+def test_skip_stt_without_any_transcript_continues_without_text(
+    media: Media,
+    tmp_path: Path,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    info_db: tuple[MediaInfo, F32],
+) -> None:
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec)
+    cfg = cfg_for(media, tmp_path, mode="auto", model="tiny")
+    cfg.skip.stt = True
+    with caplog.at_level(logging.INFO, logger="autoclip"):
+        assert not get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True)
+    assert "init" not in rec and "skip.stt is set" in caplog.text and not (tmp_path / "talk.transcript.json").exists()
+
+
+def test_skip_denoise_builds_no_speech_enhancer(
+    media: Media,
+    tmp_path: Path,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    info_db: tuple[MediaInfo, F32],
+) -> None:
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec)
+    built: list[tuple[Any, ...]] = []
+
+    class Enhancer:
+        def __init__(self, *args: Any) -> None:
+            built.append(args)
+
+    monkeypatch.setattr(transcript, "SpeechEnhancer", Enhancer)
+    cfg = make_cfg(media, tmp_path / "out", transcript={"mode": "auto", "file": None, "model": "tiny"}, skip={"denoise": True})
+    assert get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True)
+    assert built == [] and "init" in rec
 
 
 def test_the_enhancement_model_lives_beside_the_work_directory(tmp_path: Path) -> None:

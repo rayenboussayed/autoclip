@@ -38,9 +38,10 @@ sudo snapcraft --destructive-mode               # the snap (Linux) from that bui
 pre-commit install                              # ruff, mypy and the test suite on every commit
 ruff check . && ruff format --check .          # lint + format (line length 140)
 mypy autoclip tests tools                       # strict typing, tests and tools included
-pytest                                         # whole suite; FAILS if branch coverage < 95%
-pytest tests/test_moments.py -k scene --no-cov # a focused run (always add --no-cov for partial runs)
-AUTOCLIP_NETWORK_TESTS=1 pytest -m network --no-cov   # the real-YouTube downloader checks (offline by default)
+pytest                                         # offline unit suite; FAILS if branch coverage < 95%
+pytest tests/unit/test_moments.py -k scene --no-cov   # a focused run (always add --no-cov for partial runs)
+AUTOCLIP_NETWORK_TESTS=1 pytest -m "network and not e2e" --no-cov   # the real-YouTube downloader checks
+AUTOCLIP_E2E_TESTS=1 pytest tests/e2e -m e2e --no-cov               # CLI end-to-end runs (results in tests/results)
 ```
 
 **Definition of done** (all four must pass before you finish): `ruff check .`, `ruff format --check .`,
@@ -48,7 +49,7 @@ AUTOCLIP_NETWORK_TESTS=1 pytest -m network --no-cov   # the real-YouTube downloa
 A full `pytest` takes about one minute (real ffmpeg encodes, real worker processes).
 
 **Release:** bump `version` in `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml` (they must match -
-`tests/test_version.py` checks it) and push to `main`. The build workflow checks that `v<version>` is not tagged
+`tests/unit/test_version.py` checks it) and push to `main`. The build workflow checks that `v<version>` is not tagged
 yet, builds the five targets, then creates the tag and publishes the GitHub release. A push that does not change
 the version skips the build; a pull request builds without releasing.
 
@@ -86,8 +87,15 @@ autoclip/
     form.py         the form: one row per option, the control that fits its kind (incl. JSON), the scroll area
     session.py      the behaviour without widgets: read/write/validate the config, default_config_path, start/stop
     window.py       the window: tabs, details panel, log, Run / Stop / Save / Load / Reset, debug mode
-tests/            mirrors the modules; conftest.py generates the fixture video and gates the `network` marker
-                  test_version.py guards the three version files
+tests/            support.py - pure helpers shared by both suites; conftest.py - fixtures and the e2e/network gates
+  unit/           mirrors the modules (the default, offline `pytest` run); test_version.py guards the versions
+                  test_support.py / test_e2e_harness.py / test_conftest.py - the shared helpers, the e2e harness and
+                  the suite's own gating/annotations, all exercised offline
+  e2e/            opt-in real-network checks: test_network.py and the CLI end-to-end cases
+    harness.py      pure e2e logic: results folders, subprocess runs, config builders, clip/DB readers
+    conftest.py     the e2e fixtures and the outcome-recording hook around that harness
+  assets/         youtube.json - the videos the e2e cases use
+  results/        per-run configs, logs and outputs (ignored by git)
 autoclip.spec     the PyInstaller spec: a standalone build (engine + command line + desktop app + yt-dlp/EJS)
 snapcraft.yaml    the snap: the same build as a snap (linux, amd64 + arm64)
 assets/           the icon and the desktop file of the AppImage and the snap
@@ -101,6 +109,7 @@ AGENTS.md        this file (guidance for coding agents)
 pyproject.toml    deps, ruff, mypy(strict), pytest(+coverage gate, `network` marker), coverage(multiprocessing)
 .github/workflows/ci.yml       ubuntu/macos/windows x py3.10/3.12, then re-run with Pillow>=12.3
 .github/workflows/network.yml  weekly (and manual) real-platform downloader tests
+.github/workflows/e2e.yml      manual command-line end-to-end runs (results uploaded as an artifact)
 ```
 
 ### Import layers (no cycles - keep it this way)
@@ -148,8 +157,9 @@ main()
       mode == "split": ffmpeg stream-copy parts -> {out}/long/{video}/   (done)
       Store(.work/{video}/autoclip.db, fresh=True) + Cache      ({video} = name or src.stem)
       energy_track(src)                            0.5 s loudness track (cached in kv)
-      get_transcript(...)                          file | downloaded subtitle | disk cache | faster-whisper (5 min
-                                             chunks) -> SQLite (each chunk is enhanced by `SpeechEnhancer` first)
+      get_transcript(..., needs_text(cfg))        file | downloaded subtitle | disk cache | faster-whisper (5 min
+                                             chunks) -> SQLite (each chunk is enhanced by `SpeechEnhancer` first);
+                                             `skip.stt` stops before Whisper, `skip.denoise` skips the enhancer
       for kind in cfg.clips.kinds ("short", "long"):
         moments = ranges_moments(...)  if mode == "ranges"   (scene "custom")
                   select_moments(...)  otherwise              (one pass per scene type)
@@ -182,8 +192,10 @@ clipped too). `--download-only` stops after this stage.
 3. For each scene: `scene_score` = sum of `weight * zscore(feature)` from `STYLES[scene]` (+ `kw` weight 1.5 if
    `clips.keywords`), then `pick()` greedily takes the best candidates that overlap neither each other nor `taken`
    windows of earlier scenes (1 s gap). **Scene order therefore means priority.**
-4. Optional LLM re-rank per scene (`_rerank`: `0.4*z(heuristic) + 0.6*(llm-5)/2`; any failure keeps heuristic order).
-5. Padding (`pad_start/pad_end`) for text picks; audio-only picks snap to quiet frames; optional snap to shot cuts.
+4. Optional LLM re-rank per scene (`_rerank`: `0.4*z(heuristic) + 0.6*(llm-5)/2`; any failure keeps heuristic order);
+   `skip.llm` turns it off even when `llm.enabled` is true.
+5. Padding (`pad_start/pad_end`) for text picks; audio-only picks snap to quiet frames; optional snap to shot cuts
+   (`skip.snap` turns only the shot-cut snapping off).
 
 Candidates are **not stored in SQLite** (an earlier design did; it exploded to millions of rows for long clips x scenes).
 
@@ -192,6 +204,9 @@ Candidates are **not stored in SQLite** (an earlier design did; it exploded to m
 (shorten long pauses, cut fillers; skipped without audio) -> clamp sub-clips to the real stream length -> `layout`
 (fit on blurred/colour/image background, or fill) -> `build_captions` (sprites cached, one band track) -> optional title ->
 fades -> `encode` with the chosen `Encoder` -> JPEG cover. `render_job` writes the `.srt` sidecar and the DB outcome.
+The `skip.*` switches gate the matching stage here: `audio` mutes (and stops decoding), `audio_enhance`/`denoise`
+pick the audio halves, `pauses`, `caption`, `title`, `fade` and `thumbnail` skip their step. `audio.enhance: false`
+remains the master switch of all clip-audio processing.
 
 `compute_keep` gets the kind's `min_seconds`: when the trimming would cut the clip below it, the smallest cuts are
 given back (the fillers first), so a clip never ends up shorter than the user asked for.
@@ -235,12 +250,12 @@ retried alone, in-process. Workers re-run `setup_logging(log_file, level, None)`
 9. **Words/segments must be shorter than `store.MAX_SPAN` (120 s)**: window queries only look that far back.
 10. **No work on the GPU except encoding (and Whisper via CUDA).** Do not claim end-to-end GPU acceleration.
 11. **The desktop app shows every config option.** `app/fields.py` is the catalogue: one entry per option with
-    *what* it does, *why* you would change it and *when*. `tests/test_app.py` compares it with the config
+    *what* it does, *why* you would change it and *when*. `tests/unit/test_app.py` compares it with the config
     dataclasses, so a new option that is not in the catalogue (or an entry that is not in the config) fails
     the suite. The app writes the same config file the command line reads - never a second format.
 12. **A local-only run never imports yt-dlp and never makes a network request.** `is_url` decides what is downloaded;
     `yt_dlp` is imported inside `Downloader.__init__`/`platforms` helpers, and `Downloader` is only constructed when
-    `input` holds a URL (inspection modes included). `tests/test_cli_download.py` proves it with a poisoned
+    `input` holds a URL (inspection modes included). `tests/unit/test_cli_download.py` proves it with a poisoned
     `sys.modules["yt_dlp"] = None`.
 13. **The platform policy runs before the request.** `identify` (host + extractor match) -> allow/deny (deny wins,
     groups expand, aliases canonicalise) -> `check_families` raises `DownloadError`, and only then is yt-dlp asked
@@ -253,15 +268,23 @@ retried alone, in-process. Workers re-run `setup_logging(log_file, level, None)`
     `use_as_transcript` is `never` (default), `manual` (human subtitles only) or `always` (automatic captions too),
     and `transcript.mode: "whisper"` ignores them unless it is `always`. Only a real `.srt` is handed to
     `get_transcript` (other formats are converted or dropped); an empty one is unusable and falls back.
+16. **Nothing is skipped by default; `skip.*` only removes steps.** All eleven switches are `false` in `SkipCfg`, and a
+    skip overrides the stage's own toggle (`skip.caption` wins over `captions.enabled`, `skip.llm` over `llm.enabled`,
+    ...). `skip.stt` still uses an explicit file, a downloaded subtitle or the disk cache and never calls Whisper;
+    `skip.audio` mutes the clip and stops audio decoding, so pause removal cannot run. `audio.enhance: false` stays the
+    master switch of clip-audio processing. `needs_text(cfg)` decides whether a transcript is loaded at all
+    (highlights, or captions/titles that are not skipped).
 
 ## 6. Configuration (`config.py`)
 
 `Config` = nested dataclasses: `input` (list; files, globs and http(s) URLs), `output_dir`, `clips` (`mode`, `kinds`,
 `scenes`, `short: KindCfg`, `long: KindCfg`, `keywords`, `lexicon_file`, `skip_intro_seconds`, `snap_to_cuts`, `pad_*`,
 `split_seconds`), `download`, `transcript`, `llm`, `video` (`short_side`, `fps`, `layout`, `background`, `fade_seconds`,
-`gpu`, `crf`, `preset`, `maxrate_mbps`, `thumbnail`), `captions`, `title`, `audio`, `silence`, `processing`, `resources`,
-`storage`, `logging`. `KindCfg` = `count` (per scene), `min_seconds`, `target_seconds` (recommended, optional),
-`max_seconds`, `aspect`, `ranges` - the length of a clip is `clip(minimum, recommended, maximum)`.
+`gpu`, `crf`, `preset`, `maxrate_mbps`, `thumbnail`), `captions`, `title`, `audio`, `silence`, `skip`, `processing`,
+`resources`, `storage`, `logging`. `KindCfg` = `count` (per scene), `min_seconds`, `target_seconds` (recommended,
+optional), `max_seconds`, `aspect`, `ranges` - the length of a clip is `clip(minimum, recommended, maximum)`.
+`SkipCfg` = `stt`, `denoise`, `audio_enhance`, `audio`, `pauses`, `caption`, `title`, `fade`, `thumbnail`, `llm`, `snap`
+(all `false`; see invariant 16).
 `DownloadCfg` = `quality`, `fps`, `prefer`, `codec`, `container`, `audio_quality`, `audio_language`, `original_dir`,
 `metadata`, `subtitles`, `playlist`, `max_videos`, `time_range`, `cookies`, `network`, `js_runtime`, `platforms`;
 `PlatformsCfg` = `allow`, `deny`, `groups`, `settings`, `group_by_platform`.
@@ -288,7 +311,7 @@ retried alone, in-process. Workers re-run `setup_logging(log_file, level, None)`
    (`Field(ge=..., le=...)`, `StringConstraints(pattern=...)`, `Annotated[int, Strict()]`) or, for a rule that spans
    fields, in a `model_validator(mode="after")` that raises `ConfigError` - never in a hand-written type check.
 2. Use it from code via `cfg.<section>.<field>` (never read raw JSON elsewhere).
-3. Tests: valid + invalid case in `tests/test_config.py` (the `--init-full` round-trip test already guards defaults), plus a behavioural test.
+3. Tests: valid + invalid case in `tests/unit/test_config.py` (the `--init-full` round-trip test already guards defaults), plus a behavioural test.
 4. If it changes behaviour users see, update `README.md` (and the upgrade notes if it is breaking).
 
 ## 7. Conventions
@@ -330,6 +353,8 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 * pytest runs with `--capture=sys` (see gotcha 21): pytest's default fd-level capture intermittently breaks the
   Tcl file channels on Windows and fails the desktop-app tests at random.
 
+* `tests/support.py` holds the pure helpers both suites import (`SENTENCES`, `Media`, `merge`, `make_cfg`,
+  `write_config`, `install_stub_whisper`, the manifest loader); `tests/conftest.py` keeps only fixtures and gating.
 * `tests/conftest.py`
   * `media` (session): generates a 40 s 320x180 video (speech-like tone bursts, 3 s on / 1 s off, 10 known sentences)
     with the bundled ffmpeg, plus `talk.json` (word timings), `talk.srt` and a `silent.mp4` without audio.
@@ -338,19 +363,30 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     `video` is a config section name.
   * `_restore_logger` (autouse): `setup_logging` sets `propagate=False`; this resets it so `caplog` works.
 * Patterns already in use - reuse them:
-  * Whisper: `install_stub_whisper` in `tests/test_transcript.py` (real call signatures; returns the fixture transcript,
-    or one chunk-relative segment per call when given an ndarray). Also imported by `test_runner_cli.py`.
+  * Whisper: `install_stub_whisper` in `tests/support.py` (real call signatures; returns the fixture transcript,
+    or one chunk-relative segment per call when given an ndarray). Used by `unit/test_transcript.py` and
+    `unit/test_runner_cli.py`.
   * Process pool: `ThreadPool(ThreadPoolExecutor)` monkeypatched over `runner.ProcessPoolExecutor` so scheduling logic runs
     (and is measured) in-process; one test uses real `spawn` workers.
   * LLM: the `llm_server` fixture is a real local `http.server` speaking Ollama and OpenAI-compatible formats.
-  * Downloader: `tests/test_download.py` replaces `yt_dlp.YoutubeDL` with `FakeYtDlp`, a scripted session that records
-    every parameter, extracts synthetic info dicts and writes the **real fixture video** where yt-dlp would have (so
-    probing, caching and trimming really run). The yt-dlp exceptions are the real classes (`YoutubeDLError` and its
-    subclasses), so error handling is not faked. `tests/test_cli_download.py` drives the flags that keep the downloader
-    out of a run (local-only batches, `--allow`/`--deny`, inspection modes).
+  * Downloader: `tests/unit/test_download.py` replaces `yt_dlp.YoutubeDL` with `FakeYtDlp`, a scripted session that
+    records every parameter, extracts synthetic info dicts and writes the **real fixture video** where yt-dlp would
+    have (so probing, caching and trimming really run). The yt-dlp exceptions are the real classes (`YoutubeDLError`
+    and its subclasses), so error handling is not faked. `tests/unit/test_cli_download.py` drives the flags that keep
+    the downloader out of a run (local-only batches, `--allow`/`--deny`, inspection modes).
   * Network: tests that need the real internet carry `@pytest.mark.network`; `conftest.pytest_collection_modifyitems`
-    skips them unless `AUTOCLIP_NETWORK_TESTS=1`. `tests/test_network.py` uses yt-dlp's own test video, and
-    `.github/workflows/network.yml` runs them weekly (the normal suite stays offline).
+    skips them unless `AUTOCLIP_NETWORK_TESTS=1` or `AUTOCLIP_E2E_TESTS=1`. `tests/e2e/test_network.py` uses yt-dlp's
+    own test video, and `.github/workflows/network.yml` runs it weekly with `-m "network and not e2e"` (the normal
+    suite stays offline).
+  * End-to-end: `tests/e2e/test_cli_e2e.py` carries both `e2e` and `network` and only runs with
+    `AUTOCLIP_E2E_TESTS=1` (which implies network access). It drives `python -m autoclip` against the URLs of
+    `tests/assets/youtube.json`, then asserts the real outputs (formats report, originals, subtitles, `clips.json`,
+    `clips` table, probe dimensions/duration). Every case keeps its config, stdout, stderr, log and outputs under
+    `tests/results/<timestamp>/` (`run.json`, `environment.json`, per-case `case.json`); the run also gets a flat
+    `clips/` folder with every rendered `.mp4` and its `.srt`/`.jpg` sidecars, a `clips.json` index and
+    `clips/index.html` (a gallery that plays them in a browser). The folder is ignored by git.
+    `AUTOCLIP_E2E_RESULTS`, `AUTOCLIP_E2E_URL` and `AUTOCLIP_E2E_COOKIES` override the defaults. Never mark a
+    fake-based test `e2e`.
   * OS-specific logic (font folders, GPU priority per OS, cgroups) is tested by **passing the platform/paths in**
     (`font_dirs(system, env, home)`, `pick_encoder(cfg, system)`, `cgroup_*(root)`), never by running on that OS.
   * Hardware: `hardware.works` is `functools.cache`d - the test module clears it (`_fresh_probe_cache`). A software
@@ -390,7 +426,7 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 4. **MoviePy pins `pillow<12`**, but the suite passes on Pillow 12.3 (security fixes) - CI runs both; README tells users to upgrade.
 5. **PySceneDetect >= 0.7:** use `scene[0].seconds` (`get_seconds()` is deprecated).
 6. **The transcription audio is always decoded by us** (`media.decode_audio`, 16 kHz), never handed to Whisper as a
-   file path: the chunks have to be enhanced first. The whisper stub in `tests/test_transcript.py` tells a chunk from the
+   file path: the chunks have to be enhanced first. The whisper stub in `tests/support.py` tells a chunk from the
    whole file by its length.
 7. **The sherpa-onnx wheel is CPU-only** (compiled without `SHERPA_ONNX_ENABLE_GPU`): the "cuda" provider silently falls
    back to the CPU. The denoiser is small, so *more* threads make it slower (RTF 0.21 at 4 threads, 0.30 at 16).
@@ -454,30 +490,31 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     bun -> quickjs` and logs a warning when none is installed; `remote_components: "ejs"` lets yt-dlp fetch its EJS
     component from GitHub. A machine without a runtime still works but may only see the SABR/muxed formats - do not
     treat "few formats" as a bug in `formats.choose`.
-26. **The offline suite proves our code, not yt-dlp compatibility.** `tests/test_download.py` replaces `YoutubeDL`
+26. **The offline suite proves our code, not yt-dlp compatibility.** `tests/unit/test_download.py` replaces `YoutubeDL`
     with a scripted fake, so a yt-dlp release can rename an internal import (`yt_dlp.globals`,
-    `yt_dlp.utils.dfxp2srt`, `download_range_func`) without a failure here. `tests/test_network.py`
-    (`@pytest.mark.network`, gated by `AUTOCLIP_NETWORK_TESTS=1`, run weekly by `.github/workflows/network.yml`)
-    is the check that the real API still works. Keep both: never mark a fake-based test `network`.
+    `yt_dlp.utils.dfxp2srt`, `download_range_func`) without a failure here. `tests/e2e/test_network.py`
+    (`@pytest.mark.network`, gated by `AUTOCLIP_NETWORK_TESTS=1`, run weekly by `.github/workflows/network.yml`) and
+    the CLI end-to-end cases (`@pytest.mark.e2e`, gated by `AUTOCLIP_E2E_TESTS=1`) are the checks that the real API
+    still works. Keep both: never mark a fake-based test `network` or `e2e`.
 
 ## 10. Recipes
 
 * **New scene type:** add weights to `STYLES` and a one-line description to `STYLE_HELP` (and lexicon words to `LEXICONS`
   if a new feature name is used). `ClipsCfg` validation and `"all"` pick it up automatically. Add it to the expectations in
-  `tests/test_moments.py::test_every_scene_type_prefers_its_own_window`.
+  `tests/unit/test_moments.py::test_every_scene_type_prefers_its_own_window`.
 * **New GPU/CPU encoder:** add a builder to `hardware.HARDWARE` (and the OS to `PRIORITY`), add the literal to `VideoCfg.gpu`,
-  test arguments in `tests/test_hardware.py`. If it needs its own `-preset` names, put them in `params`.
+  test arguments in `tests/unit/test_hardware.py`. If it needs its own `-preset` names, put them in `params`.
 * **New clip kind:** add a `KindCfg` field on `ClipsCfg` with defaults, extend the `kinds` `Literal`, `ClipsCfg.kind()`, and
   the output-folder logic in `cli.process_video`; update tests and README.
 * **New download option:** add a typed field to the right `download.*` dataclass (default included), use it in
   `Downloader._base_params` / `_media_params` / `formats`, add its entry to `app/fields.py` (the suite fails without it),
-  document it in README's "Downloading URLs" and cover it in `tests/test_config.py` (valid + invalid) and
-  `tests/test_download.py` (the recorded yt-dlp parameters).
+  document it in README's "Downloading URLs" and cover it in `tests/unit/test_config.py` (valid + invalid) and
+  `tests/unit/test_download.py` (the recorded yt-dlp parameters).
 * **New platform family, alias or group:** edit `platforms.py` (`FAMILIES`, `ALIASES`, `GROUPS`), test it offline in
-  `tests/test_platforms.py` and update the README table. Family names are checked against yt-dlp only at run time, so
+  `tests/unit/test_platforms.py` and update the README table. Family names are checked against yt-dlp only at run time, so
   none of this needs the network.
 * **DB schema change:** edit `store.SCHEMA` (the DB is recreated every run - no migrations), update `Store` methods and
-  `tests/test_infra.py`. Remember workers open their own connection.
+  `tests/unit/test_infra.py`. Remember workers open their own connection.
 * **Caption styling:** `captions.render_text_image` takes a `CaptionsCfg`; sprite cache keys include the whole style
   (`sprite_key`), so new style fields are picked up automatically if they are in `CaptionsCfg`.
 * **Performance work:** profile one clip with `python -m cProfile -o p.out -m autoclip cfg.json` (use `mode: "ranges"`).

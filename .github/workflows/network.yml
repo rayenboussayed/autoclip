@@ -20,4 +20,5 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
-      - run: AUTOCLIP_NETWORK_TESTS=1 pytest -m network --no-cov
+      # the e2e cases are opt-in and much slower; this job only proves the real downloader API
+      - run: AUTOCLIP_NETWORK_TESTS=1 pytest -m "network and not e2e" --no-cov

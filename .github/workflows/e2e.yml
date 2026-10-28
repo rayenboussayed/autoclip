@@ -1,0 +1,35 @@
+name: e2e
+
+# The command line against the real internet: downloads, subtitles, ranges and the render pipeline.
+# Started by hand only (a real run takes minutes and depends on the platforms); the offline suite is ci.yml.
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      # download.time_range is handed to yt-dlp only when a real ffmpeg and ffprobe are on PATH
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      # every case writes its config, stdout, stderr, log and outputs under tests/results/<timestamp>/
+      - name: Test
+        run: AUTOCLIP_E2E_TESTS=1 pytest tests/e2e -m e2e --no-cov
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results
+          path: tests/results/
+          if-no-files-found: warn
+          retention-days: 14

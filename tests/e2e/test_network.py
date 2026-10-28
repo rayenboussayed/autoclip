@@ -1,7 +1,7 @@
 """Real network checks for the downloader: a small, long-lived YouTube video.
 
 These talk to the internet, so the suite skips them unless ``AUTOCLIP_NETWORK_TESTS=1``. They are the
-only tests that prove the real yt-dlp API (not the scripted fake in ``test_download.py``) still works
+only tests that prove the real yt-dlp API (not the scripted fake in ``tests/unit/test_download.py``) still works
 with the version installed: the scheduled ``network`` workflow runs them every week.
 """
 

@@ -32,7 +32,7 @@ from autoclip.core.media import (
 )
 from autoclip.core.models import Word
 
-from .conftest import Media
+from ..support import Media
 
 TONE = (0.3 * np.sin(2 * np.pi * 220 * np.arange(2 * AUDIO_SR) / AUDIO_SR)).astype(np.float32)
 
@@ -157,6 +157,27 @@ def test_enhance_audio_off_and_auto_without_noisereduce(media: Media, monkeypatc
     assert len(enhance_audio(media.video, 0.0, 1.0, AudioCfg(enhance=False), 1)) == AUDIO_SR
     monkeypatch.setattr(importlib.util, "find_spec", lambda _n: None)
     assert len(enhance_audio(media.video, 0.0, 1.0, AudioCfg(denoise="auto"), 1)) == AUDIO_SR  # falls back to ffmpeg afftdn
+
+
+def test_enhance_audio_respects_the_skip_switches(media: Media, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``skip.audio_enhance`` and ``skip.denoise`` are independent; ``cfg.enhance`` still turns both off."""
+    calls: list[tuple[float, bool]] = []
+
+    def fake(src: Any, start: float, dur: float, highpass: float = 0, fft_denoise: bool = False) -> Any:
+        calls.append((highpass, fft_denoise))
+        return TONE[: int(dur * AUDIO_SR)].copy()
+
+    monkeypatch.setattr(audio, "load_window_audio", fake)
+    cfg = AudioCfg(denoise="ffmpeg", highpass_hz=80)
+    raw = enhance_audio(media.video, 0.0, 2.0, cfg, 1, enhance=False, denoise=False)
+    assert calls[-1] == (0.0, False) and np.array_equal(raw, TONE)
+    denoised = enhance_audio(media.video, 0.0, 2.0, cfg, 1, enhance=False, denoise=True)
+    assert calls[-1] == (0.0, True) and np.array_equal(denoised, TONE)  # denoised, but the level is untouched
+    enhanced = enhance_audio(media.video, 0.0, 2.0, cfg, 1, enhance=True, denoise=False)
+    assert calls[-1] == (80.0, False)
+    assert 20 * np.log10(np.sqrt(np.mean(enhanced**2))) == pytest.approx(cfg.target_dbfs, abs=4)
+    master = enhance_audio(media.video, 0.0, 2.0, AudioCfg(enhance=False, denoise="ffmpeg"), 1, enhance=True, denoise=True)
+    assert calls[-1] == (0.0, False) and np.array_equal(master, TONE)  # audio.enhance is still the master off switch
 
 
 def test_is_filler() -> None:

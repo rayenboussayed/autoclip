@@ -7,7 +7,7 @@ from pathlib import Path
 
 import autoclip
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _version(path: str, pattern: str) -> str:

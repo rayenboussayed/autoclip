@@ -17,7 +17,7 @@ python -m autoclip.app                 # the desktop app (same options, explaine
 `python -m autoclip.app` opens a native window (Tk, the look of your system) with **every option of
 the config file**:
 
-- nine tabs - *Videos, Download, Clips, Transcript, Video, Captions, Audio, Speed, LLM & log* - each
+- ten tabs - *Videos, Download, Clips, Transcript, Video, Captions, Audio, Skip, Speed, LLM & log* - each
   option with a one-line summary under it;
 - a details panel that explains the option you clicked: **what** it does, **why** you would change
   it and **when** it is the right moment;
@@ -203,6 +203,46 @@ keyboard clicks or hum. `transcript.enhance` is enabled by default:
 3. Renders each clip: denoise + loudness, cuts long pauses and "um/uh", blurred background, word-highlighted captions inside
    the app-UI safe zone, fades, H.264 High + AAC (`+faststart`, capped bitrate).
 
+## Skipping steps
+Every step runs by default. `skip.*` leaves individual steps out without changing the rest of the
+config - useful for a quick render, a silent clip or a run that must not download a model:
+
+```json
+{
+  "skip": {
+    "stt": false,
+    "denoise": false,
+    "audio_enhance": false,
+    "audio": false,
+    "pauses": false,
+    "caption": false,
+    "title": false,
+    "fade": false,
+    "thumbnail": false,
+    "llm": false,
+    "snap": false
+  }
+}
+```
+
+| option | what is left out |
+| --- | --- |
+| `stt` | Whisper. An explicit `transcript.file`, a downloaded subtitle or a cached transcript is still used; without one the run continues without text (highlight selection then falls back to audio-only windows). Cannot be combined with `transcript.mode: "whisper"`. |
+| `denoise` | Speech enhancement before Whisper **and** noise reduction of the clip audio. The transcript cache key changes, so an enhanced cache is not reused for raw audio. |
+| `audio_enhance` | High-pass, loudness normalisation and the limiter of the clip audio; the audio stays at its original level. Denoising is controlled separately. |
+| `audio` | The audio track: clips are muted and the audio is not decoded (so pauses cannot be removed either). |
+| `pauses` | Pause shortening and filler-word removal; the clip keeps its whole selected window. |
+| `caption` | Burned-in captions (even when `captions.enabled` is true). |
+| `title` | The hook title (even when `title.enabled` is true). |
+| `fade` | Video and audio fades at the clip edges. |
+| `thumbnail` | The `.jpg` cover next to each clip. |
+| `llm` | The optional local-LLM re-rank; the heuristic ranking is used and no request is made. |
+| `snap` | Snapping a text-selected window to shot cuts; audio-only quiet snapping still applies. |
+
+`audio.enhance: false` remains the master switch for all clip-audio processing and turns both
+`audio_enhance` and `denoise` off. Skipping `stt`, `caption` and `title` also lets ranges/split runs
+avoid transcription entirely when no text is needed.
+
 ## Resources, storage, logs
 * Before and after every operation the script re-reads CPU count (affinity + container quota) and *free* RAM, runs as many
   parallel renders as both allow (spare cores become encoder threads), shrinks the cache and worker count under memory
@@ -270,6 +310,8 @@ line - so `./autoclip-x86_64.AppImage config.json` still cuts clips.
 * The command line gained `--download-only`, `--formats URL`, `--platforms [URL]`, `--allow` and `--deny`.
 * The desktop app gained the *Download* tab, *Copy error* / *Copy log* and `AUTOCLIP_DEBUG=1`; a
   missing config file now starts from the built-in defaults in memory instead of asking where to save.
+* `skip.*` leaves individual pipeline steps out (all eleven switches are `false` by default, so
+  nothing changes unless you ask for it).
 
 Nothing was removed or renamed, so a 2.1 config is a valid 2.2 config.
 
@@ -295,6 +337,28 @@ ruff check . && ruff format --check . && mypy autoclip tests tools
 pytest            # fails below 95% branch coverage (currently 100%); real ffmpeg, real worker processes
 pre-commit install   # the same checks on every commit (ruff, mypy and the test suite)
 ```
+
+`tests/unit` is the offline suite that `pytest` runs by default. `tests/e2e` holds the opt-in checks
+that use the real internet: the downloader smoke test and the command-line end-to-end cases driven
+by [`tests/assets/youtube.json`](tests/assets/youtube.json).
+
+```bash
+AUTOCLIP_NETWORK_TESTS=1 pytest tests/e2e/test_network.py --no-cov   # the real yt-dlp API
+AUTOCLIP_E2E_TESTS=1 pytest tests/e2e -m e2e --no-cov                # downloads, renders, keeps results
+```
+
+Every end-to-end case writes its config, stdout, stderr, log and output files to
+`tests/results/<timestamp>/`; `run.json` and `environment.json` describe the run. The run also keeps a
+flat `clips/` folder with every rendered `.mp4` (and its `.srt`/`.jpg` sidecars), a `clips.json`
+index and `clips/index.html` - a gallery that plays the clips in a browser, so the result can be
+inspected without opening the nested case folders. The folder is ignored by git.
+`AUTOCLIP_E2E_RESULTS` changes its parent, `AUTOCLIP_E2E_URL` replaces the short BBC News clip, and
+`AUTOCLIP_E2E_COOKIES` points at a Netscape `cookies.txt` when YouTube asks for one.
+`AUTOCLIP_E2E_TESTS=1` also enables the `network` tests; `AUTOCLIP_NETWORK_TESTS=1` alone does not
+run the e2e cases.
+
+The `e2e` GitHub workflow runs the end-to-end cases by hand (Actions -> e2e -> Run workflow) and keeps
+`tests/results/` as a downloadable artifact; `network.yml` runs the downloader checks weekly.
 
 The package has three parts:
 

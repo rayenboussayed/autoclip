@@ -24,7 +24,7 @@ from autoclip.core.errors import AutoclipError, DownloadError
 from autoclip.core.formats import Choice
 from autoclip.core.media import ffmpeg_exe, probe, trim_video
 
-from .conftest import Media, make_cfg
+from ..support import Media, make_cfg
 
 URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 

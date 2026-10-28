@@ -22,13 +22,13 @@ from autoclip.core import runner
 from autoclip.core.config import Config, parse_hms
 from autoclip.core.hardware import HW_MAX_WORKERS, cpu_encoder
 from autoclip.core.models import Encoder, Moment, RenderJob
+from autoclip.core.pipeline import needs_text
 from autoclip.core.resources import RESOURCES, WorkerPlan
 from autoclip.core.runner import _srt_time, render_all, render_job
 from autoclip.core.store import Store
 from autoclip.core.transcript import load_transcript_file
 
-from .conftest import Media, make_cfg, merge
-from .test_transcript import install_stub_whisper
+from ..support import Media, install_stub_whisper, make_cfg, write_config
 
 
 @pytest.fixture(autouse=True)
@@ -210,33 +210,6 @@ def test_render_all_with_real_spawned_workers(media: Media, tmp_path: Path) -> N
 
 
 # ---- command line --------------------------------------------------------------------------------
-BASE_CONFIG: dict[str, Any] = {
-    "clips": {
-        "kinds": ["short"],
-        "short": {"count": 1, "min_seconds": 6, "max_seconds": 12},
-        "long": {"count": 1, "min_seconds": 12, "max_seconds": 30},
-    },
-    "video": {"short_side": 96, "preset": "ultrafast", "gpu": "off"},
-    "audio": {"denoise": "none"},
-    "logging": {"console_level": "ERROR"},
-    "resources": {"max_workers": 1},
-}
-
-
-def write_config(tmp_path: Path, media: Media, **overrides: Any) -> Path:
-    (tmp_path / "subs").mkdir(parents=True, exist_ok=True)
-    for stem in ("talk", "silent", "broken"):
-        (tmp_path / "subs" / f"{stem}.json").write_text(media.transcript.read_text(encoding="utf-8"), encoding="utf-8")
-    data = merge(
-        {**BASE_CONFIG, "input": [str(media.video), str(media.silent)], "output_dir": str(tmp_path / "out"),
-         "transcript": {"mode": "file", "file": str(tmp_path / "subs" / "{stem}.json")}},
-        overrides,
-    )  # fmt: skip
-    path = tmp_path / "config.json"
-    path.write_text(json.dumps(data), encoding="utf-8")
-    return path
-
-
 def clips_json(tmp_path: Path, kind: str, stem: str) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = json.loads((tmp_path / "out" / kind / stem / "clips.json").read_text(encoding="utf-8"))
     return result
@@ -332,6 +305,18 @@ def test_main_split_mode_cuts_equal_parts_into_the_long_folder(media: Media, tmp
     folder = tmp_path / "out" / "long" / "talk"
     assert json.loads((folder / "clips.json").read_text(encoding="utf-8")) == ["talk_part001.mp4", "talk_part002.mp4", "talk_part003.mp4"]
     assert all((folder / f"talk_part{k:03d}.mp4").stat().st_size > 1000 for k in (1, 2, 3))
+
+
+def test_needs_text_only_when_selection_captions_or_titles_use_it(media: Media, tmp_path: Path) -> None:
+    """Highlights select on the transcript; ranges only need it for a text overlay."""
+    out = tmp_path / "out"
+    assert needs_text(make_cfg(media, out))
+    ranges = {"mode": "ranges", "short": {"ranges": ["0:04-0:10"]}}
+    assert not needs_text(make_cfg(media, out, clips=ranges, captions={"enabled": False}))
+    assert needs_text(make_cfg(media, out, clips=ranges))
+    assert needs_text(make_cfg(media, out, clips=ranges, captions={"enabled": False}, title={"enabled": True}))
+    skipped = {"caption": True, "title": True}
+    assert not needs_text(make_cfg(media, out, clips=ranges, title={"enabled": True}, skip=skipped))
 
 
 def test_main_chunks_long_videos_for_transcription(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

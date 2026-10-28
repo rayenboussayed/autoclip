@@ -37,7 +37,7 @@ from autoclip.core.resources import RESOURCES
 from autoclip.core.store import Cache, Store
 from autoclip.core.styles import STYLES
 
-from .conftest import SENTENCES, Media, make_cfg, merge
+from ..support import SENTENCES, Media, make_cfg, merge
 
 SEGS = [(k * 4.0, k * 4.0 + 3.0, t, True) for k, t in enumerate(SENTENCES)]
 
@@ -349,3 +349,21 @@ def test_llm_reranks_every_scene(
     with caplog.at_level(logging.WARNING, logger="autoclip"):
         fallback = select(media, pipeline, tmp_path, llm=broken)
     assert "LLM re-rank failed" in caplog.text and len(fallback) == 2 and fallback[0].llm_score is None
+
+
+def test_skip_llm_keeps_the_heuristic_ranking_without_a_request(
+    media: Media, pipeline: Any, tmp_path: Path, llm_server: dict[str, Any]
+) -> None:
+    """``skip.llm`` wins over ``llm.enabled``: no HTTP call, no llm_score, the heuristic titles stay."""
+    llm = {"enabled": True, "base_url": llm_server["url"], "top_k": 4}
+    picks = select(media, pipeline, tmp_path, clips={"short": {"count": 2}}, llm=llm, skip={"llm": True})
+    assert len(picks) == 2 and llm_server["requests"] == [] and all(m.llm_score is None for m in picks)
+
+
+def test_skip_snap_never_runs_shot_detection(media: Media, pipeline: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(_src: Path) -> list[float]:
+        raise AssertionError("scene detection must not run when skip.snap is set")
+
+    monkeypatch.setattr(moments, "scene_cuts", boom)
+    picks = select(media, pipeline, tmp_path, clips={"snap_to_cuts": True, "short": {"count": 2}}, skip={"snap": True})
+    assert len(picks) == 2  # selection still works, only the cut snapping is skipped
