@@ -27,6 +27,7 @@ from autoclip.core.transcript import (
     fit_whisper_model,
     get_transcript,
     load_transcript_file,
+    normalize_cues,
     parse_srt,
     to_segments,
     tokenize,
@@ -47,6 +48,47 @@ def test_parse_srt_handles_multiline_crlf_and_empty_cues() -> None:
     assert [c["text"] for c in cues] == ["Hello there.", "Second line wraps"]
     assert cues[0]["start"] == 1.0 and cues[0]["end"] == 3.5
     assert cues[1]["start"] == 60.5 and cues[1]["end"] == 62.25
+
+
+def test_normalize_cues_unrolls_rolling_captions() -> None:
+    """The shape YouTube's automatic captions have: each line repeated, then a 10 ms duplicate cue."""
+    raw = [
+        {"start": 0.199, "end": 2.55, "text": "now a BBC World Service investigation"},
+        {"start": 2.55, "end": 2.56, "text": "now a BBC World Service investigation "},
+        {"start": 2.56, "end": 4.51, "text": "now a BBC World Service investigation\nhas found that Steven Bartlett is"},
+        {"start": 4.51, "end": 4.52, "text": "has found that Steven Bartlett is"},
+        {"start": 4.52, "end": 7.27, "text": "has found that Steven Bartlett is amplifying harmful Health misinformation"},
+    ]
+    cues = normalize_cues(raw)
+    assert [c["text"] for c in cues] == [
+        "now a BBC World Service investigation",
+        "has found that Steven Bartlett is",
+        "amplifying harmful Health misinformation",
+    ]
+    assert [(c["start"], c["end"]) for c in cues] == [(0.199, 2.56), (2.56, 4.52), (4.52, 7.27)]
+    # punctuation and case do not hide the repeated line
+    assert [
+        c["text"]
+        for c in normalize_cues(
+            [
+                {"start": 0, "end": 1, "text": "Hello there"},
+                {"start": 1, "end": 2, "text": "hello, there friend"},
+            ]
+        )
+    ] == ["Hello there", "friend"]
+
+
+def test_normalize_cues_clamps_overlaps_and_drops_degenerate_cues() -> None:
+    cues = normalize_cues(
+        [
+            {"start": 4, "end": 6, "text": "second"},
+            {"start": 0, "end": 5, "text": "first"},
+            {"start": 2, "end": 4, "text": "swallowed"},
+            {"start": 6, "end": 6, "text": "zero length"},
+            {"start": 7, "end": 8, "text": "   "},
+        ]
+    )
+    assert [(c["text"], c["start"], c["end"]) for c in cues] == [("first", 0.0, 5.0), ("second", 5.0, 6.0)]
 
 
 def test_tokenize_keeps_cjk_punctuation_attached() -> None:
@@ -79,6 +121,13 @@ def test_load_transcript_file_json_list_dict_and_srt(tmp_path: Path, media: Medi
     assert len(load_transcript_file(tmp_path / "list.json")) == 1 and len(load_transcript_file(tmp_path / "dict.JSON")) == 1
     assert len(load_transcript_file(tmp_path / "a.srt")) == 2
     assert [s.text for s in load_transcript_file(media.srt)] == SENTENCES
+    rolling = [
+        {"start": 0, "end": 2, "text": "one two"},
+        {"start": 2, "end": 2, "text": "one two"},
+        {"start": 2, "end": 4, "text": "one two three"},
+    ]
+    (tmp_path / "rolling.json").write_text(json.dumps(rolling), encoding="utf-8")
+    assert [s.text for s in load_transcript_file(tmp_path / "rolling.json")] == ["one two", "three"]
 
 
 def test_fit_whisper_model(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:

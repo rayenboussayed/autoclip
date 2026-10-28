@@ -295,10 +295,12 @@ def _srt_time(seconds: float) -> str:
 
 
 def _srt_text(cues: list[dict[str, Any]]) -> str:
-    """Cues back to SRT text."""
+    """Cues back to SRT text (normalized: no rolling duplicates or overlaps)."""
+    from .transcript import normalize_cues
+
     blocks = [
         f"{index}\n{_srt_time(float(cue['start']))} --> {_srt_time(float(cue['end']))}\n{str(cue['text']).strip()}\n"
-        for index, cue in enumerate(cues, 1)
+        for index, cue in enumerate(normalize_cues(cues), 1)
     ]
     return "\n".join(blocks)
 
@@ -343,9 +345,10 @@ def _write_srt(source: Path, target: Path, rng: tuple[float, float] | None, dfxp
             text = temp.read_text(encoding="utf-8", errors="replace")
         if rng is not None:
             text = _shift_srt(text, rng, rng[1] - rng[0])
-        if not parse_srt(text):
+        cues = parse_srt(text)
+        if not cues:
             raise DownloadError("the subtitle file is empty")
-        target.write_text(text, encoding="utf-8")
+        target.write_text(_srt_text(cues), encoding="utf-8")
     finally:
         temp.unlink(missing_ok=True)
 

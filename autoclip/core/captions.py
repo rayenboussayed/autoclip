@@ -48,6 +48,10 @@ def join_tokens(tokens: Sequence[str]) -> str:
     return out
 
 
+#: Shortest time a caption stays on screen; without it a one-word cue can flash for a few frames.
+MIN_CHUNK_SECONDS = 0.8
+
+
 def make_chunks(words: Sequence[Word], cfg: CaptionsCfg) -> list[Chunk]:
     """Group words into caption screens by length, duration, long pauses and punctuation."""
     chunks: list[Chunk] = []
@@ -56,7 +60,7 @@ def make_chunks(words: Sequence[Word], cfg: CaptionsCfg) -> list[Chunk]:
     def flush() -> None:
         if not current:
             return
-        text, end = join_tokens([w.text for w in current]), max(current[-1].end, current[0].start + 0.3)
+        text, end = join_tokens([w.text for w in current]), max(current[-1].end, current[0].start + MIN_CHUNK_SECONDS)
         if chunks and not re.search(r"\w", text):  # punctuation only: glue onto the previous screen
             chunks[-1].text += text
             chunks[-1].end = max(chunks[-1].end, end)
@@ -78,7 +82,7 @@ def make_chunks(words: Sequence[Word], cfg: CaptionsCfg) -> list[Chunk]:
             flush()
     flush()
     for a, b in pairwise(chunks):
-        a.end = min(b.start, a.end + 0.2)
+        a.end = max(a.end, b.start)  # keep the screen until the next one appears: no flicker between cues
     return chunks
 
 
@@ -334,7 +338,7 @@ def build_captions(
         text = chunk.text.upper() if cc.uppercase else chunk.text
         font = find_font(text, cc.font)
         lines.append(Span(round(span[0], 2), round(span[1], 2), text))
-        if cc.highlight and can_highlight(text) and len(text.split()) == len(chunk.words):
+        if cc.highlight and can_highlight(text) and len(text.split()) == len(chunk.words) and not any(w.pseudo for w in chunk.words):
             for k, w in enumerate(chunk.words):
                 nxt = chunk.words[k + 1].start if k + 1 < len(chunk.words) else chunk.end
                 if (part := tl.map_range(w.start, max(nxt, w.start + 0.05))) and part[1] - part[0] >= 0.03:

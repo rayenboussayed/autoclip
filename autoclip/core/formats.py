@@ -105,6 +105,9 @@ def _quality_key(fmt: dict[str, Any], cfg: DownloadCfg) -> tuple[float, ...]:
 def _fps_key(fmt: dict[str, Any], cfg: DownloadCfg) -> tuple[float, ...]:
     """Sort key for the fps preference (smaller is better; unknown fps loses)."""
     if cfg.fps is None:
+        if cfg.quality == "best":  # best quality also means the smoothest of two otherwise equal formats
+            fps = _num(fmt.get("fps"))
+            return (0, -fps) if fps else (1, 0)
         return (0,)
     fps = _num(fmt.get("fps"))
     if not fps:

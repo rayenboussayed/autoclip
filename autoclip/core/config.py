@@ -191,14 +191,18 @@ class VideoCfg(Section):
     """Output encoding (the canvas shape comes from each clip kind's ``aspect``)."""
 
     short_side: Int = 1080  # 1080 -> 1080x1920 for 9:16 and 1920x1080 for 16:9
-    fps: Float | None = 30  # None = source fps
+    upscale: Bool = False  # False = never enlarge the source (a 720p source stays 720p)
+    fps: Float | None = None  # None = source fps
     layout: Literal["fit", "fill"] = "fit"  # fit = whole frame on a background, fill = crop to fill
     background: BackgroundCfg = field(default_factory=BackgroundCfg)
     fade_seconds: Float = 0.2
+    codec: Literal["h264", "h265"] = "h264"
     gpu: Literal["auto", "off", "nvenc", "videotoolbox", "qsv", "amf"] = "auto"  # GPU encoder if one really works
-    crf: Int = 20  # quality (CPU: libx264 CRF; GPU: the encoder's quality level)
-    preset: str = "veryfast"  # libx264 only
-    maxrate_mbps: Float = 12  # bitrate cap (upload friendly); 0 = uncapped
+    crf: Int = 18  # quality (CPU: libx264/libx265 CRF; GPU: the encoder's quality level)
+    preset: str = "veryslow"  # libx264/libx265 only
+    maxrate_mbps: Float = 0  # bitrate cap (upload friendly); 0 = uncapped
+    audio_bitrate_kbps: Int = 192  # AAC bitrate of the clip audio
+    container: Literal["mp4", "mkv"] = "mp4"  # mkv = no faststart; needed for some H.265/audio combinations
     thumbnail: Bool = True  # also write <clip>.jpg
 
 
@@ -455,7 +459,7 @@ class PlatformsCfg(Section):
 class DownloadCfg(Section):
     """Downloading the http(s) URLs found in ``input`` with yt-dlp."""
 
-    quality: Annotated[Int, Field(ge=144, le=4320)] | Literal["best", "worst"] = 1080  # short side, or best/worst
+    quality: Annotated[Int, Field(ge=144, le=4320)] | Literal["best", "worst"] = "best"  # short side, or best/worst
     fps: Annotated[Float, Field(gt=0, le=240)] | None = None  # None = any
     prefer: Literal["closest", "at_most", "at_least"] = "closest"  # how quality/fps are matched
     codec: Literal["auto", "h264", "vp9", "av1", "h265"] = "auto"  # auto = h264, then vp9, av1, h265, other

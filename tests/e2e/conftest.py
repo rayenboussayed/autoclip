@@ -13,15 +13,19 @@ import pytest
 from ..support import ManifestEntry, load_manifest
 from .harness import (
     DEFAULT_RESULTS,
-    DEFAULT_TIMEOUT,
+    LADDER_TIMEOUT,
     DownloadedMedia,
     E2ERun,
     _environment,
     _now,
+    cache_folder,
     choose_bbc_entry,
     download_config,
     downloaded_files,
+    e2e_cache,
+    e2e_level,
     english_subtitle,
+    level_range,
     new_run_directory,
 )
 
@@ -64,17 +68,37 @@ def manifest() -> list[ManifestEntry]:
 
 
 @pytest.fixture(scope="session")
+def download_cache() -> Path:
+    """The persistent originals cache shared by runs (``AUTOCLIP_E2E_CACHE`` overrides it)."""
+    return e2e_cache()
+
+
+@pytest.fixture(scope="session")
+def ladder_level() -> int:
+    """The download-ladder level of this run (``AUTOCLIP_E2E_LEVEL``, default 1 = the first six minutes)."""
+    return e2e_level()
+
+
+@pytest.fixture(scope="session")
 def bbc_entry(manifest: list[ManifestEntry]) -> ManifestEntry:
     """The short BBC News clip used by the download/pipeline cases (``AUTOCLIP_E2E_URL`` overrides it)."""
     return choose_bbc_entry(manifest, os.environ.get("AUTOCLIP_E2E_URL"))
 
 
 @pytest.fixture(scope="session")
-def downloaded_bbc(e2e_run: E2ERun, bbc_entry: ManifestEntry) -> DownloadedMedia:
-    """Download the BBC clip once and reuse the original for both pipeline cases."""
+def downloaded_bbc(e2e_run: E2ERun, bbc_entry: ManifestEntry, download_cache: Path) -> DownloadedMedia:
+    """Download the BBC clip once (through the shared cache) and reuse the original for both pipeline cases."""
     case_dir = e2e_run.directory / "shared_download_bbc"
     result = e2e_run.execute(
-        "shared_download_bbc", download_config(case_dir / "out", bbc_entry.url), ["--download-only"], timeout=DEFAULT_TIMEOUT
+        "shared_download_bbc",
+        download_config(
+            case_dir / "out",
+            bbc_entry.url,
+            time_range=level_range(bbc_entry, 1),
+            original_dir=cache_folder(download_cache, bbc_entry.url, 1),
+        ),
+        ["--download-only"],
+        timeout=LADDER_TIMEOUT,
     )
     result.require_ok()
     files = downloaded_files(result)

@@ -133,7 +133,7 @@ def test_make_chunks_split_on_length_pause_punctuation_and_glue() -> None:
         words(("Hello", 0, 0.4), ("big", 0.4, 0.8), ("world.", 0.8, 1.2), ("Next", 1.3, 1.6), ("one", 1.6, 2.0), ("here", 4.0, 4.1)), cfg
     )
     assert [c.text for c in chunks] == ["Hello big", "world.", "Next one", "here"]  # length, sentence end, pause
-    assert chunks[0].end <= chunks[1].start and chunks[3].end == pytest.approx(4.3)  # at least 0.3 s on screen
+    assert chunks[0].end <= chunks[1].start and chunks[3].end == pytest.approx(4.8)  # at least 0.8 s on screen
     comma = make_chunks(words(("alpha,", 0, 0.3), ("beta,", 0.3, 0.6), ("gamma", 0.6, 0.9)), CaptionsCfg(max_chars=14))
     assert [c.text for c in comma] == ["alpha, beta,", "gamma"]
     punct = make_chunks(words(("Hi.", 0, 0.5), ("!!", 0.5, 0.8)), CaptionsCfg())

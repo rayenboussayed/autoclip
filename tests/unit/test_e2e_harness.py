@@ -94,16 +94,134 @@ def test_download_config_requests_subtitles_metadata_and_an_optional_range(tmp_p
     config = harness.download_config(tmp_path / "out", "https://youtu.be/x")
     assert config["input"] == ["https://youtu.be/x"]
     assert config["output_dir"] == str(tmp_path / "out")
-    assert config["download"]["quality"] == 480
+    assert config["download"]["quality"] == "best"
     assert config["download"]["subtitles"] == {"enabled": True, "languages": ["en"], "use_as_transcript": "always"}
     assert config["download"]["metadata"] == {"info_json": True}
     assert "time_range" not in config["download"] and "cookies" not in config["download"]
+    assert "original_dir" not in config["download"]
     assert config["logging"]["enabled"] is True and config["resources"]["max_workers"] == 1
 
     monkeypatch.setenv("AUTOCLIP_E2E_COOKIES", "/tmp/cookies.txt")
-    ranged = harness.download_config(tmp_path / "out", "https://youtu.be/x", time_range="00:01:00-00:02:00")
+    ranged = harness.download_config(
+        tmp_path / "out", "https://youtu.be/x", time_range="00:01:00-00:02:00", original_dir=tmp_path / "cache"
+    )
     assert ranged["download"]["time_range"] == "00:01:00-00:02:00"
     assert ranged["download"]["cookies"] == {"file": "/tmp/cookies.txt"}
+    assert ranged["download"]["original_dir"] == str(tmp_path / "cache")
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        (None, 1),
+        ({}, 1),
+        ({"AUTOCLIP_E2E_LEVEL": ""}, 1),
+        ({"AUTOCLIP_E2E_LEVEL": " 3 "}, 3),
+        ({"AUTOCLIP_E2E_LEVEL": "30"}, 30),
+    ],
+)
+def test_e2e_level_reads_a_positive_whole_number(env: dict[str, str] | None, expected: int) -> None:
+    assert harness.e2e_level(env) == expected
+
+
+@pytest.mark.parametrize(("raw", "message"), [("two", "positive whole number"), ("1.5", "positive whole number"), ("0", "at least 1"), ("-2", "at least 1")])
+def test_e2e_level_rejects_anything_that_is_not_a_ladder_level(raw: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        harness.e2e_level({"AUTOCLIP_E2E_LEVEL": raw})
+
+
+def test_e2e_cache_defaults_to_the_repository_cache_and_honours_the_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("AUTOCLIP_E2E_CACHE", raising=False)
+    assert harness.e2e_cache() == harness.DEFAULT_CACHE
+    assert harness.e2e_cache({}) == harness.DEFAULT_CACHE
+    monkeypatch.setenv("AUTOCLIP_E2E_CACHE", str(tmp_path / "cache"))
+    assert harness.e2e_cache() == (tmp_path / "cache").resolve()
+    assert harness.e2e_cache({"AUTOCLIP_E2E_CACHE": "~/e2e"}) == Path("~/e2e").expanduser().resolve()
+
+
+def test_level_range_and_level_seconds_follow_the_six_minute_ladder() -> None:
+    long = ManifestEntry("Long", "https://youtu.be/l", 10730)
+    assert harness._hms(0) == "00:00:00"
+    assert harness._hms(3661.6) == "01:01:02"
+    assert harness.level_range(long, 1) == "00:00:00-00:06:00"
+    assert harness.level_range(long, 2) == "00:00:00-00:12:00"
+    assert harness.level_seconds(long, 1) == 360
+    assert harness.level_seconds(long, 2) == 720
+
+    short = ManifestEntry("Short", "https://youtu.be/s", 350)
+    assert harness.level_range(short, 1) is None
+    assert harness.level_seconds(short, 1) == 350
+    assert harness.level_range(short, 2) is None
+
+    unknown = ManifestEntry("Unknown", "https://youtu.be/u")
+    assert harness.level_range(unknown, 1) == "00:00:00-00:06:00"
+    assert harness.level_seconds(unknown, 1) is None
+
+
+def test_cache_folder_separates_the_videos_and_every_level(tmp_path: Path) -> None:
+    url = "https://www.youtube.com/watch?v=XV_B96fAzKs"
+    assert harness.cache_folder(tmp_path, url, 2) == tmp_path / "XV_B96fAzKs" / "level_2"
+    assert harness.cache_folder(tmp_path, url, "range_1m") == tmp_path / "XV_B96fAzKs" / "range_1m"
+
+
+def test_ledger_round_trip_compares_each_level_with_the_previous_one(tmp_path: Path) -> None:
+    assert harness.read_ledger(tmp_path) == {}
+    url = "https://www.youtube.com/watch?v=XV_B96fAzKs"
+    first = {
+        "source_seconds": 360.0,
+        "short": {"clips": 1, "width": 144, "height": 256, "trimmed": [20.0]},
+        "long": {"clips": 1, "width": 256, "height": 144, "trimmed": [200.0]},
+    }
+    assert harness.record_level(tmp_path, url, 1, first) == []
+    assert harness.read_ledger(tmp_path) == {"XV_B96fAzKs": {"1": first}}
+
+    second = {
+        "source_seconds": 720.0,
+        "short": {"clips": 1, "width": 144, "height": 256, "trimmed": [22.0]},
+        "long": {"clips": 1, "width": 256, "height": 144, "trimmed": [240.0]},
+    }
+    assert harness.record_level(tmp_path, url, 2, second) == []
+    assert harness.read_ledger(tmp_path)["XV_B96fAzKs"]["2"] == second
+
+    shrunk = {
+        "source_seconds": 700.0,
+        "short": {"clips": 2, "width": 128, "height": 256, "trimmed": [20.0, 20.0]},
+        "long": {"clips": 1, "width": 256, "height": 144, "trimmed": [240.0]},
+    }
+    problems = harness.record_level(tmp_path, url, 3, shrunk)
+    assert any("source shrank" in problem for problem in problems)
+    assert any("short.clips changed" in problem for problem in problems)
+    assert any("short.width changed" in problem for problem in problems)
+    assert not any("long" in problem for problem in problems)
+    assert (tmp_path / harness.LEDGER_NAME).is_file()
+    assert not (tmp_path / (harness.LEDGER_NAME + ".tmp")).exists()
+
+
+def test_read_ledger_tolerates_other_json_shapes_and_record_level_ignores_foreign_keys(tmp_path: Path) -> None:
+    (tmp_path / harness.LEDGER_NAME).write_text(json.dumps(["not", "a", "ledger"]), encoding="utf-8")
+    assert harness.read_ledger(tmp_path) == {}
+    (tmp_path / harness.LEDGER_NAME).write_text(json.dumps({"id": "not an object", "1": {"old": True}}), encoding="utf-8")
+    assert harness.read_ledger(tmp_path) == {"1": {"old": True}}
+    summary = {"source_seconds": 360.0, "short": {"clips": 1}, "long": {"clips": 1}}
+    assert harness.record_level(tmp_path, "https://youtu.be/x", 2, summary) == []
+    assert harness.read_ledger(tmp_path)["https_youtu_be_x"] == {"2": summary}
+
+
+def test_level_summary_describes_both_kinds_and_tolerates_a_missing_one() -> None:
+    clips = {
+        "short": [{"width": 144, "height": 256, "trimmed": 21.23456}],
+        "long": [{"width": 256, "height": 144, "trimmed": 200.0}],
+    }
+    assert harness.level_summary(clips, 360.0) == {
+        "source_seconds": 360.0,
+        "short": {"clips": 1, "width": 144, "height": 256, "trimmed": [21.235]},
+        "long": {"clips": 1, "width": 256, "height": 144, "trimmed": [200.0]},
+    }
+    assert harness.level_summary({"short": []}, 60.0)["long"] == {"clips": 0, "width": 0, "height": 0, "trimmed": []}
+
+
+def test_compare_levels_ignores_a_kind_that_was_not_recorded() -> None:
+    assert harness.compare_levels({"short": {"clips": 1, "width": 144, "height": 256}}, {"short": {"clips": 1, "width": 144, "height": 256}}) == []
 
 
 def test_pipeline_config_merges_clip_overrides_over_its_fast_defaults(tmp_path: Path) -> None:

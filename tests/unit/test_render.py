@@ -16,7 +16,17 @@ from autoclip.core.config import VideoCfg, parse
 from autoclip.core.hardware import cpu_encoder
 from autoclip.core.media import probe
 from autoclip.core.models import Encoder, Moment, RenderJob
-from autoclip.core.render import blur_function, canvas_size, estimate_render_bytes, even, fill_to, layout, render_clip, resize_to
+from autoclip.core.render import (
+    blur_function,
+    canvas_size,
+    encode,
+    estimate_render_bytes,
+    even,
+    fill_to,
+    layout,
+    render_clip,
+    resize_to,
+)
 from autoclip.core.resources import RESOURCES
 from autoclip.core.store import Cache, Store
 from autoclip.core.transcript import load_transcript_file
@@ -27,14 +37,49 @@ from ..support import Media, make_cfg
 def test_even_and_canvas_size() -> None:
     assert even(7.2) == 8 and even(0) == 2 and even(1079.9) == 1080
     assert canvas_size("9:16", 1080, 1280, 720) == (1080, 1920)
-    assert canvas_size("16:9", 1080, 1, 1) == (1920, 1080)  # long-form: horizontal
-    assert canvas_size("4:5", 800, 1, 1) == (800, 1000) and canvas_size("1:1", 500, 1, 1) == (500, 500)
+    assert canvas_size("16:9", 1080, 1920, 1080) == (1920, 1080)  # long-form: horizontal
+    assert canvas_size("4:5", 800, 1600, 2000) == (800, 1000)
+    assert canvas_size("1:1", 500, 1000, 1000) == (500, 500)
     assert canvas_size("original", 1080, 1279, 719) == (1280, 720)
+
+
+def test_canvas_size_never_enlarges_the_source_by_default() -> None:
+    assert canvas_size("9:16", 1080, 720, 1280) == (720, 1280)  # a 720p source stays 720p
+    assert canvas_size("9:16", 1080, 1920, 1080) == (1080, 1920)  # a 1080p landscape source is still fitted, not enlarged
+    assert canvas_size("9:16", 1080, 320, 180, fill=True) == (102, 180)  # fill: as tall as the source allows
+    assert canvas_size("9:16", 1080, 320, 180) == (320, 568)  # fit: the 9:16 canvas shrinks, the picture is not enlarged
+    assert canvas_size("9:16", 1080, 1, 1) == (2, 2)  # degenerate source: never enlarged
+    assert canvas_size("9:16", 1080, 720, 1280, upscale=True) == (1080, 1920)  # explicit opt-in
 
 
 def test_estimate_grows_with_size_and_duration() -> None:
     small, big = estimate_render_bytes((540, 960), 10), estimate_render_bytes((1080, 1920), 60)
     assert 200 * (1 << 20) < small < big < 2 * (1 << 30)
+
+
+def test_encode_sets_the_audio_bitrate_and_mp4_only_flags(tmp_path: Path) -> None:
+    class Fake:
+        duration = 1.0
+
+        def __init__(self) -> None:
+            self.kwargs: dict[str, Any] = {}
+
+        def write_videofile(self, path: str, **kwargs: Any) -> None:
+            self.kwargs = {"path": path, **kwargs}
+
+    hevc, h264 = Encoder("hevc_nvenc", True, "medium", ("-cq", "18")), cpu_encoder(VideoCfg())
+    mp4 = Fake()
+    encode(mp4, tmp_path / "hevc.mp4", 30, hevc, 2, VideoCfg())
+    assert mp4.kwargs["audio_bitrate"] == "192k"
+    assert mp4.kwargs["ffmpeg_params"] == ["-cq", "18", "-tag:v", "hvc1", "-movflags", "+faststart"]
+    mkv = Fake()
+    encode(mkv, tmp_path / "hevc.mkv", 30, hevc, 2, VideoCfg(container="mkv", audio_bitrate_kbps=256))
+    assert "-tag:v" not in mkv.kwargs["ffmpeg_params"] and "-movflags" not in mkv.kwargs["ffmpeg_params"]
+    assert mkv.kwargs["audio_bitrate"] == "256k"
+    plain = Fake()
+    encode(plain, tmp_path / "h264.mp4", 30, h264, 2, VideoCfg())
+    assert "hvc1" not in plain.kwargs["ffmpeg_params"] and plain.kwargs["ffmpeg_params"][-2:] == ["-movflags", "+faststart"]
+    assert plain.kwargs["preset"] == "veryslow" and plain.kwargs["codec"] == "libx264"
 
 
 def test_blur_function_blurs_and_dims() -> None:
@@ -155,7 +200,7 @@ def test_render_fill_layout_plain_settings(media: Media, tmp_path: Path) -> None
         title={"enabled": True},
     )
     assert probe(dst).duration == pytest.approx(6, abs=0.4) and m.trimmed == pytest.approx(6, abs=0.1)
-    assert size == (144, 256)
+    assert size == (102, 180)  # no upscale: the canvas is as tall as the 180 px source
 
 
 def test_render_original_aspect_needs_no_letterbox_and_colour_background(media: Media, tmp_path: Path) -> None:
@@ -208,7 +253,7 @@ def test_skip_caption_burns_no_captions(media: Media, tmp_path: Path) -> None:
 
 def test_skip_title_draws_no_title(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     drawn: list[str] = []
-    real = getattr(render_mod, "render_text_image")
+    real = render_mod.render_text_image
 
     def spy(*args: Any, **kwargs: Any) -> Any:
         drawn.append(str(args[0]))
@@ -232,7 +277,7 @@ def test_skip_pauses_keeps_the_whole_window(media: Media, tmp_path: Path) -> Non
 
 
 def test_render_passes_the_audio_skips(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    real = getattr(render_mod, "enhance_audio")
+    real = render_mod.enhance_audio
     seen: list[dict[str, Any]] = []
 
     def spy(*args: Any, **kwargs: Any) -> Any:

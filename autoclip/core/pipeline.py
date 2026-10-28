@@ -127,11 +127,18 @@ def process_video(
                 continue
             out = root / kind / stem
             out.mkdir(parents=True, exist_ok=True)
-            size = canvas_size(kcfg.aspect, cfg.video.short_side, info.width, info.height)
+            size = canvas_size(
+                kcfg.aspect,
+                cfg.video.short_side,
+                info.width,
+                info.height,
+                upscale=cfg.video.upscale,
+                fill=cfg.video.layout == "fill",
+            )
             numbers: dict[str, int] = {}
             for m in moments:
                 n = numbers[m.scene] = numbers.get(m.scene, 0) + 1
-                dst = out / f"{stem}_{m.scene}_{n:02d}_{int(m.start)}s.mp4"
+                dst = out / f"{stem}_{m.scene}_{n:02d}_{int(m.start)}s.{cfg.video.container}"
                 clip_id = store.save_moment(kind, m.scene, n, m)
                 jobs.append(
                     RenderJob(clip_id, m, src, dst, kind, kcfg.aspect, encoder, info.has_audio, cfg, store.path, log_file, os.getpid())

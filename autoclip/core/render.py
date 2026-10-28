@@ -28,13 +28,23 @@ def even(v: float) -> int:
     return max(2, round(v / 2) * 2)
 
 
-def canvas_size(aspect: str, short_side: int, src_w: int, src_h: int) -> tuple[int, int]:
-    """Output ``(width, height)`` for an ``aspect`` such as "9:16" ("original" keeps the source size)."""
-    if aspect == "original":
+def canvas_size(aspect: str, short_side: int, src_w: int, src_h: int, *, upscale: bool = False, fill: bool = False) -> tuple[int, int]:
+    """Output ``(width, height)`` for an ``aspect`` such as "9:16" ("original" keeps the source size).
+
+    ``upscale = False`` (the default) never enlarges the source: the requested canvas is scaled down as a whole
+    - keeping its aspect - until the source just covers it (``fill``) or fits inside it (``fit``). A 720p source
+    therefore stays 720p instead of being blown up to 1080p before encoding again.
+    """
+    if aspect == "original" or (src_w <= 0 or src_h <= 0):
         return even(src_w), even(src_h)
     a, _, b = aspect.partition(":")
     ratio = float(a) / float(b)
-    return (even(short_side), even(short_side / ratio)) if ratio < 1 else (even(short_side * ratio), even(short_side))
+    w, h = (short_side, short_side / ratio) if ratio < 1 else (short_side * ratio, short_side)
+    if not upscale:
+        scale = max(w / src_w, h / src_h) if fill else min(w / src_w, h / src_h)
+        if scale > 1:
+            w, h = w / scale, h / scale
+    return even(w), even(h)
 
 
 def estimate_render_bytes(size: tuple[int, int], seconds: float) -> int:
@@ -104,20 +114,32 @@ def layout(fg: Any, size: tuple[int, int], cfg: VideoCfg, duration: float) -> li
     return [back, front.with_position("center")]
 
 
+def _is_hevc(name: str) -> bool:
+    """Whether an ffmpeg encoder name is an H.265/HEVC one."""
+    lowered = name.lower()
+    return "265" in lowered or "hevc" in lowered
+
+
 @traced("encode_video")
-def encode(comp: Any, dst: Path, fps: float, encoder: Encoder, threads: int) -> None:
-    """Write H.264 + AAC (yuv420p, faststart) with the CPU or GPU ``encoder``."""
+def encode(comp: Any, dst: Path, fps: float, encoder: Encoder, threads: int, video: VideoCfg) -> None:
+    """Write the chosen codec + AAC (yuv420p; faststart and the ``hvc1`` tag for MP4) with the ``encoder``."""
     t0 = time.perf_counter()
+    mp4 = dst.suffix.lower() == ".mp4"
+    params = list(encoder.params)
+    if mp4 and _is_hevc(encoder.name):
+        params += ["-tag:v", "hvc1"]  # QuickTime/Safari only play HEVC in MP4 with this tag
+    if mp4:
+        params += ["-movflags", "+faststart"]
     comp.write_videofile(
         str(dst),
         fps=fps,
         codec=encoder.name,
         audio_codec="aac",
-        audio_bitrate="160k",
+        audio_bitrate=f"{video.audio_bitrate_kbps}k",
         preset=encoder.preset,
         pixel_format="yuv420p",
         threads=threads,
-        ffmpeg_params=[*encoder.params, "-movflags", "+faststart"],
+        ffmpeg_params=params,
         logger=None,
     )
     log.info(
@@ -168,7 +190,7 @@ def render_clip(vclip: Any, job: RenderJob, store: Store, cache: Cache) -> tuple
     moment.trimmed = round(float(fg.duration), 2)
     if moment.trimmed < kcfg.min_seconds - 0.5:
         log.info("clip is %.1fs, shorter than the requested %s minimum of %.0fs", moment.trimmed, job.kind, kcfg.min_seconds)
-    size = canvas_size(job.aspect, cfg.video.short_side, vclip.w, vclip.h)
+    size = canvas_size(job.aspect, cfg.video.short_side, vclip.w, vclip.h, upscale=cfg.video.upscale, fill=cfg.video.layout == "fill")
     overlays = []
     captions, lines = (
         build_captions(words, Timeline(kept), cfg, cache, size, fg.duration)
@@ -193,7 +215,7 @@ def render_clip(vclip: Any, job: RenderJob, store: Store, cache: Cache) -> tuple
             sound = sound.with_effects([afx.AudioFadeIn(cfg.audio.fade_seconds), afx.AudioFadeOut(cfg.audio.fade_seconds)])
         comp = comp.with_audio(sound)
     fps = min(cfg.video.fps or vclip.fps, vclip.fps)
-    encode(comp, dst, float(fps), job.encoder, threads)
+    encode(comp, dst, float(fps), job.encoder, threads, cfg.video)
     if cfg.video.thumbnail and not cfg.skip.thumbnail:
         cover_t = min(max(0.5, cfg.title.seconds / 2 if title_on else 1.0), max(0.0, fg.duration - 0.1))
         comp.save_frame(str(dst.with_suffix(".jpg")), t=cover_t, with_mask=False)

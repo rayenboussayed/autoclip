@@ -61,8 +61,8 @@ def pick(formats: list[dict[str, Any]], **settings: Any) -> Choice:
 
 def test_closest_quality_uses_the_short_side() -> None:
     formats = [video("v720", 1280, 720), video("v1080", 1920, 1080), video("v1440", 2560, 1440)]
-    assert pick(formats).format_id == "v1080"
-    assert pick([video("vertical", 1080, 1920)]).format_id == "vertical"  # a vertical 1080 is "1080"
+    assert pick(formats, quality=1080).format_id == "v1080"
+    assert pick([video("vertical", 1080, 1920)], quality=1080).format_id == "vertical"  # a vertical 1080 is "1080"
 
 
 def test_closest_quality_prefers_the_lower_format_on_a_tie() -> None:
@@ -108,6 +108,13 @@ def test_fps_preference() -> None:
 def test_fps_unknown_is_reported() -> None:
     choice = pick([video("v", 1920, 1080, fps=None)], fps=60)
     assert choice.format_id == "v" and "no fps information" in choice.warnings[0]
+
+
+def test_best_quality_also_prefers_the_higher_frame_rate() -> None:
+    formats = [video("v30", 1920, 1080, fps=30), video("v60", 1920, 1080, fps=60)]
+    assert pick(formats).format_id == "v60"  # quality "best" with no fps preference
+    assert pick(formats, quality=1080).format_id == "v30"  # an explicit size leaves fps alone
+    assert pick([video("unknown", 1920, 1080, fps=None), video("v30", 1920, 1080, fps=30)]).format_id == "v30"
 
 
 def test_auto_codec_prefers_h264_then_vp9_then_av1_then_h265() -> None:

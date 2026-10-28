@@ -262,7 +262,7 @@ def test_expand_inputs_missing_local_pattern_still_errors_with_urls(tmp_path: Pa
 
 def test_download_defaults() -> None:
     d = Config().download
-    assert (d.quality, d.fps, d.prefer, d.codec, d.container) == (1080, None, "closest", "auto", "auto")
+    assert (d.quality, d.fps, d.prefer, d.codec, d.container) == ("best", None, "closest", "auto", "auto")
     assert (d.audio_quality, d.audio_language, d.original_dir) == ("best", None, None)
     assert d.metadata.info_json and not d.metadata.thumbnail and not d.metadata.description
     assert not d.subtitles.enabled and d.subtitles.languages == ["en"] and d.subtitles.use_as_transcript == "never"

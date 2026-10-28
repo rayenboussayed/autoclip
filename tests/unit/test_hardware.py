@@ -23,6 +23,9 @@ def test_cpu_encoder_arguments() -> None:
     assert (enc.name, enc.hardware, enc.preset) == ("libx264", False, "slow")
     assert enc.params == ("-crf", "18", "-profile:v", "high", "-maxrate", "8M", "-bufsize", "16M")
     assert "-maxrate" not in cpu_encoder(VideoCfg(maxrate_mbps=0)).params
+    hevc = cpu_encoder(VideoCfg(codec="h265", crf=20))
+    assert (hevc.name, hevc.preset) == ("libx265", "veryslow")
+    assert hevc.params == ("-crf", "20", "-profile:v", "main")
 
 
 @pytest.mark.parametrize(
@@ -32,9 +35,27 @@ def test_every_gpu_encoder_is_described(name: str, codec: str) -> None:
     enc = HARDWARE[name](VideoCfg(crf=21, maxrate_mbps=0))
     assert enc.name == codec and enc.hardware and enc.preset == PLACEHOLDER_PRESET  # real GPU presets are set via params
     assert "-crf" not in enc.params and "libx264" not in enc.name
-    assert ("21" in enc.params) == (name != "videotoolbox")  # VideoToolbox has no quality scale: it is bitrate driven
+    assert ("21" in enc.params) == (name != "videotoolbox")  # VideoToolbox maps CRF onto its own quality scale
     assert HARDWARE["videotoolbox"](VideoCfg(maxrate_mbps=6)).params[:2] == ("-b:v", "6M")
     assert "-maxrate" in HARDWARE["nvenc"](VideoCfg(maxrate_mbps=6)).params
+
+
+@pytest.mark.parametrize(
+    "name, codec", [("nvenc", "hevc_nvenc"), ("videotoolbox", "hevc_videotoolbox"), ("qsv", "hevc_qsv"), ("amf", "hevc_amf")]
+)
+def test_every_gpu_encoder_has_an_hevc_variant(name: str, codec: str) -> None:
+    enc = HARDWARE[name](VideoCfg(codec="h265", crf=21))
+    assert enc.name == codec
+    assert enc.params[enc.params.index("-profile:v") + 1] == "main"
+
+
+def test_videotoolbox_quality_mode_is_mapped_from_crf() -> None:
+    quality = HARDWARE["videotoolbox"](VideoCfg(crf=18))
+    assert quality.params == ("-q:v", "65", "-profile:v", "high") and "-b:v" not in quality.params
+    capped = HARDWARE["videotoolbox"](VideoCfg(maxrate_mbps=6))
+    assert capped.params[:2] == ("-b:v", "6M") and "-q:v" not in capped.params and "-maxrate" in capped.params
+    assert HARDWARE["videotoolbox"](VideoCfg(crf=51)).params[1] == "1"  # never below the encoder's minimum
+    assert HARDWARE["videotoolbox"](VideoCfg(crf=0)).params[1] == "100"
 
 
 def test_probe_tells_working_from_broken_encoders_with_real_ffmpeg() -> None:

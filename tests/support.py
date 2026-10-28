@@ -43,10 +43,11 @@ class Media:
 
 @dataclass(frozen=True)
 class ManifestEntry:
-    """One video of ``tests/assets/youtube.json``."""
+    """One video of ``tests/assets/youtube.json`` (``duration`` bounds the download ladder)."""
 
     title: str
     url: str
+    duration: float | None = None
 
 
 def _segments() -> list[dict[str, Any]]:
@@ -108,7 +109,10 @@ def load_manifest(path: Path | None = None) -> list[ManifestEntry]:
             raise ValueError(f"{path or MANIFEST_PATH}: entry {index} has no title")
         if not isinstance(url, str) or not url.startswith(("http://", "https://")):
             raise ValueError(f"{path or MANIFEST_PATH}: entry {index} has no http(s) video_link")
-        entries.append(ManifestEntry(title, url))
+        duration = item.get("duration_seconds")
+        if duration is not None and (not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration <= 0):
+            raise ValueError(f"{path or MANIFEST_PATH}: entry {index} has an invalid duration_seconds")
+        entries.append(ManifestEntry(title, url, float(duration) if duration is not None else None))
     return entries
 
 

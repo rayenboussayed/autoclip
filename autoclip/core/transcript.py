@@ -29,8 +29,51 @@ SRT_TIME = re.compile(r"(\d+):(\d\d):(\d\d)[,.](\d{1,3})\s*-->\s*(\d+):(\d\d):(\
 WHISPER_RAM_MB = {"tiny": 400, "base": 500, "small": 1100, "medium": 2600, "large-v3": 4200}
 
 
+def _strip_rolling(text: str, previous: str) -> str:
+    """Remove the previous screen's text when a rolling caption repeats it at the start of this cue."""
+    prev, cur = previous.split(), text.split()
+    if len(cur) > len(prev) and [_bare(w) for w in cur[: len(prev)]] == [_bare(w) for w in prev]:
+        return " ".join(cur[len(prev) :])
+    return text
+
+
+def _bare(word: str) -> str:
+    """A word without its surrounding punctuation, for rolling-caption comparisons."""
+    return word.strip(".,;:!?\"'()[]{}<>-").casefold()
+
+
+def normalize_cues(raw: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Clean subtitle cues: drop empties and duplicates, unroll repeated text and clamp overlaps.
+
+    Automatic captions (``youtube``'s in particular) often emit, for every new line, a cue with the previous
+    line still on screen and a second cue carrying only that previous line. Burned in as-is, the caption text
+    jumps back and forth and every screen lives for a few milliseconds. This collapses that pattern into one
+    cue per spoken line, sorted, with no empty, zero-length or overlapping cues.
+    """
+    cues = sorted((dict(item) for item in raw), key=lambda c: float(c["start"]))
+    out: list[dict[str, Any]] = []
+    for cue in cues:
+        start, end = float(cue["start"]), float(cue["end"])
+        text = " ".join(str(cue["text"]).split())
+        if not text or end <= start:
+            continue
+        previous = out[-1] if out else None
+        if previous is not None and start - float(previous["end"]) <= 0.35:
+            if text == str(previous["text"]):
+                previous["end"] = max(float(previous["end"]), end)
+                continue
+            text = _strip_rolling(text, str(previous["text"]))
+        if previous is not None and start < float(previous["end"]):
+            start = float(previous["end"])
+            if end <= start:
+                previous["end"] = max(float(previous["end"]), end)
+                continue
+        out.append({"start": start, "end": end, "text": text})
+    return out
+
+
 def parse_srt(text: str) -> list[dict[str, Any]]:
-    """SubRip text -> ``[{"start", "end", "text"}]``."""
+    """SubRip text -> ``[{"start", "end", "text"}]`` (normalized: no rolling duplicates or overlaps)."""
     out: list[dict[str, Any]] = []
     for block in re.split(r"\n\s*\n", text.replace("\r", "").strip()):
         lines = block.split("\n")
@@ -47,7 +90,7 @@ def parse_srt(text: str) -> list[dict[str, Any]]:
                         }
                     )
                 break
-    return out
+    return normalize_cues(out)
 
 
 def tokenize(text: str) -> list[str]:
@@ -86,7 +129,8 @@ def load_transcript_file(path: Path) -> list[Segment]:
     """An ``.srt`` or ``.json`` transcript (plain list, ``{"segments": [...]}`` or autoclip's cache format)."""
     if path.suffix.lower() == ".json":
         data = json.loads(path.read_text(encoding="utf-8"))
-        return to_segments(data["segments"] if isinstance(data, dict) else data)
+        raw = data["segments"] if isinstance(data, dict) else data
+        return to_segments(normalize_cues(raw))
     return to_segments(parse_srt(path.read_text(encoding="utf-8-sig")))
 
 

@@ -18,7 +18,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -32,9 +32,22 @@ from ..support import ManifestEntry, merge
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TIMEOUT = 900  # a download plus a render on a slow CI runner
 FORMATS_TIMEOUT = 240  # extraction only, but YouTube can be slow
+LADDER_TIMEOUT = 2400  # a best-quality slice download plus a short and a long clip
 DEFAULT_RESULTS = Path(__file__).resolve().parent.parent / "results"
+DEFAULT_CACHE = Path(__file__).resolve().parent.parent / ".cache" / "e2e"
 #: Case folder names that would collide with the run-level files and folders.
 RESERVED_CASE_NAMES = frozenset({"clips"})
+#: The download ladder: every extra level adds this much source video (up to the full length).
+CHUNK_SECONDS = 360
+DEFAULT_LEVEL = 1
+LEDGER_NAME = "levels.json"
+#: The manifest cases always render one short and one long clip; the long kind uses the production range.
+LADDER_CLIPS: dict[str, Any] = {
+    "kinds": ["short", "long"],
+    "scenes": ["best"],
+    "short": {"count": 1, "min_seconds": 15, "target_seconds": 25, "max_seconds": 45},
+    "long": {"count": 1, "min_seconds": 180, "max_seconds": 600},
+}
 
 
 def _now() -> str:
@@ -70,6 +83,118 @@ def choose_bbc_entry(manifest: Sequence[ManifestEntry], override: str | None = N
     if override:
         return ManifestEntry("custom", override)
     return next((entry for entry in manifest if "BBC News" in entry.title), manifest[-1])
+
+
+def e2e_level(env: Mapping[str, str] | None = None) -> int:
+    """The download-ladder level of this run (``AUTOCLIP_E2E_LEVEL``, default 1 = the first six minutes)."""
+    raw = (os.environ if env is None else env).get("AUTOCLIP_E2E_LEVEL", "").strip()
+    if not raw:
+        return DEFAULT_LEVEL
+    try:
+        level = int(raw)
+    except ValueError:
+        raise ValueError(f"AUTOCLIP_E2E_LEVEL must be a positive whole number, not {raw!r}") from None
+    if level < 1:
+        raise ValueError(f"AUTOCLIP_E2E_LEVEL must be at least 1, not {level}")
+    return level
+
+
+def e2e_cache(env: Mapping[str, str] | None = None) -> Path:
+    """The persistent download cache shared by runs (``AUTOCLIP_E2E_CACHE`` overrides it)."""
+    raw = (os.environ if env is None else env).get("AUTOCLIP_E2E_CACHE", "").strip()
+    return Path(raw).expanduser().resolve() if raw else DEFAULT_CACHE
+
+
+def _hms(seconds: float) -> str:
+    """A whole number of seconds as ``HH:MM:SS``."""
+    hours, rest = divmod(int(round(seconds)), 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def level_range(entry: ManifestEntry, level: int) -> str | None:
+    """The ``download.time_range`` of a ladder level (``None`` means the whole video).
+
+    Each level keeps the first ``level * CHUNK_SECONDS`` seconds, capped at the manifest duration.
+    The last level of an entry is the full download, so no range (and no local trimming) is needed.
+    """
+    seconds = float(level * CHUNK_SECONDS)
+    if entry.duration is not None and seconds >= entry.duration:
+        return None
+    return f"00:00:00-{_hms(seconds)}"
+
+
+def level_seconds(entry: ManifestEntry, level: int) -> float | None:
+    """How many seconds of source a ladder level is expected to provide (``None`` when unknown)."""
+    if entry.duration is None:
+        return None
+    return min(float(level * CHUNK_SECONDS), entry.duration)
+
+
+def cache_folder(cache: Path, url: str, level: int | str) -> Path:
+    """The persistent originals folder of one video and one ladder level (or another label)."""
+    return cache / video_id(url) / f"level_{level}" if isinstance(level, int) else cache / video_id(url) / str(level)
+
+
+def read_ledger(cache: Path) -> dict[str, dict[str, Any]]:
+    """The recorded output of every ladder level that already ran (empty when there is none yet)."""
+    path = cache / LEDGER_NAME
+    if not path.is_file():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        return {}
+    return {str(key): value for key, value in data.items() if isinstance(value, dict)}
+
+
+def level_summary(clips: Mapping[str, Sequence[Mapping[str, Any]]], source_seconds: float) -> dict[str, Any]:
+    """What one ladder level produced, in a shape the next level can compare against."""
+    summary: dict[str, Any] = {"source_seconds": round(source_seconds, 3)}
+    for kind in ("short", "long"):
+        rows = clips.get(kind, [])
+        summary[kind] = {
+            "clips": len(rows),
+            "width": int(rows[0].get("width", 0)) if rows else 0,
+            "height": int(rows[0].get("height", 0)) if rows else 0,
+            "trimmed": [round(float(row.get("trimmed", 0)), 3) for row in rows],
+        }
+    return summary
+
+
+def compare_levels(previous: Mapping[str, Any], current: Mapping[str, Any]) -> list[str]:
+    """Differences that a longer ladder level must not introduce (the clips keep their shape and count)."""
+    problems: list[str] = []
+    old_source = float(previous.get("source_seconds") or 0)
+    new_source = float(current.get("source_seconds") or 0)
+    if new_source + 0.5 < old_source:
+        problems.append(f"the source shrank from {old_source:.1f}s to {new_source:.1f}s")
+    for kind in ("short", "long"):
+        old, new = previous.get(kind), current.get(kind)
+        if not isinstance(old, Mapping) or not isinstance(new, Mapping):
+            continue
+        for key in ("clips", "width", "height"):
+            if old.get(key) != new.get(key):
+                problems.append(f"{kind}.{key} changed from {old.get(key)!r} to {new.get(key)!r}")
+    return problems
+
+
+def record_level(cache: Path, url: str, level: int, summary: dict[str, Any]) -> list[str]:
+    """Compare a level with the closest lower one already recorded, then remember it in the cache.
+
+    Returns the differences (empty when the level is consistent with the previous one). The ledger lives
+    next to the downloaded originals, so a deeper level run days later still compares with level 1.
+    """
+    ledger = read_ledger(cache)
+    levels = ledger.setdefault(video_id(url), {})
+    lower = [int(key) for key in levels if key.isdigit() and int(key) < level]
+    problems = compare_levels(levels[str(max(lower))], summary) if lower else []
+    levels[str(level)] = summary
+    cache.mkdir(parents=True, exist_ok=True)
+    path = cache / LEDGER_NAME
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(ledger, indent=2, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+    return problems
 
 
 @dataclass
@@ -238,6 +363,8 @@ def _environment(directory: Path) -> dict[str, Any]:
             "AUTOCLIP_E2E_TESTS": os.environ.get("AUTOCLIP_E2E_TESTS"),
             "AUTOCLIP_NETWORK_TESTS": os.environ.get("AUTOCLIP_NETWORK_TESTS"),
             "AUTOCLIP_E2E_RESULTS": os.environ.get("AUTOCLIP_E2E_RESULTS"),
+            "AUTOCLIP_E2E_CACHE": os.environ.get("AUTOCLIP_E2E_CACHE"),
+            "AUTOCLIP_E2E_LEVEL": os.environ.get("AUTOCLIP_E2E_LEVEL"),
             "AUTOCLIP_E2E_URL": os.environ.get("AUTOCLIP_E2E_URL"),
             "AUTOCLIP_E2E_COOKIES": os.environ.get("AUTOCLIP_E2E_COOKIES"),
         },
@@ -255,15 +382,23 @@ class DownloadedMedia:
     name: str
 
 
-def download_config(output_dir: Path, url: str, *, time_range: str | None = None) -> dict[str, Any]:
-    """A config that downloads ``url`` with English subtitles and the metadata sidecar."""
+def download_config(
+    output_dir: Path, url: str, *, time_range: str | None = None, original_dir: Path | None = None
+) -> dict[str, Any]:
+    """A config that downloads ``url`` at the best quality with English subtitles and the metadata sidecar.
+
+    ``original_dir`` is the persistent cache of the ladder: it lives outside the results folder so a later
+    run (a deeper level, the weekly network job) reuses the file instead of downloading it again.
+    """
     download: dict[str, Any] = {
-        "quality": 480,
+        "quality": "best",
         "subtitles": {"enabled": True, "languages": ["en"], "use_as_transcript": "always"},
         "metadata": {"info_json": True},
     }
     if time_range:
         download["time_range"] = time_range
+    if original_dir is not None:
+        download["original_dir"] = str(original_dir)
     cookies = os.environ.get("AUTOCLIP_E2E_COOKIES")
     if cookies:
         download["cookies"] = {"file": cookies}
@@ -298,10 +433,19 @@ def pipeline_config(output_dir: Path, source: Path, transcript: Path, clips: dic
 
 
 def downloaded_files(case: CaseResult) -> list[Path]:
-    """Every media file in the case's originals cache."""
+    """Every media file in the case's originals cache (``download.original_dir`` when the config sets one)."""
     from autoclip.core.download import MEDIA_EXTS
 
     folder = case.directory / "out" / ".work" / "downloads"
+    if case.config_path is not None and case.config_path.is_file():
+        config = json.loads(case.config_path.read_text(encoding="utf-8"))
+        download = config.get("download") if isinstance(config, dict) else None
+        if isinstance(download, dict) and download.get("original_dir"):
+            folder = Path(str(download["original_dir"]))
+            if not folder.is_absolute():
+                folder = case.directory / folder
+    if not folder.is_dir():
+        return []
     return [item for item in folder.iterdir() if item.is_file() and item.suffix.lower().lstrip(".") in MEDIA_EXTS]
 
 

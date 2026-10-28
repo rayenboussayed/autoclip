@@ -32,30 +32,56 @@ def _cap(cfg: VideoCfg) -> tuple[str, ...]:
     return ("-maxrate", f"{m:g}M", "-bufsize", f"{2 * m:g}M") if m > 0 else ()
 
 
-def cpu_encoder(cfg: VideoCfg) -> Encoder:
-    """libx264 (High profile, constant quality)."""
-    return Encoder("libx264", False, cfg.preset, ("-crf", str(cfg.crf), "-profile:v", "high", *_cap(cfg)))
+def _hevc(cfg: VideoCfg) -> int:
+    """Index into the per-family codec names: 0 = H.264, 1 = H.265."""
+    return 1 if cfg.codec == "h265" else 0
 
+
+def _profile(cfg: VideoCfg) -> str:
+    """``high`` for H.264, ``main`` for H.265 (HEVC has no High profile in yuv420p 8-bit)."""
+    return "main" if cfg.codec == "h265" else "high"
+
+
+def _videotoolbox(cfg: VideoCfg) -> Encoder:
+    """VideoToolbox: ``-q:v`` (1-100, higher is better) when uncapped, a bitrate when capped.
+
+    A capped bitrate used to be its only mode, so ``maxrate_mbps = 0`` silently meant "10 Mbps". The quality
+    mode maps CRF (0 best .. 51 worst) onto VideoToolbox's 1-100 scale.
+    """
+    quality = max(1, min(100, round((51 - cfg.crf) * 100 / 51)))
+    mode = ("-b:v", f"{cfg.maxrate_mbps:g}M", *_cap(cfg)) if cfg.maxrate_mbps > 0 else ("-q:v", str(quality))
+    return Encoder(VIDEOTOOLBOX[_hevc(cfg)], True, PLACEHOLDER_PRESET, (*mode, "-profile:v", _profile(cfg)))
+
+
+def cpu_encoder(cfg: VideoCfg) -> Encoder:
+    """libx264 / libx265 (constant quality)."""
+    name = "libx265" if cfg.codec == "h265" else "libx264"
+    return Encoder(name, False, cfg.preset, ("-crf", str(cfg.crf), "-profile:v", _profile(cfg), *_cap(cfg)))
+
+
+#: Per-family codec names: index 0 = H.264, index 1 = H.265 (HEVC).
+NVENC = ("h264_nvenc", "hevc_nvenc")
+VIDEOTOOLBOX = ("h264_videotoolbox", "hevc_videotoolbox")
+QSV = ("h264_qsv", "hevc_qsv")
+AMF = ("h264_amf", "hevc_amf")
 
 #: Builders of the supported GPU encoders; ``cfg.crf`` is reused as their quality level.
 HARDWARE: dict[str, Callable[[VideoCfg], Encoder]] = {
     "nvenc": lambda c: Encoder(
-        "h264_nvenc",
+        NVENC[_hevc(c)],
         True,
         PLACEHOLDER_PRESET,
-        ("-preset", "p4", "-rc", "vbr", "-cq", str(c.crf), "-b:v", "0", "-profile:v", "high", *_cap(c)),
+        ("-preset", "p4", "-rc", "vbr", "-cq", str(c.crf), "-b:v", "0", "-profile:v", _profile(c), *_cap(c)),
     ),
-    "videotoolbox": lambda c: Encoder(
-        "h264_videotoolbox", True, PLACEHOLDER_PRESET, ("-b:v", f"{c.maxrate_mbps or 10:g}M", "-profile:v", "high")
-    ),
+    "videotoolbox": _videotoolbox,
     "qsv": lambda c: Encoder(
-        "h264_qsv", True, PLACEHOLDER_PRESET, ("-global_quality", str(c.crf), "-preset", "medium", "-profile:v", "high")
+        QSV[_hevc(c)], True, PLACEHOLDER_PRESET, ("-global_quality", str(c.crf), "-preset", "medium", "-profile:v", _profile(c))
     ),
     "amf": lambda c: Encoder(
-        "h264_amf",
+        AMF[_hevc(c)],
         True,
         PLACEHOLDER_PRESET,
-        ("-quality", "balanced", "-rc", "cqp", "-qp_i", str(c.crf), "-qp_p", str(c.crf), "-profile:v", "high"),
+        ("-quality", "balanced", "-rc", "cqp", "-qp_i", str(c.crf), "-qp_p", str(c.crf), "-profile:v", _profile(c)),
     ),
 }
 
