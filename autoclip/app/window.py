@@ -72,7 +72,6 @@ class AutoclipApp(tk.Tk):
         self.minsize(900, 620)
         self._configure_style()
 
-        self._explicit_path = config_path is not None
         self.config_path = Path(config_path) if config_path is not None else default_config_path()
         self.values: dict[str, Any] = default_values()
         self._forms: list[Form] = []
@@ -179,56 +178,17 @@ class AutoclipApp(tk.Tk):
     # -- startup -----------------------------------------------------------------------------
 
     def _startup(self) -> None:
-        """Load the config file, reset a broken one, or offer the default folder of the system.
+        """Load the config file, or keep the defaults in memory when there is none.
 
-        A path the user named on the command line (or typed into the config field) is where Save
-        will put the file, so a missing file there needs no dialog: the defaults are enough. On a
-        first run the app offers the per-OS folder and only opens a save dialog when that is
-        declined; cancelling that dialog keeps the defaults without writing anything.
+        A missing file is not an error and opens no dialog: the defaults are the config until the
+        user saves one (Save / Save as) or runs the pipeline, which writes the file first.
         """
         path = self.config_path
         if path.is_file():
             self._load_at_startup(path)
             return
-        if self._explicit_path:
-            self._set_status("New config - the defaults are loaded.")
-            self._append(f"{path} does not exist yet: the defaults are loaded.")
-            return
-        if messagebox.askyesno(
-            "autoclip",
-            f"Save the config file to the default folder?\n\n{path}\n\n"
-            "No: choose another folder. Cancel the next dialog to start without a config file.",
-        ):
-            self._save_new_config(path)
-            return
-        picked = filedialog.asksaveasfilename(
-            parent=self,
-            title="Where should the config file be saved?",
-            initialdir=str(path.parent),
-            initialfile=path.name,
-            defaultextension=".json",
-            filetypes=[("JSON config", "*.json"), ("All files", "*.*")],
-        )
-        if not picked:
-            self.config_path = path
-            self._path_var.set(str(path))
-            self._set_status("No config file yet - the defaults are loaded.")
-            self._append(f"No config file at {path}: the defaults are loaded. Save config to create one.")
-            return
-        self._save_new_config(Path(picked).expanduser())
-
-    def _save_new_config(self, path: Path) -> None:
-        """Adopt ``path`` and write the defaults there, reporting a failure without raising."""
-        self.config_path = path
-        self._path_var.set(str(path))
-        try:
-            write_config(path, unflatten(self.values))
-        except OSError as e:
-            self._append(f"error: cannot write {path}: {e}")
-            self._set_status("The config file could not be written - use Save config.")
-            return
-        self._set_status(f"New config saved to {path}")
-        self._append(f"New config file: {path}")
+        self._set_status("No config file - the defaults are loaded.")
+        self._append(f"No config file at {path}: the defaults are loaded in memory. Save config to create one.")
 
     def _load_at_startup(self, path: Path) -> None:
         """Use a valid file as it is; a file that is not a valid config falls back to the defaults."""
@@ -290,16 +250,17 @@ class AutoclipApp(tk.Tk):
         """The current form as a nested config dict."""
         return unflatten({path: field.value() for form in self._forms for path, field in form.fields.items()})
 
-    def _save_to(self, path: Path) -> None:
-        """Write the form to a config file."""
+    def _save_to(self, path: Path) -> bool:
+        """Write the form to a config file; return whether it was written."""
         try:
             write_config(path, self._config_data())
         except OSError as e:
             messagebox.showerror("autoclip", f"Cannot write the config file:\n{e}")
-            return
+            return False
         self.config_path = path
         self._path_var.set(str(path))
         self._set_status(f"Saved {path}")
+        return True
 
     def _save(self) -> None:
         """Save the config file."""
@@ -348,7 +309,10 @@ class AutoclipApp(tk.Tk):
             self._set_status("The configuration is not valid - see the log.")
             messagebox.showerror("autoclip", f"The configuration is not valid:\n\n{e}")
             return
-        self._save_to(self.config_path)
+        if not self._save_to(self.config_path):
+            self._append(f"error: cannot write {self.config_path}; the run was not started.")
+            self._set_status("The config file could not be written - the run was not started.")
+            return
         self._append(f"$ python -m autoclip {self.config_path}")
         try:
             self._process = start_pipeline(self.config_path)

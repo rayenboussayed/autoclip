@@ -8,6 +8,7 @@ pip install -r requirements.txt
 pip install -U "Pillow>=12.3"          # security fixes; MoviePy's "<12" pin is only conservative (CI tests both)
 python -m autoclip --init config.json  # tiny starter config   (--init-full lists every option and default)
 python -m autoclip config.json         # or: autoclip config.json  (after `pip install -e .`)
+python -m autoclip                     # no config: ./input.mp4 with the built-in defaults
 python -m autoclip.app                 # the desktop app (same options, explained)
 ```
 
@@ -23,10 +24,11 @@ the config file**:
 - *All options...* opens the same explanations in a searchable list;
 - *Run* writes the config and starts the pipeline (the log appears in the window), *Stop* ends it;
   *Save config*, *Load config...* and *Reset* work on the config file;
-- the first start offers the usual per-OS config folder (Linux `~/.config/autoclip/config.json`,
-  macOS `~/Library/Application Support/autoclip/config.json`, Windows `%APPDATA%\autoclip\config.json`)
-  and lets you pick another file instead; a broken config resets the form to the defaults without
-  overwriting the file;
+- the config file lives in the usual per-OS folder (Linux `~/.config/autoclip/config.json`,
+  macOS `~/Library/Application Support/autoclip/config.json`, Windows `%APPDATA%\autoclip\config.json`);
+  a missing file is fine - the built-in defaults are kept in memory (no dialog, nothing written) until
+  you press *Save config*, *Save as...* or *Run*; a broken config resets the form to the defaults
+  without overwriting the file;
 - *Copy error* and *Copy log* in the log header put the last error (or the whole log) on the clipboard;
 - `AUTOCLIP_DEBUG=1` makes an unexpected window error print its traceback, close the window and
   re-raise it (the default keeps Tk's error dialog).
@@ -129,11 +131,13 @@ same pipeline as a local file:
   human-made subtitles may replace Whisper) or `always` (automatic captions too). An explicit
   `transcript.file` always wins; `transcript.mode: "auto"` prefers a downloaded subtitle, then the
   transcript cache, then Whisper; `"whisper"` ignores them unless `use_as_transcript` is `always`.
-* **Command line:** `--download-only config.json` downloads the URLs and stops; `--formats URL`
-  prints every available format and the one autoclip would choose (no config file needed);
-  `--platforms [URL]` prints the allow/deny policy and where a URL would go; `--allow a,b` and
-  `--deny c` override the loaded lists for one run. Inspection modes create no folders and configure
-  no logging. A run with only local files never imports yt-dlp and makes no network request.
+* **Command line:** without a config file the built-in defaults run `./input.mp4` (a missing file is
+  reported with a hint, exit status 2, and nothing is written); `--download-only config.json` downloads
+  the URLs and stops; `--formats URL` prints every available format and the one autoclip would choose
+  (no config file needed); `--platforms [URL]` prints the allow/deny policy and where a URL would go;
+  `--allow a,b` and `--deny c` override the loaded lists for one run. Inspection modes create no
+  folders and configure no logging. A run with only local files never imports yt-dlp and makes no
+  network request.
 
 ## Where the work runs
 `compute.device` decides whether the GPU is used at all:
@@ -264,8 +268,8 @@ line - so `./autoclip-x86_64.AppImage config.json` still cuts clips.
 * `download.*` controls quality and format, platform allow/deny, playlists, metadata, time ranges, cookies,
   network settings, the JavaScript runtime and subtitles (see [Downloading URLs](#downloading-urls-youtube-tiktok-vimeo-)).
 * The command line gained `--download-only`, `--formats URL`, `--platforms [URL]`, `--allow` and `--deny`.
-* The desktop app gained the *Download* tab, the first-run save-folder prompt, *Copy error* / *Copy log*
-  and `AUTOCLIP_DEBUG=1`.
+* The desktop app gained the *Download* tab, *Copy error* / *Copy log* and `AUTOCLIP_DEBUG=1`; a
+  missing config file now starts from the built-in defaults in memory instead of asking where to save.
 
 Nothing was removed or renamed, so a 2.1 config is a valid 2.2 config.
 

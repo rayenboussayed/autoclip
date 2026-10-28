@@ -25,7 +25,7 @@ pip install -U "Pillow>=12.3"                  # security fixes; MoviePy's "<12"
 pip install -e .                               # optional: gives the `autoclip` console command
 
 python -m autoclip --init config.json          # tiny starter config      (--init-full: every option + default)
-python -m autoclip config.json                 # run (exit 0 = all ok, 1 = something failed, 2 = bad config)
+python -m autoclip [config.json]               # run (no config: ./config.json if present, else ./input.mp4 + defaults; exit 0/1/2)
 python -m autoclip --gui                       # the desktop app (same as: python -m autoclip.app)
 python -m autoclip --formats URL               # every format of a URL and the one autoclip would pick (no config needed)
 python -m autoclip --platforms [URL] config.json        # the allow/deny policy (and where that URL would go)
@@ -85,7 +85,7 @@ autoclip/
     fields.py       the catalogue: every config option with what / why / when (the app is built from it)
     form.py         the form: one row per option, the control that fits its kind (incl. JSON), the scroll area
     session.py      the behaviour without widgets: read/write/validate the config, default_config_path, start/stop
-    window.py       the window: tabs, details panel, log, Run / Stop / Save / Load / Reset, first-run prompt, debug mode
+    window.py       the window: tabs, details panel, log, Run / Stop / Save / Load / Reset, debug mode
 tests/            mirrors the modules; conftest.py generates the fixture video and gates the `network` marker
                   test_version.py guards the three version files
 autoclip.spec     the PyInstaller spec: a standalone build (engine + command line + desktop app + yt-dlp/EJS)
@@ -361,9 +361,9 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 * Coverage uses `branch = true`, `concurrency = ["multiprocessing", "thread"]`, `parallel = true`: code that runs inside
   spawned workers is measured. `if __name__ == "__main__":` is excluded; `__main__.py` is exercised with `runpy`.
 * The desktop app: the behaviour lives in `app/session.py` and is tested without a display; the widgets need one, so
-  those tests skip when there is none (`has_display()`). CI runs them under `xvfb-run` on Linux. The first-run flow is
-  tested by injecting the platform (`default_config_path(system, env, home)`) and patching `messagebox`; an autouse
-  fixture sets `AUTOCLIP_DEBUG=1` so a widget error fails the test with its traceback instead of opening a dialog.
+  those tests skip when there is none (`has_display()`). CI runs them under `xvfb-run` on Linux. The missing-config
+  flow is tested by injecting the platform (`default_config_path(system, env, home)`) and patching `messagebox`; an
+  autouse fixture sets `AUTOCLIP_DEBUG=1` so a widget error fails the test with its traceback instead of opening a dialog.
 * Every new behaviour needs a test that would fail without it; every bug fix needs a regression test. Assertions should
   state the contract (e.g. "no moment is reused under another label"), not incidental values.
 * Keep tests fast: prefer the 40 s fixture, `short_side` 96-144, `ultrafast`, `audio.denoise: "none"` unless denoise is the subject.

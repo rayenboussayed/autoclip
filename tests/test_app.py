@@ -333,9 +333,11 @@ def test_running_starts_the_pipeline_and_shows_its_log(tmp_path: Path, monkeypat
     from autoclip.app.window import AutoclipApp
 
     monkeypatch.setattr(window, "start_pipeline", lambda path: FakeProcess(["all done", ""]))
-    app = AutoclipApp(tmp_path / "config.json")
+    path = tmp_path / "config.json"
+    app = AutoclipApp(path)
     try:
         app._run()
+        assert path.exists()  # an explicit Run writes the config first
         for _ in range(50):
             app.update()
             if app._process is None and "all done" in app.log.get("1.0", "end"):
@@ -720,98 +722,22 @@ def test_a_config_in_the_default_folder_is_loaded_at_startup(tmp_path: Path, mon
 
 
 @needs_display
-def test_the_first_run_offers_to_save_in_the_default_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A first run asks about the default folder; accepting writes the config there."""
+def test_a_first_run_keeps_the_defaults_in_memory_without_dialogs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing config file loads the defaults in memory: no dialog, no file written."""
     from autoclip.app import window
     from autoclip.app.window import AutoclipApp
 
     path = tmp_path / "config" / "config.json"
     monkeypatch.setattr(window, "default_config_path", lambda: path)
-    asked: list[tuple[str, str]] = []
-
-    def ask(title: str, text: str) -> bool:
-        asked.append((title, text))
-        return True
-
-    monkeypatch.setattr(messagebox, "askyesno", ask)
-    monkeypatch.setattr(filedialog, "asksaveasfilename", lambda **kw: pytest.fail("asked for another folder"))
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: pytest.fail("asked about a folder"))
+    monkeypatch.setattr(filedialog, "asksaveasfilename", lambda **kw: pytest.fail("asked for a folder"))
     app = AutoclipApp()
     try:
-        assert asked and str(path) in asked[0][1]
         assert app.config_path == path
-        assert app._path_var.get() == str(path)
-        assert read_config(path)["clips.short.count"] == default_values()["clips.short.count"]
-        assert app.status.cget("text").startswith("New config saved")
-    finally:
-        app.destroy()
-
-
-@needs_display
-def test_the_first_run_can_save_somewhere_else(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Declining the default folder opens a save dialog there, and the picked file is written."""
-    from autoclip.app import window
-    from autoclip.app.window import AutoclipApp
-
-    default = tmp_path / "config" / "config.json"
-    monkeypatch.setattr(window, "default_config_path", lambda: default)
-    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: False)
-    picked = tmp_path / "chosen.json"
-    asked: list[dict[str, Any]] = []
-
-    def ask(**kwargs: Any) -> str:
-        asked.append(kwargs)
-        return str(picked)
-
-    monkeypatch.setattr(filedialog, "asksaveasfilename", ask)
-    app = AutoclipApp()
-    try:
-        assert asked and Path(asked[0]["initialdir"]) == default.parent
-        assert asked[0]["initialfile"] == "config.json"
-        assert app.config_path == picked
-        assert read_config(picked)["clips.short.count"] == default_values()["clips.short.count"]
-        assert app.status.cget("text").startswith("New config saved")
-    finally:
-        app.destroy()
-
-
-@needs_display
-def test_the_first_run_can_be_cancelled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Declining the default folder and cancelling the dialog leaves the defaults and writes nothing."""
-    from autoclip.app import window
-    from autoclip.app.window import AutoclipApp
-
-    default = tmp_path / "config" / "config.json"
-    monkeypatch.setattr(window, "default_config_path", lambda: default)
-    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: False)
-    monkeypatch.setattr(filedialog, "asksaveasfilename", lambda **kw: "")
-    app = AutoclipApp()
-    try:
-        assert app.config_path == default
-        assert not default.exists()
+        assert not path.exists()
         assert app.values == default_values()
-        assert "No config file yet" in app.status.cget("text")
-    finally:
-        app.destroy()
-
-
-@needs_display
-def test_the_first_run_save_failure_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A default config that cannot be written is reported, the app stays usable."""
-    from autoclip.app import window
-    from autoclip.app.window import AutoclipApp
-
-    monkeypatch.setattr(window, "default_config_path", lambda: tmp_path / "config" / "config.json")
-    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: True)
-
-    def broken(path: Path, data: Any) -> None:
-        raise OSError("read-only")
-
-    monkeypatch.setattr(window, "write_config", broken)
-    app = AutoclipApp()
-    try:
-        assert app.values == default_values()
-        assert "error:" in app.log.get("1.0", "end")
-        assert "could not be written" in app.status.cget("text")
+        assert app.status.cget("text") == "No config file - the defaults are loaded."
+        assert "the defaults are loaded in memory" in app.log.get("1.0", "end")
     finally:
         app.destroy()
 
@@ -826,7 +752,8 @@ def test_a_missing_explicit_config_path_needs_no_dialog(tmp_path: Path, monkeypa
     app = AutoclipApp(tmp_path / "new.json")
     try:
         assert app.values == default_values()
-        assert app.status.cget("text") == "New config - the defaults are loaded."
+        assert app.status.cget("text") == "No config file - the defaults are loaded."
+        assert not (tmp_path / "new.json").exists()
     finally:
         app.destroy()
 
@@ -1081,8 +1008,31 @@ def test_a_config_file_that_cannot_be_written_is_reported(tmp_path: Path, monkey
     monkeypatch.setattr(window, "write_config", broken)
     app = AutoclipApp(tmp_path / "config.json")
     try:
-        app._save_to(tmp_path / "config.json")
+        assert app._save_to(tmp_path / "config.json") is False
         assert errors
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_a_run_without_a_writable_config_does_not_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run writes the config first; when that fails the pipeline is not started."""
+    from autoclip.app import window
+    from autoclip.app.window import AutoclipApp
+
+    monkeypatch.setattr(messagebox, "showerror", lambda *a, **k: None)
+    monkeypatch.setattr(window, "start_pipeline", lambda path: pytest.fail("started without a config"))
+
+    def broken(path: Path, data: Any) -> None:
+        raise OSError("read-only")
+
+    monkeypatch.setattr(window, "write_config", broken)
+    app = AutoclipApp(tmp_path / "config.json")
+    try:
+        app._run()
+        assert app._process is None
+        assert "the run was not started" in app.status.cget("text")
+        assert "the run was not started" in app.log.get("1.0", "end")
     finally:
         app.destroy()
 

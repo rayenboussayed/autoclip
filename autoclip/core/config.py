@@ -483,7 +483,7 @@ class DownloadCfg(Section):
 class Config(Section):
     """The whole configuration file."""
 
-    input: list[str] = field(default_factory=lambda: ["video.mp4"])  # files, glob patterns or http(s) URLs
+    input: list[str] = field(default_factory=lambda: ["input.mp4"])  # files, glob patterns or http(s) URLs
     output_dir: str = "clips"  # one sub-folder per video is created inside
     compute: ComputeCfg = field(default_factory=ComputeCfg)
     download: DownloadCfg = field(default_factory=DownloadCfg)

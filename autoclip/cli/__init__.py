@@ -35,7 +35,7 @@ def init_config(path: Path, full: bool) -> None:
     if path.exists():
         raise ConfigError(f"{path} already exists (not overwriting)")
     starter = {
-        "input": ["video.mp4"],
+        "input": ["input.mp4"],
         "clips": {
             "kinds": ["short", "long"],
             "scenes": ["best"],
@@ -137,7 +137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         nargs="?",
         default=None,
         type=Path,
-        help="path to the JSON config (default: ./config.json; --formats may run without one)",
+        help="path to the JSON config (default: ./config.json when it exists; otherwise the built-in defaults)",
     )
     ap.add_argument("--init", action="store_true", help="write a tiny starter config and exit")
     ap.add_argument("--init-full", action="store_true", help="write a config with every option and its default, and exit")
@@ -161,10 +161,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         default_path = Path("config.json")
         if args.config is not None:
             cfg = load_config(args.config)
-        elif (args.formats or args.platforms) and not default_path.exists():
-            cfg = Config()  # inspect or download a URL with the built-in defaults
-        else:
+            built_in = False
+        elif default_path.is_file():
             cfg = load_config(default_path)
+            built_in = False
+        else:
+            cfg = Config()  # no file: the built-in defaults, kept in memory (never written)
+            built_in = True
         _with_policy(cfg, _csv(args.allow), _csv(args.deny))
     except ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
@@ -186,6 +189,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 2
             return _show_formats(inspector, urls)
         return _show_platforms(inspector, _target_urls(cfg, args.platforms))
+
+    if built_in:
+        if args.download_only:
+            print("error: --download-only needs at least one URL in input", file=sys.stderr)
+            return 2
+        if not any(not is_url(item) and Path(item).is_file() for item in cfg.input):
+            print(
+                "error: no config file and no input.mp4 in the current folder\n"
+                "hint: run 'python -m autoclip --init config.json', put an input.mp4 here, or pass a config file",
+                file=sys.stderr,
+            )
+            return 2
 
     lg = cfg.logging
     log_file = (

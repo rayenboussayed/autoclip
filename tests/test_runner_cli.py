@@ -378,12 +378,12 @@ def test_main_config_errors_and_init(tmp_path: Path, capsys: pytest.CaptureFixtu
 def test_generated_configs_load_without_errors(tmp_path: Path) -> None:
     from autoclip.core.config import load_config
 
-    (tmp_path / "video.mp4").write_bytes(b"x")  # the starter config names video.mp4
+    (tmp_path / "input.mp4").write_bytes(b"x")  # the starter config names input.mp4
     for flag in ("--init", "--init-full"):
         target = tmp_path / f"{flag.strip('-')}.json"
         assert main([flag, str(target)]) == 0
         cfg = load_config(target)
-        assert cfg.clips.kinds == ["short", "long"] and Path(cfg.input[0]).name == "video.mp4"
+        assert cfg.clips.kinds == ["short", "long"] and Path(cfg.input[0]).name == "input.mp4"
 
 
 def test_main_logging_can_be_disabled_and_directed(media: Media, tmp_path: Path) -> None:

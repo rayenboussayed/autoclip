@@ -213,12 +213,31 @@ def test_inspection_reads_the_default_config_when_it_exists(
     assert f"{URL}\n  {URL}: youtube" in capsys.readouterr().out
 
 
-def test_no_config_file_and_no_inspection_is_a_config_error(
+def test_no_config_and_no_input_file_is_a_friendly_config_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.chdir(tmp_path)
     assert main([]) == 2
-    assert "cannot read config" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "no config file and no input.mp4" in error and "hint:" in error
+    assert list(tmp_path.iterdir()) == []  # starting without a config writes nothing
+
+
+def test_no_config_runs_input_mp4_with_the_built_in_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without a config file, ./input.mp4 is cut with the defaults and no config is invented."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "input.mp4").write_bytes(b"x")
+    calls = record_pipeline(monkeypatch)
+    assert main([]) == 0
+    assert [call["path"] for call in calls] == [Path("input.mp4")]
+    assert not (tmp_path / "config.json").exists()
+
+
+def test_no_config_download_only_needs_a_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert main(["--download-only"]) == 2
+    assert "--download-only needs at least one URL" in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize(("error", "status"), [(ConfigError("bad policy"), 2), (DownloadError("yt-dlp is missing"), 1)])
