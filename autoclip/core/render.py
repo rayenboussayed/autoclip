@@ -125,13 +125,17 @@ def encode(comp: Any, dst: Path, fps: float, encoder: Encoder, threads: int, vid
     """Write the chosen codec + AAC (yuv420p; faststart and the ``hvc1`` tag for MP4) with the ``encoder``."""
     t0 = time.perf_counter()
     mp4 = dst.suffix.lower() == ".mp4"
-    params = list(encoder.params)
+    # Write to a ``.part`` sibling and rename on success so a killed job leaves no half-written clip.
+    part = dst.with_name(dst.name + ".part")
+    target = part
+    fmt = dst.suffix.lstrip(".").lower()
+    params = (["-f", fmt] if fmt else []) + list(encoder.params)
     if mp4 and _is_hevc(encoder.name):
         params += ["-tag:v", "hvc1"]  # QuickTime/Safari only play HEVC in MP4 with this tag
     if mp4:
         params += ["-movflags", "+faststart"]
     comp.write_videofile(
-        str(dst),
+        str(target),
         fps=fps,
         codec=encoder.name,
         audio_codec="aac",
@@ -150,6 +154,8 @@ def encode(comp: Any, dst: Path, fps: float, encoder: Encoder, threads: int, vid
         encoder.name,
         threads,
     )
+    if target.exists():
+        target.replace(dst)
 
 
 @traced("render_clip")

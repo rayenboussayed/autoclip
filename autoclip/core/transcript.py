@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import time
 from collections.abc import Iterable, Mapping
@@ -181,12 +182,47 @@ def transcribe(src: Path, cfg: Config, info: MediaInfo, db: F32, enhancer: Speec
     """
     from faster_whisper import WhisperModel
 
+    try:
+        from faster_whisper.utils import download_model
+    except Exception:  # stub in tests has no .utils
+        download_model = None
+
     tc, proc = cfg.transcript, cfg.processing
     device = asr_device(cfg)
-    model_name = fit_whisper_model(tc.model, device) if tc.auto_downgrade else tc.model
+    _model = tc.model or "small"
+    model_name = fit_whisper_model(_model, device) if tc.auto_downgrade else _model
     threads = RESOURCES.cpu_budget()
+    cache_dir = tc.model_dir
+    # consent for a first download (offline never downloads); skipped when the module is a test stub
+    if download_model is not None:
+        try:
+            download_model(model_name, cache_dir=cache_dir, local_files_only=True)
+        except Exception:
+            if tc.offline:
+                from .errors import AutoclipError
+
+                raise AutoclipError(f"Whisper model '{model_name}' is not cached and transcript.offline is set") from None
+            if os.environ.get("AUTOCLIP_ASSUME_YES") != "1":
+                try:
+                    answer = input(f"Download Whisper model '{model_name}' now? [y/N] ").strip()
+                except EOFError:
+                    answer = ""
+                if not answer.lower().startswith("y"):
+                    from .errors import AutoclipError
+
+                    raise AutoclipError(
+                        f"model '{model_name}' not cached; run 'autoclip models pull {model_name}' or set AUTOCLIP_ASSUME_YES=1"
+                    ) from None
+            download_model(model_name, cache_dir=cache_dir, local_files_only=False)
     log.info("whisper model=%s device=%s%s cpu_threads=%d", model_name, device, " (GPU)" if device == "cuda" else "", threads)
-    model = WhisperModel(model_name, device=device, compute_type="float16" if device == "cuda" else "int8", cpu_threads=threads)
+    model = WhisperModel(
+        model_name,
+        device=device,
+        compute_type="float16" if device == "cuda" else "int8",
+        cpu_threads=threads,
+        download_root=cache_dir,
+        local_files_only=True,
+    )
     segmented = info.duration >= proc.chunk_threshold_minutes * 60
     bounds = chunk_bounds(info.duration, db, proc.chunk_minutes * 60) if segmented else [(0.0, info.duration)]
     language, raw, t0 = tc.language, [], time.perf_counter()
@@ -233,7 +269,7 @@ def _cache_key(src: Path, cfg: TranscriptCfg, proc: ProcessingCfg, *, denoise: b
     st = src.stat()
     return {
         "source": f"{src.name}:{st.st_size}:{st.st_mtime_ns}",
-        "model": cfg.model,
+        "model": cfg.model or "small",
         "language": cfg.language,
         "multilingual": cfg.multilingual,
         "word_timestamps": cfg.word_timestamps,

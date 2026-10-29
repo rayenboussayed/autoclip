@@ -83,6 +83,7 @@ def test_run_job_processes_a_small_video(monkeypatch: pytest.MonkeyPatch, media:
     from autoclip.server.state import Job
     from tests.support import install_stub_whisper, make_cfg
 
+    monkeypatch.setenv("AUTOCLIP_SERVER_INPROCESS", "1")
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
     import dataclasses
     import threading
@@ -170,7 +171,7 @@ def test_run_job_processes_a_small_video(monkeypatch: pytest.MonkeyPatch, media:
         work_dir=cancel_out / ".work" / upload.stem,
     )
     run_job(cancel_job, cancel_event=cancel_event)
-    assert cancel_job.state == JobState.failed
+    assert cancel_job.state == JobState.cancelled
 
     # An impossible length range produces no clips and a failed job.
     empty_cfg = dataclasses.asdict(
@@ -502,6 +503,7 @@ def test_run_job_reports_pending_clips_as_failed(monkeypatch: pytest.MonkeyPatch
     from autoclip.server.state import Job
     from tests.support import install_stub_whisper, make_cfg
 
+    monkeypatch.setenv("AUTOCLIP_SERVER_INPROCESS", "1")
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
     custom = dataclasses.asdict(
         make_cfg(
@@ -523,7 +525,7 @@ def test_run_job_reports_pending_clips_as_failed(monkeypatch: pytest.MonkeyPatch
         config={"_custom": custom},
         work_dir=out / ".work" / media.video.stem,
     )
-    with patch("autoclip.server.service.render_all"):
+    with patch("autoclip.core.pipeline.render_all"):
         run_job(job)
     assert job.state == JobState.completed, job.error
     assert "failed" in (job.message or "").lower() or job.error is not None

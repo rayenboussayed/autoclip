@@ -27,6 +27,8 @@ class Job:
     finished_at: float | None = None
     outputs: list[Path] = field(default_factory=list)
     work_dir: Path | None = None
+    process: Any = None
+    cancel_requested: bool = False
 
     def update(
         self,

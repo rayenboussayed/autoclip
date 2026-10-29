@@ -13,10 +13,10 @@ render (enhance audio, cut pauses/fillers, layout, burn captions, encode on GPU 
 
 * Free, local, no service dependencies (downloading is off unless `input` holds an http(s) URL; the optional local
   LLM re-rank is the only other network use).
-* Runs on Linux, macOS and Windows, Python >= 3.10 (developed and verified on 3.12). No system ffmpeg required.
+* Runs on Linux, macOS and Windows, Python >= 3.11 (developed and verified on 3.12). No system ffmpeg required.
 * Four parts: `core` (the engine), `cli` (the command line), `app` (the desktop app, Tk) and `server` (the optional
   FastAPI/WebSocket service).
-* Version 2.3.0. ~9,000 lines of package code in 43 modules, ~10,800 lines of tests (100% statement + branch coverage).
+* Version 3.0.0. ~9,500 lines of package code in 46 modules, ~11,000 lines of tests (100% statement + branch coverage).
 
 ## 2. Commands
 

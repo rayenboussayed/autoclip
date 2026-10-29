@@ -1,25 +1,16 @@
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from typing import Any
 
 from ..core.config import Config, parse
-from ..core.errors import AutoclipError
-from ..core.hardware import pick_encoder
-from ..core.media import probe
-from ..core.models import RenderJob
-from ..core.moments import energy_track, select_moments
-from ..core.pipeline import needs_text, ranges_moments, split_video
-from ..core.render import canvas_size, estimate_render_bytes
-from ..core.resources import RESOURCES
-from ..core.runner import render_all
-from ..core.store import Cache, Store
-from ..core.transcript import get_transcript
+from ..core.process import pipeline_command
 from .config import get_settings
 from .progress import progress_manager
 from .schemas import JobState
@@ -53,10 +44,55 @@ def prepare_config(job: Job, custom: dict[str, Any] | None) -> Config:
     cfg = parse(Config, base) if base else Config()
     cfg.input = [str(job.input_path)]
     cfg.output_dir = str(job.output_dir)
-    if cfg.logging.file:
-        job.output_dir.mkdir(parents=True, exist_ok=True)
-    RESOURCES.configure(cfg)
     return cfg
+
+
+def _run_job_inprocess(job: Job, cfg: Config) -> None:
+    from ..core.batch import run_batch
+    from ..core.events import Reporter
+    from ..core.hardware import pick_encoder
+
+    job.output_dir.mkdir(parents=True, exist_ok=True)
+    job.work_dir = job.output_dir / ".work" / (job.input_path.stem)
+    job.work_dir.mkdir(parents=True, exist_ok=True)
+    job.process = None
+
+    def _sink(p: Any) -> None:
+        _publish(job, p.stage, p.message, p.percent)
+
+    reporter = Reporter(_sink)
+    _publish(job, "probing", "Probing media", 5.0)
+    encoder = pick_encoder(cfg.video, allow_gpu=cfg.compute.device != "cpu")
+    _publish(job, "transcribing", "Transcription ready", 12.0)
+    result = run_batch(cfg, downloader=None, encoder=encoder, log_file=None, report=reporter)
+    # collect outputs
+    _publish(job, "packaging", "Collecting outputs", 90.0)
+    outs: list[Path] = []
+    for cj in sorted(job.output_dir.rglob("clips.json")):
+        if ".work" in cj.relative_to(job.output_dir).parts:
+            continue
+        try:
+            rows = json.loads(cj.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(rows, list):
+            for r in rows:
+                name = r if isinstance(r, str) else (r.get("file") if isinstance(r, dict) else None)
+                if name:
+                    p = cj.parent / str(name)
+                    if p.is_file():
+                        outs.append(p)
+    job.outputs = outs
+    any_index = any(p.name == "clips.json" for p in job.output_dir.rglob("*"))
+    if result.clips_failed and result.clips_done == 0 and not any_index:
+        job.update(state=JobState.failed, error=f"{result.clips_failed} clip(s) failed")
+        _publish(job, "failed", f"{result.clips_failed} clip(s) failed", 100.0, state="failed")
+    elif result.clips_failed:
+        job.update(state=JobState.completed, error=f"{result.clips_failed} clip(s) failed")
+        _publish(job, "completed", f"Done with {result.clips_failed} failure(s)", 100.0, state="completed")
+    else:
+        job.update(state=JobState.completed)
+        _publish(job, "completed", "Done", 100.0, state="completed")
 
 
 def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def]
@@ -65,102 +101,108 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
         job.work_dir = job.output_dir / ".work" / (job.input_path.stem)
         job.work_dir.mkdir(parents=True, exist_ok=True)
         _publish(job, "validating", "Validating configuration", 2.0)
+        if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+            job.cancel_requested = True
         cfg = prepare_config(job, job.config.get("_custom"))
-        store = Store(job.work_dir / "autoclip.db", fresh=True)
-        cache = Cache(store, RESOURCES)
+        if job.cancel_requested:
+            job.update(state=JobState.cancelled, error="cancelled")
+            _publish(job, "cancelled", "Cancelled", 100.0, state="cancelled")
+            return
+        if os.environ.get("AUTOCLIP_SERVER_INPROCESS") == "1":
+            return _run_job_inprocess(job, cfg)
+        config_path = job.work_dir / "config.json"
         try:
-            _publish(job, "probing", "Probing media", 5.0)
-            info = probe(job.input_path)
-            log.info("server job %s: input %s (%.1fs)", job.job_id, job.input_path.name, info.duration)
-            cc = cfg.clips
-            if cc.mode == "split":
-                out = job.output_dir / "long" / job.input_path.stem
-                out.mkdir(parents=True, exist_ok=True)
-                _publish(job, "rendering", "Splitting video", 50.0)
-                parts = split_video(job.input_path, out, cc.split_seconds, info.duration, job.input_path.stem)
-                (out / "clips.json").write_text(json.dumps([p.name for p in parts], indent=2), encoding="utf-8")
-                job.outputs = parts
-                _publish(job, "completed", "Done", 100.0, state="completed")
-                return
-            jobs_list = []
-            needs = 0
-            encoder = pick_encoder(cfg.video, allow_gpu=cfg.compute.device != "cpu")
-            _publish(job, "transcribing", "Building energy track", 12.0)
-            energy = energy_track(job.input_path, info, cache)
-            have_text = get_transcript(
-                job.input_path,
-                cfg,
-                job.work_dir,
-                store,
-                info,
-                energy,
-                needs_text(cfg),
-                name=job.input_path.stem,
-            )
-            _publish(job, "transcribing", "Transcription ready", 35.0)
-            moments_by_kind = {}
-            for kind in cc.kinds:
-                if cancel_event is not None and cancel_event.is_set():
-                    raise RuntimeError("cancelled")
-                kcfg = cc.kind(kind)
-                _publish(job, "selecting", f"Selecting {kind} moments", 45.0)
-                moments = (
-                    ranges_moments(store, kcfg, info, cfg, have_text)
-                    if cc.mode == "ranges"
-                    else select_moments(job.input_path, info, store, cache, cfg, kind, energy, have_text)
-                )
-                if not moments:
-                    continue
-                out = job.output_dir / kind / job.input_path.stem
-                out.mkdir(parents=True, exist_ok=True)
-                size = canvas_size(
-                    kcfg.aspect,
-                    cfg.video.short_side,
-                    info.width,
-                    info.height,
-                    upscale=cfg.video.upscale,
-                    fill=cfg.video.layout == "fill",
-                )
-                numbers: dict[str, int] = {}
-                render_jobs = []
-                for m in moments:
-                    n = numbers[m.scene] = numbers.get(m.scene, 0) + 1
-                    dst = out / f"{job.input_path.stem}_{m.scene}_{n:02d}_{int(m.start)}s.{cfg.video.container}"
-                    clip_id = store.save_moment(kind, m.scene, n, m)
-                    render_jobs.append(
-                        RenderJob(
-                            clip_id, m, job.input_path, dst, kind, kcfg.aspect, encoder, info.has_audio, cfg, store.path, None, os.getpid()
-                        )
-                    )
-                    needs = max(needs, estimate_render_bytes(size, m.end - m.start))
-                moments_by_kind[kind] = (moments, render_jobs)
-                jobs_list.extend(render_jobs)
-            if not jobs_list:
-                raise AutoclipError("no clips found for any requested kind")
-            _publish(job, "rendering", "Rendering clips", 60.0)
-            render_all(jobs_list, needs)
-            _publish(job, "packaging", "Writing clip index", 90.0)
-            rows = store.clips()
-            keys = ("file", "scene", "start", "end", "title", "text", "score", "llm_score", "width", "height", "trimmed", "wall")
-            for kind in dict.fromkeys(r["kind"] for r in rows):
-                done = [r for r in rows if r["kind"] == kind and r["status"] == "done"]
-                summary = [{k: (round(r[k], 2) if isinstance(r[k], float) else r[k]) for k in keys} for r in done]
-                (job.output_dir / kind / job.input_path.stem / "clips.json").write_text(
-                    json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
-                )
-            job.outputs = [p for p in job.output_dir.rglob("*.mp4") if ".work" not in p.relative_to(job.output_dir).parts]
-            failed = sum(r["status"] != "done" for r in rows)
-            if failed:
-                job.update(error=f"{failed} clip(s) failed")
-                _publish(job, "completed", f"Done with {failed} failure(s)", 100.0, state="completed")
+            from dataclasses import asdict
+
+            config_path.write_text(json.dumps(asdict(cfg), default=str, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            if hasattr(cfg, "model_dump"):
+                config_path.write_text(json.dumps(cfg.model_dump(), default=str, ensure_ascii=False, indent=2), encoding="utf-8")
+            else:
+                raise
+
+        job.output_dir.mkdir(parents=True, exist_ok=True)
+        # launch subprocess with NDJSON events
+        cmd = [*pipeline_command(config_path), "--events", "jsonl"]
+        env = dict(os.environ)
+        if not getattr(sys, "frozen", False):
+            from pathlib import Path
+
+            project_root = Path(__file__).resolve().parents[2]
+            env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(project_root), env.get("PYTHONPATH", "")]))
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(config_path.parent),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            start_new_session=os.name != "nt",
+        )
+        job.process = proc
+        cancelled = False
+        for raw_line in proc.stdout or []:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("event") == "progress":
+                step = str(ev.get("stage", job.step))
+                pct = float(ev.get("percent", job.percent))
+                msg = str(ev.get("message", ""))
+                _publish(job, step, msg, pct)
+            elif ev.get("event") == "result":
+                # nothing extra; outputs collected after exit
+                pass
+        rc = proc.wait()
+        job.process = None
+        if job.cancel_requested:
+            cancelled = True
+        # If process killed by signal -> cancelled
+        if rc is not None and rc < 0:
+            cancelled = True
+        _publish(job, "packaging", "Collecting outputs", 90.0)
+        # collect outputs from clips.json rows
+        outs: list[Path] = []
+        failed_count = 0
+        for cj in sorted(job.output_dir.rglob("clips.json")):
+            if ".work" in cj.relative_to(job.output_dir).parts:
+                continue
+            try:
+                rows = json.loads(cj.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(rows, list):
+                for r in rows:
+                    name = r if isinstance(r, str) else (r.get("file") if isinstance(r, dict) else None)
+                    if not name:
+                        continue
+                    p = cj.parent / str(name)
+                    if p.is_file():
+                        outs.append(p)
+                    else:
+                        failed_count += 1
+        job.outputs = outs
+        if cancelled:
+            job.update(state=JobState.cancelled, error="cancelled")
+            _publish(job, "cancelled", "Cancelled", 100.0, state="cancelled")
+        elif rc not in (0, None) and not outs:
+            job.update(state=JobState.failed, error="no clips produced")
+            _publish(job, "failed", "No clips produced", 100.0, state="failed")
+        else:
+            job.update(error=f"{failed_count} clip(s) failed" if failed_count else None)
+            if failed_count:
+                _publish(job, "completed", f"Done with {failed_count} failure(s)", 100.0, state="completed")
             else:
                 _publish(job, "completed", "Done", 100.0, state="completed")
-        finally:
-            with contextlib.suppress(Exception):
-                cache.close()
-            with contextlib.suppress(Exception):
-                store.close()
     except Exception as e:
+        job.process = None
         job.update(state=JobState.failed, error=str(e))
         _publish(job, "failed", str(e), 100.0, state="failed")
         log.exception("server job %s failed", job.job_id)

@@ -123,7 +123,7 @@ def install_stub_whisper(
     segments = json.loads(media.transcript.read_text(encoding="utf-8"))
 
     class WhisperModel:
-        def __init__(self, name: str, device: str, compute_type: str, cpu_threads: int) -> None:
+        def __init__(self, name: str, device: str, compute_type: str, cpu_threads: int, **kwargs: Any) -> None:
             record["init"] = (name, device, compute_type, cpu_threads)
 
         def transcribe(self, audio: Any, **options: Any) -> tuple[Any, Any]:

@@ -71,7 +71,7 @@ def test_encode_sets_the_audio_bitrate_and_mp4_only_flags(tmp_path: Path) -> Non
     mp4 = Fake()
     encode(mp4, tmp_path / "hevc.mp4", 30, hevc, 2, VideoCfg())
     assert mp4.kwargs["audio_bitrate"] == "192k"
-    assert mp4.kwargs["ffmpeg_params"] == ["-cq", "18", "-tag:v", "hvc1", "-movflags", "+faststart"]
+    assert mp4.kwargs["ffmpeg_params"] == ["-f", "mp4", "-cq", "18", "-tag:v", "hvc1", "-movflags", "+faststart"]
     mkv = Fake()
     encode(mkv, tmp_path / "hevc.mkv", 30, hevc, 2, VideoCfg(container="mkv", audio_bitrate_kbps=256))
     assert "-tag:v" not in mkv.kwargs["ffmpeg_params"] and "-movflags" not in mkv.kwargs["ffmpeg_params"]

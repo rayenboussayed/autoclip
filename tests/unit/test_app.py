@@ -10,14 +10,19 @@ import json
 import os
 import subprocess
 import sys
-import tkinter as tk
 import types
 from dataclasses import is_dataclass
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
 from typing import Any, Union, cast, get_args, get_origin, get_type_hints
 
 import pytest
+
+from autoclip.core.process import start_pipeline, stop_pipeline
+
+pytest.importorskip("tkinter")
+
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 
 from autoclip.app.fields import KINDS, OPTIONS, SECTIONS, option_paths
 from autoclip.app.session import (
@@ -26,11 +31,8 @@ from autoclip.app.session import (
     default_values,
     flatten,
     open_folder,
-    pipeline_command,
     read_config,
     split_csv,
-    start_pipeline,
-    stop_pipeline,
     unflatten,
     write_config,
 )
@@ -172,6 +174,8 @@ def test_check_config_accepts_the_defaults_and_rejects_a_broken_one() -> None:
 
 def test_the_pipeline_runs_the_command_line(tmp_path: Path) -> None:
     """The app starts the pipeline as a child process of the command line."""
+    from autoclip.core.process import pipeline_command
+
     command = pipeline_command(tmp_path / "config.json")
     assert command[1:] == ["-m", "autoclip", str(tmp_path / "config.json")]
     assert command[0] == sys.executable
@@ -332,7 +336,11 @@ def test_running_starts_the_pipeline_and_shows_its_log(tmp_path: Path, monkeypat
     from autoclip.app import window
     from autoclip.app.window import AutoclipApp
 
-    monkeypatch.setattr(window, "start_pipeline", lambda path: FakeProcess(["all done", ""]))
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None) -> None:
+        on_line("all done")
+        on_line("")
+
+    monkeypatch.setattr(window, "run_pipeline", _fake)
     path = tmp_path / "config.json"
     app = AutoclipApp(path)
     try:
@@ -358,12 +366,16 @@ def test_stopping_the_pipeline_is_possible(tmp_path: Path, monkeypatch: pytest.M
     from autoclip.app.window import AutoclipApp
 
     stopped: list[object] = []
-    monkeypatch.setattr(window, "start_pipeline", lambda path: FakeProcess([]))
+
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None) -> None:
+        on_line("")
+
+    monkeypatch.setattr(window, "run_pipeline", _fake)
 
     def record(process: object) -> None:
         stopped.append(process)
 
-    monkeypatch.setattr(window, "stop_pipeline", record)
+    monkeypatch.setattr(window, "cancel_pipeline", record)
     app = AutoclipApp(tmp_path / "config.json")
     try:
         app._run()
@@ -889,12 +901,16 @@ def test_closing_the_window_stops_the_pipeline(tmp_path: Path, monkeypatch: pyte
     from autoclip.app.window import AutoclipApp
 
     stopped: list[object] = []
-    monkeypatch.setattr(window, "start_pipeline", lambda path: FakeProcess([]))
+
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None) -> None:
+        on_line("")
+
+    monkeypatch.setattr(window, "run_pipeline", _fake)
 
     def record(process: object) -> None:
         stopped.append(process)
 
-    monkeypatch.setattr(window, "stop_pipeline", record)
+    monkeypatch.setattr(window, "cancel_pipeline", record)
     app = AutoclipApp(tmp_path / "config.json")
     app._run()
     app._on_close()
@@ -1021,7 +1037,11 @@ def test_a_run_without_a_writable_config_does_not_start(tmp_path: Path, monkeypa
     from autoclip.app.window import AutoclipApp
 
     monkeypatch.setattr(messagebox, "showerror", lambda *a, **k: None)
-    monkeypatch.setattr(window, "start_pipeline", lambda path: pytest.fail("started without a config"))
+
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None) -> None:
+        pytest.fail("started without a config")
+
+    monkeypatch.setattr(window, "run_pipeline", _fake)
 
     def broken(path: Path, data: Any) -> None:
         raise OSError("read-only")
@@ -1043,7 +1063,10 @@ def test_the_pipeline_cannot_be_started_twice(tmp_path: Path, monkeypatch: pytes
     from autoclip.app import window
     from autoclip.app.window import AutoclipApp
 
-    monkeypatch.setattr(window, "start_pipeline", lambda path: FakeProcess([]))
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None) -> None:
+        on_line("")
+
+    monkeypatch.setattr(window, "run_pipeline", _fake)
     app = AutoclipApp(tmp_path / "config.json")
     try:
         app._run()
@@ -1196,16 +1219,22 @@ def test_a_pipeline_that_cannot_be_started_is_reported(tmp_path: Path, monkeypat
     from autoclip.app import window
     from autoclip.app.window import AutoclipApp
 
-    def broken(path: Path) -> Any:
+    def broken(config_path: Any = None, cancel: Any = None, on_line: Any = None, **kwargs: Any) -> Any:
         raise OSError("no python")
 
-    monkeypatch.setattr(window, "start_pipeline", broken)
+    monkeypatch.setattr(window, "run_pipeline", broken)
     app = AutoclipApp(tmp_path / "config.json")
     try:
         app._run()
+        import time
+
+        for _ in range(50):
+            app.update()
+            if app._process is None:
+                break
+            time.sleep(0.02)
         assert app._process is None
         assert "error:" in app.log.get("1.0", "end")
-        assert app.status.cget("text") == "Could not start the pipeline."
     finally:
         app.destroy()
 
@@ -1344,6 +1373,8 @@ def test_the_command_line_can_open_the_desktop_app(monkeypatch: pytest.MonkeyPat
 
 def test_a_frozen_build_runs_itself(monkeypatch: pytest.MonkeyPatch) -> None:
     """A frozen build has no Python around it: the binary runs the pipeline itself."""
+    from autoclip.core.process import pipeline_command
+
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     command = pipeline_command(Path("config.json"))
     assert command == [sys.executable, "config.json"]

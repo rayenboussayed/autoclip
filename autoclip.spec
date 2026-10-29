@@ -12,9 +12,13 @@ optional, the app degrades gracefully without them, and they would make the bina
 A ``pip install autoclip[enhance]`` adds them again.
 """
 
+import os
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+BUILD = os.environ.get("AUTOCLIP_BUILD", "full").strip().lower()
+HEADLESS = BUILD == "headless"
 
 #: The modules that are imported inside functions and are therefore invisible to the analysis.
 HIDDEN = [
@@ -31,16 +35,7 @@ HIDDEN = [
     "autoclip.core.media",
     "autoclip.core.store",
     "autoclip.cli",
-    "autoclip.app",
-    "autoclip.app.window",
-    "autoclip.app.form",
-    "autoclip.app.session",
-    "tkinter",
-    "tkinter.ttk",
-    "tkinter.filedialog",
-    "tkinter.messagebox",
-    "tkinter.scrolledtext",
-    "PIL._tkinter_finder",
+    "autoclip.cli.subcommands",
     "faster_whisper",
     "ctranslate2",
     "tokenizers",
@@ -52,6 +47,39 @@ HIDDEN = [
     "scenedetect.scene_manager",
     "yt_dlp",
 ]
+if not HEADLESS:
+    HIDDEN += [
+        "autoclip.app",
+        "autoclip.app.window",
+        "autoclip.app.form",
+        "autoclip.app.session",
+        "tkinter",
+        "tkinter.ttk",
+        "tkinter.filedialog",
+        "tkinter.messagebox",
+        "tkinter.scrolledtext",
+        "PIL._tkinter_finder",
+    ]
+# The HTTP server is bundled when available; uvicorn's loaders are dynamic.
+try:
+    import uvicorn  # noqa: F401
+
+    HIDDEN += [
+        "autoclip.server",
+        "autoclip.server.main",
+        "autoclip.server.config",
+        "autoclip.server.state",
+        "autoclip.server.service",
+        "autoclip.server.progress",
+        "autoclip.server.auth",
+        "autoclip.server.schemas",
+        "autoclip.server.routers.api",
+        "autoclip.server.routers.view",
+    ]
+    HIDDEN += collect_submodules("uvicorn")
+except Exception:
+    pass
+
 hiddenimports = (
     HIDDEN
     + collect_submodules("moviepy")
@@ -59,6 +87,12 @@ hiddenimports = (
     + collect_submodules("yt_dlp")
     + collect_submodules("yt_dlp_ejs")
 )
+datas = collect_data_files("imageio_ffmpeg") + collect_data_files("yt_dlp_ejs")
+# server templates
+try:
+    datas = datas + collect_data_files("autoclip.server")
+except Exception:
+    pass
 
 #: The ffmpeg binary of imageio-ffmpeg (used when there is no ffmpeg on the PATH) and the EJS solver
 #: scripts of yt-dlp (the JavaScript challenge solver is data, not a Python module).
@@ -73,7 +107,7 @@ a = Analysis(  # noqa: F821 - PyInstaller injects these names
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter.test", "test", "pytest"],
+    excludes=["tkinter.test", "test", "pytest"] + (["tkinter", "tkinterdnd2"] if HEADLESS else []),
     noarchive=False,
     optimize=0,
 )

@@ -13,18 +13,18 @@ import json
 import logging
 import platform
 import sys
-import time
 from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
+from .. import __version__
 from ..core.config import Config, PlatformsCfg, is_url, load_config, parse
 from ..core.download import Downloader, format_report_text
 from ..core.errors import AutoclipError, ConfigError
+from ..core.events import Progress, Reporter
 from ..core.hardware import pick_encoder
 from ..core.log import setup_logging
-from ..core.pipeline import process_video
 from ..core.resources import MB, RESOURCES
 
 log = logging.getLogger("autoclip")
@@ -127,11 +127,14 @@ def _unique_name(name: str, used: set[str]) -> str:
     return candidate
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _run_command(argv: Sequence[str] | None = None) -> int:
     """Entry point. Exit status: 0 all clips rendered, 1 some video or clip failed, 2 configuration error."""
     ap = argparse.ArgumentParser(
         prog="autoclip", description="Cut long videos into the best short clips (free, local). All options live in the config file."
     )
+    ap.add_argument("--version", action="version", version=f"autoclip {__version__}")
+    ap.add_argument("--events", choices=["jsonl"], default=None, help="emit progress events on stdout (jsonl)")
+    ap.add_argument("--json", action="store_true", help="emit the final result as JSON on stdout")
     ap.add_argument(
         "config",
         nargs="?",
@@ -208,7 +211,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if lg.enabled
         else None
     )
-    setup_logging(log_file, lg.level, lg.console_level)
+    setup_logging(log_file, lg.level, None if getattr(args, "events", None) == "jsonl" else lg.console_level)
     RESOURCES.configure(cfg)
     snap = RESOURCES.snapshot()
     has_urls = any(is_url(item) for item in cfg.input)
@@ -239,33 +242,55 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     encoder = pick_encoder(cfg.video, allow_gpu=cfg.compute.device != "cpu")
-    used = {Path(item).stem.casefold() for item in cfg.input if not is_url(item)}
-    t0, done, failed = time.perf_counter(), 0, 0
-    for n, item in enumerate(cfg.input, 1):
-        label = item if is_url(item) else Path(item).name
-        log.info("=== input %d/%d: %s ===", n, len(cfg.input), label)
-        sources: list[tuple[Path, str | None, Path | None, bool]] = []
-        if is_url(item):
-            try:
-                assert downloader is not None
-                sources = [
-                    (entry.path, _unique_name(entry.name, used), entry.subtitle, entry.subtitle_manual)
-                    for entry in downloader.download(item)
-                ]
-            except AutoclipError as e:
-                log.error("%s failed: %s", item, e)
-                failed += 1
-                continue
-        else:
-            sources = [(Path(item), None, None, False)]
-        for path, name, subtitle, subtitle_manual in sources:
-            try:
-                ok, bad = process_video(path, cfg, log_file, encoder, name=name, subtitle=subtitle, subtitle_manual=subtitle_manual)
-            except Exception as e:  # one broken video must not stop the batch
-                log.error("%s failed: %s: %s", path.name, type(e).__name__, e, exc_info=not isinstance(e, AutoclipError))
-                ok, bad = 0, 1
-            done, failed = done + ok, failed + bad
-    log.info(
-        "finished: %d clip(s) done, %d failed in %.1fs (peak rss %.0fMB)", done, failed, time.perf_counter() - t0, RESOURCES.peak_rss / MB
-    )
-    return 1 if failed else 0
+    from ..core.batch import run_batch
+
+    events = getattr(args, "events", None)
+
+    def _emit(p: Progress) -> None:
+        if events == "jsonl":
+            print(json.dumps({"event": "progress", "stage": p.stage, "percent": p.percent, "message": p.message}), flush=True)
+
+    reporter = Reporter(_emit) if events == "jsonl" else Reporter()
+
+    result = run_batch(cfg, downloader=downloader, encoder=encoder, log_file=log_file, report=reporter)
+    if events == "jsonl":
+        print(json.dumps({"event": "result", "done": result.clips_done, "failed": result.clips_failed}), flush=True)
+    elif getattr(args, "json", False):
+        print(json.dumps({"done": result.clips_done, "failed": result.clips_failed}), flush=True)
+    return result.exit_code
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    import sys
+
+    from .. import __version__
+    from . import subcommands
+
+    raw = sys.argv[1:] if argv is None else list(argv)
+    argv_list = subcommands.normalize(raw)
+    if not argv_list:
+        argv_list = ["run"]
+    cmd = argv_list[0]
+    rest = argv_list[1:]
+
+    if cmd == "run":
+        return _run_command(rest)
+    if cmd == "serve":
+        return subcommands._serve(rest)
+    if cmd == "gui":
+        return subcommands._gui(rest)
+    if cmd == "init":
+        return subcommands._init(rest)
+    if cmd == "doctor":
+        return subcommands._doctor(rest)
+    if cmd == "models":
+        return subcommands._models(rest)
+    if cmd == "download":
+        return _run_command(["--download-only", *rest])
+    if cmd in ("-h", "--help"):
+        print("autoclip: run|serve|gui|init|doctor|models|download")
+        return 0
+    if cmd == "--version":
+        print(f"autoclip {__version__}")
+        return 0
+    return _run_command(argv_list)

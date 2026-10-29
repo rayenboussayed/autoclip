@@ -93,11 +93,17 @@ def record_pipeline(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         name: str | None = None,
         subtitle: Path | None = None,
         subtitle_manual: bool = False,
+        report: Any = None,
+        cancel: Any = None,
     ) -> tuple[int, int]:
         calls.append({"path": Path(path), "name": name, "subtitle": subtitle, "manual": subtitle_manual})
         return 1, 0
+        calls.append({"path": Path(path), "name": name, "subtitle": subtitle, "manual": subtitle_manual})
+        return 1, 0
 
-    monkeypatch.setattr(cli, "process_video", process_video)
+    import autoclip.core.batch as batch_mod
+
+    monkeypatch.setattr(batch_mod, "process_video", process_video)
     monkeypatch.setattr(cli, "pick_encoder", lambda *args, **kwargs: None)
     return calls
 

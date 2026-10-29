@@ -12,8 +12,6 @@ import contextlib
 import os
 import platform
 import queue
-import subprocess
-import threading
 import tkinter as tk
 import traceback
 from pathlib import Path
@@ -32,17 +30,20 @@ except Exception:  # pragma: no cover - depends on the installed extras
     _TkinterDnD = None
     _DND_FILES = None
 
+import threading
+
 from ..core.errors import ConfigError
 from .fields import SECTIONS, Option
 from .form import Form, ScrollFrame, unflatten
 from .session import (
+    PipelineHandle,
+    cancel_pipeline,
     check_config,
     default_config_path,
     default_values,
     open_folder,
     read_config,
-    start_pipeline,
-    stop_pipeline,
+    run_pipeline,
     write_config,
 )
 
@@ -95,7 +96,7 @@ class AutoclipApp(tk.Tk):
         self.config_path = Path(config_path) if config_path is not None else default_config_path()
         self.values: dict[str, Any] = default_values()
         self._forms: list[Form] = []
-        self._process: subprocess.Popen[str] | None = None
+        self._handle: PipelineHandle | None = None
         self._lines: queue.Queue[str] = queue.Queue()
 
         self._build_header()
@@ -333,34 +334,59 @@ class AutoclipApp(tk.Tk):
             self._append(f"error: cannot write {self.config_path}; the run was not started.")
             self._set_status("The config file could not be written - the run was not started.")
             return
-        self._append(f"$ python -m autoclip {self.config_path}")
-        try:
-            self._process = start_pipeline(self.config_path)
-        except OSError as e:
-            self._append(f"error: {e}")
-            self._set_status("Could not start the pipeline.")
-            return
+        self._append(f"$ autoclip {self.config_path}")
+        from .session import CancelToken as _CancelToken
+
+        cancel = _CancelToken()
+
+        def on_line(line: str) -> None:
+            self._lines.put(line)
+
+        worker = threading.Thread(
+            target=self._run_worker,
+            kwargs={"config_path": self.config_path, "cancel": cancel, "on_line": on_line},
+            daemon=True,
+        )
+        handle = PipelineHandle(cancel=cancel, thread=worker)
+        handle.thread.start()
+        self._handle = handle
         self.run_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self._set_status("Running...")
-        threading.Thread(target=self._read_output, daemon=True).start()
 
     def _read_output(self) -> None:
         """Forward the output of the pipeline to the log window."""
-        process = self._process
-        if process is None or process.stdout is None:
-            return
-        for line in process.stdout:
-            self._lines.put(line.rstrip("\n"))
-        self._lines.put("")
+        # Output is produced by the worker thread through self._lines directly; nothing to read here.
+        return
+
+    def _run_worker(self, config_path: Any, cancel: Any, on_line: Any) -> None:
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            pass
+        try:
+            run_pipeline(config_path, cancel=cancel, on_line=on_line)
+        except Exception as exc:  # pragma: no cover - defensive
+            on_line(f"error: {type(exc).__name__}: {exc}")
+            on_line("")
+
+    @property
+    def _process(self) -> PipelineHandle | None:
+        return self._handle
+
+    @_process.setter
+    def _process(self, value: PipelineHandle | None) -> None:
+        self._handle = value
 
     def _drain_log(self) -> None:
         """Move the lines of the pipeline into the log window (on the main thread)."""
         try:
+            if not self.winfo_exists():
+                return
             while True:
                 line = self._lines.get_nowait()
                 if line == "":
-                    self._process = None
+                    self._handle = None
                     self.run_button.configure(state="normal")
                     self.stop_button.configure(state="disabled")
                     self._set_status("Finished.")
@@ -372,11 +398,11 @@ class AutoclipApp(tk.Tk):
 
     def _stop(self) -> None:
         """Stop the running pipeline."""
-        process = self._process
-        if process is None:
+        handle = self._handle
+        if handle is None:
             return
         self._append("stopping...")
-        stop_pipeline(process)
+        cancel_pipeline(handle)
         self._set_status("Stopped.")
 
     def _open_output(self) -> None:

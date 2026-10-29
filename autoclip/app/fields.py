@@ -644,6 +644,22 @@ TRANSCRIPT = Section(
             "`large-v3` for the final result, `small` or `base` for a quick first look.",
         ),
         _o(
+            "transcript.model_dir",
+            "Whisper model cache",
+            "path",
+            "Folder where Whisper models are stored; empty uses the default HuggingFace cache.",
+            "Lets you point a run at a pre-downloaded model folder on an offline machine.",
+            "Set it when models live outside the default cache.",
+        ),
+        _o(
+            "transcript.offline",
+            "Never download models",
+            "bool",
+            "Fail instead of downloading a missing Whisper model.",
+            "Keeps an offline machine from hanging on a multi-gigabyte download.",
+            "Turn it on for air-gapped runs.",
+        ),
+        _o(
             "transcript.auto_downgrade",
             "Use a smaller model when memory is tight",
             "bool",

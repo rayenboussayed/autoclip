@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .config import Config, KindCfg, parse_hms
 from .errors import AutoclipError
+from .events import CancelToken, Reporter
 from .media import ffmpeg_exe, probe
 from .models import Encoder, MediaInfo, Moment, RenderJob
 from .moments import energy_track, make_title, select_moments
@@ -77,22 +78,28 @@ def process_video(
     name: str | None = None,
     subtitle: Path | None = None,
     subtitle_manual: bool = False,
+    report: Reporter | None = None,
+    cancel: CancelToken | None = None,
 ) -> tuple[int, int]:
     """Run the pipeline for one video. Returns ``(clips_done, clips_failed)``.
 
     Clips go to ``<output_dir>/<short|long>/<video name>/``; the database and transcript cache live in
     ``<output_dir>/.work/<video name>/`` (the database is recreated empty each time). ``name`` renames a
     downloaded original (``<title> [<id>]``) without touching the file; ``subtitle`` is the SRT the
-    downloader picked for it.
+    downloader picked for it. ``report`` (and the underlying ``cancel`` token) provide shared progress
+    events and cancellation; both are optional and default to no-op.
     """
+    reporter = report if report is not None else Reporter(cancel=cancel)
     root, cc, stem = Path(cfg.output_dir), cfg.clips, name or src.stem
     info = probe(src)
+    reporter("validate", 0.2, f"probed {src.name}")
     log.info("input: %s (%.1fs) %dx%d @ %.2ffps, audio: %s", src.name, info.duration, info.width, info.height, info.fps, info.has_audio)
     if cc.mode == "split":
         out = root / "long" / stem
         out.mkdir(parents=True, exist_ok=True)
         parts = split_video(src, out, cc.split_seconds, info.duration, stem)
         (out / "clips.json").write_text(json.dumps([p.name for p in parts], indent=2), encoding="utf-8")
+        reporter("package", 1.0, "split complete")
         return len(parts), 0
 
     work = root / ".work" / stem
@@ -101,6 +108,8 @@ def process_video(
     cache = Cache(store, RESOURCES)
     try:
         db = energy_track(src, info, cache)
+        if cancel is not None:
+            cancel.check()
         have_text = get_transcript(
             src,
             cfg,
@@ -113,6 +122,7 @@ def process_video(
             subtitle_manual=subtitle_manual,
             name=stem,
         )
+        reporter("transcribe", 1.0, "transcript ready")
         jobs: list[RenderJob] = []
         needs = 0
         for kind in cc.kinds:
@@ -146,7 +156,9 @@ def process_video(
                 needs = max(needs, estimate_render_bytes(size, m.end - m.start))
         if not jobs:
             raise AutoclipError("no clips found for any requested kind (is the video shorter than the length ranges?)")
+        reporter("select", 1.0, f"{len(jobs)} clips planned")
         render_all(jobs, needs)
+        reporter("render", 1.0, "rendered")
         rows = store.clips()
     finally:
         cache.close()
@@ -159,4 +171,5 @@ def process_video(
     for r in rows:
         if r["status"] != "done":
             log.warning("%s clip %s #%d failed: %s", r["kind"], r["scene"], r["n"], r["error"] or "did not finish")
+    reporter("package", 1.0, "index written")
     return sum(r["status"] == "done" for r in rows), sum(r["status"] != "done" for r in rows)

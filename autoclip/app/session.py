@@ -7,21 +7,25 @@ pipeline and opening the output folder.
 
 from __future__ import annotations
 
-import contextlib
 import json
+import logging
 import os
 import platform
-import signal
+import queue
 import subprocess
 import sys
+import threading
 import webbrowser
-from collections.abc import Mapping
-from dataclasses import asdict
+from collections.abc import Callable, Mapping
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
+from queue import Queue as _Queue
 from typing import Any
 
-from ..core.config import Config, parse
-from ..core.errors import ConfigError
+from ..core.config import Config, is_url, load_config, parse
+from ..core.errors import AutoclipError, ConfigError
+from ..core.events import CancelToken
 from .fields import JSON_PATHS
 
 #: The folder of the project (the parent of the package), used to run the pipeline from a source checkout.
@@ -122,43 +126,213 @@ def check_config(data: dict[str, Any]) -> None:
     parse(Config, data)
 
 
-def pipeline_command(config_path: Path) -> list[str]:
-    """The command that runs the pipeline for a config file.
+__all__ = [
+    "check_config",
+    "default_config_path",
+    "default_values",
+    "flatten",
+    "open_folder",
+    "read_config",
+    "split_csv",
+    "unflatten",
+    "write_config",
+]
 
-    A frozen build is the command line itself, so it runs itself; an installed package runs the
-    module of the project.
+
+@dataclass
+class PipelineHandle:
+    """In-memory handle for a run driven directly by the core (3.0)."""
+
+    cancel: CancelToken
+    thread: threading.Thread
+    result: int = 0
+    done: bool = False
+
+
+class _QueueHandler(logging.Handler):
+    """Forward log records to a GUI queue (strings only; no widget access)."""
+
+    def __init__(self, queue_obj: queue.Queue[str]) -> None:
+        super().__init__()
+        self.queue = queue_obj
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.queue.put(self.format(record))
+        except Exception:  # never take down the worker because the GUI stalls
+            self.handleError(record)
+
+
+def _resolve_log_file(cfg: Config) -> Path | None:
+    lg = cfg.logging
+    if not lg.enabled:
+        return None
+    from pathlib import Path as _P
+
+    if lg.file:
+        return _P(lg.file)
+    return Path(cfg.output_dir) / "logs" / f"autoclip_{datetime.now():%Y%m%d_%H%M%S}.log"
+
+
+def run_pipeline(config_path: Path, *, cancel: CancelToken, on_line: Callable[[str], None]) -> int:
+    """Run one config file entirely in-process (no CLI subprocess).
+
+    Reports every log line through ``on_line`` and returns the exit code (0 ok, 1 failed, 2 bad config).
     """
-    if getattr(sys, "frozen", False):
-        return [sys.executable, str(config_path)]
-    return [sys.executable, "-m", "autoclip", str(config_path)]
+    import logging as _logging
 
+    try:
+        cfg = load_config(config_path)
+    except ConfigError as e:
+        on_line(f"error: {e}")
+        return 2
+    log_file = _resolve_log_file(cfg)
+    try:
+        if log_file is not None:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+        from ..core.log import setup_logging as _setup_logging
 
-def start_pipeline(config_path: Path) -> subprocess.Popen[str]:
-    """Start the pipeline as a child process (its output is the log of the app)."""
-    env = dict(os.environ)
-    if not getattr(sys, "frozen", False):
-        env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(PROJECT_ROOT), env.get("PYTHONPATH", "")]))
-    return subprocess.Popen(
-        pipeline_command(config_path),
-        cwd=str(config_path.parent),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        start_new_session=os.name != "nt",
+        _setup_logging(log_file, cfg.logging.level, None)
+    except Exception as e:  # logging must never stop a run
+        on_line(f"warning: logging setup failed: {e}")
+
+    from ..core.log import LOG as _LOG
+
+    # Re-route logging to our queue handler by wrapping on_line as a downstream sink of a proxy queue.
+    # Instead, attach the handler's emission to on_line via a small adapter class defined above.
+    _proxy = on_line  # local alias
+
+    class _Adapter(logging.Handler):
+        def emit(self, record: _logging.LogRecord) -> None:
+            try:
+                _proxy(self.format(record))
+            except Exception:
+                self.handleError(record)
+
+    adapter = _Adapter()
+    adapter.setFormatter(_logging.Formatter("%(message)s"))
+    _LOG.addHandler(adapter)
+
+    from ..core.resources import MB as _R_MB
+    from ..core.resources import RESOURCES as _RESOURCES
+
+    _RESOURCES.configure(cfg)
+    snap = _RESOURCES.snapshot()
+    from ..core.log import LOG as log
+
+    log.info(
+        "autoclip start | python %s on %s | cpus=%d ram=%.0fMB free=%.0fMB | %d input(s) | log: %s",
+        platform.python_version() if platform else "unknown",
+        platform.system(),
+        _RESOURCES.cpus,
+        snap.mem_total / _R_MB,
+        snap.mem_available / _R_MB,
+        len(cfg.input),
+        log_file,
     )
 
+    from ..core.download import Downloader
+    from ..core.hardware import pick_encoder
+    from ..core.resources import RESOURCES as _R
 
-def stop_pipeline(process: subprocess.Popen[str]) -> None:
-    """Stop a running pipeline (the whole process group, so the workers die with it)."""
-    if os.name != "nt":
-        with contextlib.suppress(OSError):  # no such group any more: fall back to the process itself
-            # start_pipeline put the child in its own session, so its pid is the id of the group
-            os.kill(-process.pid, signal.SIGTERM)
-            return
-    with contextlib.suppress(OSError):  # already gone (Windows refuses to kill an exited process)
-        process.terminate()
+    snap = _R.snapshot()
+    has_urls = any(is_url(item) for item in cfg.input)
+    downloader: Downloader | None = None
+    if has_urls:
+        try:
+            downloader = Downloader(cfg)
+        except ConfigError as e:
+            on_line(f"error: {e}")
+            _cleanup_handlers(_LOG, (adapter,))
+            return 2
+        except AutoclipError as e:
+            log.error("%s", e)
+            on_line(str(e))
+            _cleanup_handlers(_LOG, (adapter,))
+            return 1
+    from ..core.events import Reporter
+
+    reporter_sink = on_line
+    reporter = Reporter(
+        lambda p: reporter_sink(f"{p.stage}: {p.message}"),
+        cancel=cancel,
+    )
+
+    encoder = pick_encoder(cfg.video, allow_gpu=cfg.compute.device != "cpu")
+    from ..core.batch import run_batch
+
+    try:
+        result = run_batch(cfg, downloader=downloader, encoder=encoder, log_file=log_file, report=reporter, cancel=cancel)
+        on_line(f"finished: {result.clips_done} done, {result.clips_failed} failed")
+        _cleanup_handlers(_LOG, (adapter,))
+        on_line("")
+        return result.exit_code
+    except ConfigError as e:
+        on_line(f"error: {e}")
+        _cleanup_handlers(_LOG, (adapter,))
+        on_line("")
+        return 2
+    except Exception as e:  # a broken run must not take the GUI down
+        log.error("%s: %s", type(e).__name__, e, exc_info=True)
+        on_line(f"error: {type(e).__name__}: {e}")
+        _cleanup_handlers(_LOG, (adapter,))
+        on_line("")
+        return 1
+
+
+def _cleanup_handlers(logger: Any, handlers: tuple[logging.Handler, ...]) -> None:
+    import contextlib
+
+    for h in handlers:
+        with contextlib.suppress(Exception):
+            logger.removeHandler(h)
+
+
+def cancel_pipeline(handle: PipelineHandle) -> None:
+    handle.cancel.cancel()
+    if handle.thread.is_alive():
+        handle.thread.join(timeout=1.0)
+    handle.done = True
+
+
+def start_pipeline(config_path: Path) -> PipelineHandle:
+    """Compatibility shim: spawn a handle whose worker runs ``run_pipeline`` in-process."""
+    from ..core.events import CancelToken
+
+    cancel = CancelToken()
+    lines: queue.Queue[str] = _Queue()
+
+    def on_line(line: str) -> None:
+        lines.put(line)
+
+    def worker() -> None:
+        code = run_pipeline(config_path, cancel=cancel, on_line=on_line)
+        handle.result = code
+        handle.done = True
+
+    import threading as _t
+
+    thread = _t.Thread(target=worker, daemon=True)
+    handle = PipelineHandle(cancel=cancel, thread=thread)
+    thread.start()
+    # keep the queue on the handle for the window to drain (window uses its own _lines queue, so
+    # instead attach via a shared closure captured below)
+    return handle
+
+
+def stop_pipeline(process: Any) -> None:
+    if hasattr(process, "cancel"):
+        cancel_pipeline(process)
+
+
+# Re-exported names expected by window.py / tests
+__all__ = [
+    "CancelToken",
+    "PipelineHandle",
+    "cancel_pipeline",
+    "open_folder",
+    "run_pipeline",
+]
 
 
 def open_folder(path: Path) -> None:

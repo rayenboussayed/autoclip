@@ -146,6 +146,18 @@ class EnhanceCfg(Section):
         }
 
 
+def _default_transcript_model() -> str:
+    """Large-v3 on CUDA (fast enough to matter), small otherwise."""
+    try:
+        import ctranslate2
+
+        if int(ctranslate2.get_cuda_device_count()) > 0:
+            return "large-v3"
+    except Exception:  # noqa: S110
+        pass
+    return "small"
+
+
 @dataclass(config=SCHEMA)
 class TranscriptCfg(Section):
     """Where the transcript comes from."""
@@ -153,7 +165,9 @@ class TranscriptCfg(Section):
     mode: Literal["auto", "whisper", "file", "off"] = "auto"
     file: str | None = None  # .srt/.json; '{stem}' is replaced by the video's file name without extension
     cache: Bool = True  # reuse <video_dir>/<name>.transcript.json while input, model and language are unchanged
-    model: str = "large-v3"  # tiny base small medium large-v3 (multilingual, NOT *.en)
+    model: str | None = None  # tiny base small medium large-v3 (multilingual, NOT *.en); None = auto (large-v3 on CUDA, small otherwise)
+    model_dir: str | None = None  # where Whisper models are cached; None = the default HuggingFace cache
+    offline: Bool = False  # never download a model; fail fast if it is not cached
     auto_downgrade: Bool = True  # pick a smaller model when free RAM cannot hold the chosen one
     language: str | None = None  # None = auto-detect
     multilingual: Bool = True  # detect the language per segment (mixed-language audio)
@@ -161,6 +175,17 @@ class TranscriptCfg(Section):
     beam_size: Int = 5  # 1 = fastest, 5 = most accurate
     word_timestamps: Bool = True
     enhance: EnhanceCfg = field(default_factory=EnhanceCfg)
+
+    @model_validator(mode="after")
+    def _resolve_default_model(self) -> TranscriptCfg:
+        if self.model is None:
+            try:
+                import ctranslate2
+
+                self.model = "large-v3" if int(ctranslate2.get_cuda_device_count()) > 0 else "small"
+            except Exception:
+                self.model = "small"
+        return self
 
 
 @dataclass(config=SCHEMA)
@@ -619,6 +644,8 @@ def load_config(path: str | Path) -> Config:
             raise ConfigError("with several videos transcript.file must contain '{stem}' (e.g. 'subs/{stem}.srt')")
     if cfg.transcript.enhance.model_dir:
         cfg.transcript.enhance.model_dir = _abs(base, cfg.transcript.enhance.model_dir)
+    if cfg.transcript.model_dir:
+        cfg.transcript.model_dir = _abs(base, cfg.transcript.model_dir)
     if cfg.clips.lexicon_file:
         cfg.clips.lexicon_file = _abs(base, cfg.clips.lexicon_file)
     if cfg.video.background.image:
