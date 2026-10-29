@@ -532,8 +532,9 @@ def test_require_ok_returns_the_case_on_success(tmp_path: Path) -> None:
 
 def test_require_ok_reports_a_timeout_with_the_results_folder(tmp_path: Path) -> None:
     case = make_case(tmp_path, timed_out=True, returncode=None, duration=12.6)
-    with pytest.raises(AssertionError, match=r"timed out after 13s; see " + str(tmp_path)):
+    with pytest.raises(AssertionError) as error:
         case.require_ok()
+    assert "timed out after 13s; see " + str(tmp_path) in str(error.value)
 
 
 def test_require_ok_reports_the_command_stderr_tail_and_log(tmp_path: Path) -> None:

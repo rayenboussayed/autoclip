@@ -597,7 +597,7 @@ def test_get_semaphore_is_reused_per_loop_and_rebuilt_on_a_new_loop(monkeypatch:
     assert asyncio.run(_again()) is not first
 
 
-def test_job_websocket_handles_disconnect_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_job_websocket_handles_disconnect_cleanly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import asyncio
     from pathlib import Path
     from typing import cast
@@ -630,8 +630,8 @@ def test_job_websocket_handles_disconnect_cleanly(monkeypatch: pytest.MonkeyPatc
         job = Job(
             job_id="ws-disconnect",
             filename="clip.mp4",
-            input_path=Path("/tmp/clip.mp4"),
-            output_dir=Path("/tmp/wsout"),
+            input_path=tmp_path / "clip.mp4",
+            output_dir=tmp_path / "wsout",
             config={},
         )
         job.output_dir.mkdir(exist_ok=True)
