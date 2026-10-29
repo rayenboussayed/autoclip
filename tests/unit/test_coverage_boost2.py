@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import subprocess
 import time
@@ -15,7 +16,7 @@ from autoclip.core.events import Cancelled, CancelToken
 
 def test_queue_handler_emit_exception() -> None:
     q: Any = []
-    h = _QueueHandler(q) if False else None
+    _QueueHandler(q) if False else None
 
     # build a real queue handler on a fake queue object that raises on put
     class Q:
@@ -38,13 +39,11 @@ def test_run_pipeline_logging_setup_fail(media: Any, tmp_path: Path, monkeypatch
     import json as _json
 
     p = tmp_path / "c.json"
-    p.write_text(
-        _json.dumps(dataclasses_to_dict(cfg) if False else cfg if False else __import__("dataclasses").asdict(cfg)), encoding="utf-8"
-    )
+    p.write_text(_json.dumps(__import__("dataclasses").asdict(cfg)), encoding="utf-8")
     monkeypatch.setattr("autoclip.core.log.setup_logging", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     code = run_pipeline(p, cancel=CancelToken(), on_line=lines.append)
     assert code in (0, 1, 2)
-    assert any("warning: logging setup failed" in l for l in lines)
+    assert any("warning: logging setup failed" in line for line in lines)
 
 
 def test_run_pipeline_downloader_config_error(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -275,10 +274,8 @@ def test_transcript_consent_reject(media: Any, tmp_path: Path, monkeypatch: pyte
     db_arr = np.zeros(10, dtype=np.float32)
     from autoclip.core.errors import AutoclipError
 
-    try:
+    with contextlib.suppress(AutoclipError, Exception):
         transcript.transcribe(media.video, cfg, info, db_arr, None)
-    except (AutoclipError, Exception):
-        pass
 
 
 def test_transcript_consent_eof(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -309,10 +306,8 @@ def test_transcript_consent_eof(media: Any, tmp_path: Path, monkeypatch: pytest.
 
     info = probe(media.video)
     db_arr = np.zeros(10, dtype=np.float32)
-    try:
+    with contextlib.suppress(Exception):
         transcript.transcribe(media.video, cfg, info, db_arr, None)
-    except Exception:
-        pass
 
 
 def test_reporter_cancel_before(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -350,10 +345,8 @@ def test_window_drain_exists_false2(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         app._drain_log()
     finally:
         # avoid after callback errors
-        try:
+        with contextlib.suppress(Exception):
             app.destroy()
-        except Exception:
-            pass
 
 
 def test_cli_main_download_only_flag(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -363,10 +356,8 @@ def test_cli_main_download_only_flag(media: Any, tmp_path: Path, monkeypatch: py
     cfg = {"input": [str(media.video)], "output_dir": str(tmp_path / "o")}
     p = tmp_path / "c.json"
     p.write_text(__import__("json").dumps(cfg), encoding="utf-8")
-    try:
+    with contextlib.suppress(SystemExit):
         main(["--download-only", str(p)])
-    except SystemExit:
-        pass
 
 
 def test_cli_main_json_flag(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
