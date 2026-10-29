@@ -599,7 +599,6 @@ def test_get_semaphore_is_reused_per_loop_and_rebuilt_on_a_new_loop(monkeypatch:
 
 def test_job_websocket_handles_disconnect_cleanly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import asyncio
-    from pathlib import Path
     from typing import cast
 
     from fastapi.websockets import WebSocket, WebSocketDisconnect
