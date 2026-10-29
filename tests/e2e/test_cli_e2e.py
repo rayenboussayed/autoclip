@@ -113,9 +113,7 @@ def test_manifest_video_renders_short_and_long_clips(
     pipeline_dir = e2e_run.directory / f"pipeline_{vid}_level{ladder_level}"
     config = pipeline_config(pipeline_dir / "out", source, subtitle, LADDER_CLIPS)
     result = e2e_run.execute(f"pipeline_{vid}_level{ladder_level}", config, timeout=LADDER_TIMEOUT).require_ok()
-    clips = {
-        kind: read_clips(pipeline_dir / "out" / kind / source.stem) for kind in ("short", "long")
-    }
+    clips = {kind: read_clips(pipeline_dir / "out" / kind / source.stem) for kind in ("short", "long")}
     assert [len(rows) for rows in clips.values()] == [1, 1], clips
     for kind, rows in clips.items():
         clip = rows[0]
@@ -135,7 +133,9 @@ def test_manifest_video_renders_short_and_long_clips(
         assert path.with_suffix(".srt").is_file() and path.with_suffix(".jpg").is_file(), path
         assert len(clip_paths(path.parent)) == 1, path.parent
         assert_database_done(pipeline_dir / "out", source.stem)
-    assert rendered_clips(result) == sorted(path for kind in ("short", "long") for path in clip_paths(pipeline_dir / "out" / kind / source.stem))
+    assert rendered_clips(result) == sorted(
+        path for kind in ("short", "long") for path in clip_paths(pipeline_dir / "out" / kind / source.stem)
+    )
 
     summary = level_summary(clips, info.duration)
     problems = record_level(download_cache, entry.url, ladder_level, summary)

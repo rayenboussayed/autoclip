@@ -29,6 +29,10 @@ stage/
 coverage.xml
 htmlcov/
 
+# opt-in end-to-end run artifacts and the persistent download cache
+tests/results/
+tests/.cache/
+
 # autoclip output: rendered clips, work directories (database, transcript cache, models) and logs
 runs/
 *.work/

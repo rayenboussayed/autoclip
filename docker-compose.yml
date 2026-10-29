@@ -1,0 +1,27 @@
+services:
+  autoclip-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: autoclip-server:latest
+    ports:
+      - "${PORT:-8000}:${PORT:-8000}"
+    environment:
+      PORT: "${PORT:-8000}"
+      HOST: "0.0.0.0"
+      MAX_FILE_SIZE: "${MAX_FILE_SIZE:-1073741824}"
+      AUTH_USERNAME: "${AUTH_USERNAME:-}"
+      AUTH_PASSWORD: "${AUTH_PASSWORD:-}"
+      MAX_CONCURRENT_JOBS: "${MAX_CONCURRENT_JOBS:-2}"
+      OUTPUT_DIR: "/data/outputs"
+      CACHE_DIR: "/data/cache"
+      JOB_TTL_SECONDS: "${JOB_TTL_SECONDS:-3600}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+    volumes:
+      - autoclip-cache:/data/cache
+      - autoclip-output:/data/outputs
+    restart: unless-stopped
+
+volumes:
+  autoclip-cache:
+  autoclip-output:

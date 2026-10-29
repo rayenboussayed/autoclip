@@ -1364,3 +1364,86 @@ def test_a_frozen_build_starts_no_python(monkeypatch: pytest.MonkeyPatch, tmp_pa
     monkeypatch.delattr(sys, "frozen", raising=False)
     assert started and started[0]["cmd"] == [sys.executable, str(tmp_path / "config.json")]
     assert "PYTHONPATH" not in started[0]["env"]
+
+
+class _DropEvent:
+    def __init__(self, data: str = "") -> None:
+        self.data = data
+
+
+@needs_display
+def test_adding_videos_dedupes_and_a_drop_event_is_accepted(tmp_path: Path) -> None:
+    """Drag/drop and the Add-videos button merge their paths without duplicates."""
+    from autoclip.app.window import AutoclipApp
+
+    app = AutoclipApp(tmp_path / "config.json")
+    try:
+        videos_form = next(form for form in app._forms if "input" in form.fields)
+        videos_form._values["input"] = ["already.mp4"]
+        videos_form._add_videos(["new one.mp4", "already.mp4", "new one.mp4", ""])
+        assert videos_form._values["input"] == ["already.mp4", "new one.mp4"]
+        # A drop that adds nothing still returns without changing the value.
+        before = list(videos_form._values["input"])
+        videos_form._add_videos(["already.mp4"])
+        assert videos_form._values["input"] == before
+
+        # An unknown platform leaves the feature disabled instead of crashing.
+        event = _DropEvent("first.mp4 second.mp4")
+        videos_form._on_drop_videos(event)
+        assert "first.mp4" in videos_form._values["input"] or "second.mp4" in videos_form._values["input"]
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_the_window_survives_a_missing_drag_and_drop_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When tkinterdnd2 cannot be enabled, the window still builds and the button remains."""
+    import autoclip.app.window as window_mod
+
+    monkeypatch.setattr(window_mod, "_TkinterDnD", None)
+    app = window_mod.AutoclipApp(tmp_path / "config.json")
+    try:
+        assert app._dnd is False
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_the_window_falls_back_when_enabling_drag_and_drop_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A backend that exists but fails to attach leaves drag-and-drop disabled."""
+    import autoclip.app.window as window_mod
+
+    class _BrokenDnD:
+        @staticmethod
+        def require(_root: Any) -> None:
+            raise RuntimeError("cannot attach")
+
+    monkeypatch.setattr(window_mod, "_TkinterDnD", _BrokenDnD)
+    app = window_mod.AutoclipApp(tmp_path / "config.json")
+    try:
+        assert app._dnd is False
+        assert app.dnd is False
+    finally:
+        app.destroy()
+
+
+def test_drag_and_drop_registration_is_a_no_op_without_its_files_constant(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The registration returns immediately when the tkinterdnd2 files constant is missing."""
+    import autoclip.app.form as form_mod
+
+    monkeypatch.setattr(form_mod, "_DND_FILES", None)
+    form_mod.Form._enable_drag_and_drop(None, object())  # type: ignore[arg-type]
+
+
+@needs_display
+def test_drop_helpers_work_without_an_input_field(tmp_path: Path) -> None:
+    """The drop and merge helpers tolerate a form that has no ``input`` option."""
+    from autoclip.app.window import AutoclipApp
+
+    app = AutoclipApp(tmp_path / "config.json")
+    try:
+        form = next(form for form in app._forms if "input" not in form.fields)
+        form._add_videos(["missing-field.mp4"])
+        form._on_drop_videos(_DropEvent("dropped.mp4"))
+    finally:
+        app.destroy()

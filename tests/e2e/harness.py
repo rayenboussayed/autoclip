@@ -45,8 +45,8 @@ LEDGER_NAME = "levels.json"
 LADDER_CLIPS: dict[str, Any] = {
     "kinds": ["short", "long"],
     "scenes": ["best"],
-    "short": {"count": 1, "min_seconds": 15, "target_seconds": 25, "max_seconds": 45},
-    "long": {"count": 1, "min_seconds": 180, "max_seconds": 600},
+    "short": {"count": 1, "min_seconds": 15, "target_seconds": 25, "max_seconds": 45, "aspect": "9:16"},
+    "long": {"count": 1, "min_seconds": 180, "max_seconds": 600, "aspect": "16:9"},
 }
 
 
@@ -382,9 +382,7 @@ class DownloadedMedia:
     name: str
 
 
-def download_config(
-    output_dir: Path, url: str, *, time_range: str | None = None, original_dir: Path | None = None
-) -> dict[str, Any]:
+def download_config(output_dir: Path, url: str, *, time_range: str | None = None, original_dir: Path | None = None) -> dict[str, Any]:
     """A config that downloads ``url`` at the best quality with English subtitles and the metadata sidecar.
 
     ``original_dir`` is the persistent cache of the ladder: it lives outside the results folder so a later
@@ -446,7 +444,9 @@ def downloaded_files(case: CaseResult) -> list[Path]:
                 folder = case.directory / folder
     if not folder.is_dir():
         return []
-    return [item for item in folder.iterdir() if item.is_file() and item.suffix.lower().lstrip(".") in MEDIA_EXTS]
+    return [
+        item for item in folder.iterdir() if item.is_file() and item.suffix.lower().lstrip(".") in MEDIA_EXTS and ".media." not in item.name
+    ]
 
 
 def english_subtitle(media: Path) -> Path:

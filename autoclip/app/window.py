@@ -21,6 +21,17 @@ from tkinter import filedialog, messagebox, ttk
 from types import TracebackType
 from typing import Any
 
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+
+    _TkinterDnD = TkinterDnD
+    _DND_FILES = DND_FILES
+except Exception:  # pragma: no cover - depends on the installed extras
+    TkinterDnD = None
+    DND_FILES = None
+    _TkinterDnD = None
+    _DND_FILES = None
+
 from ..core.errors import ConfigError
 from .fields import SECTIONS, Option
 from .form import Form, ScrollFrame, unflatten
@@ -66,6 +77,15 @@ class AutoclipApp(tk.Tk):
 
     def __init__(self, config_path: Path | None = None, *, debug: bool | None = None) -> None:
         super().__init__()
+        self._dnd = False
+        dnd = globals().get("_TkinterDnD")
+        if dnd is not None:
+            try:
+                dnd.require(self)
+                self._dnd = True
+            except Exception:
+                self._dnd = False
+        self.dnd = self._dnd
         self._debug = debug_enabled() if debug is None else debug
         self.title("autoclip - cut long videos into clips")
         self.geometry("1060x760")
@@ -144,6 +164,16 @@ class AutoclipApp(tk.Tk):
         self.when_label.grid(row=2, column=1, sticky="w", pady=(4, 0))
         body.add(details, weight=0)
 
+        log_pane = ttk.LabelFrame(body, text="Log", padding=(6, 4, 6, 6))
+        log_pane.rowconfigure(0, weight=1)
+        log_pane.columnconfigure(0, weight=1)
+        self.log = tk.Text(log_pane, height=9, wrap="word", font="TkFixedFont", state="disabled")
+        log_scroll = ttk.Scrollbar(log_pane, orient="vertical", command=self.log.yview)
+        self.log.configure(yscrollcommand=log_scroll.set)
+        self.log.grid(row=0, column=0, sticky="nsew")
+        log_scroll.grid(row=0, column=1, sticky="ns")
+        body.add(log_pane, weight=1)
+
     def _build_footer(self) -> None:
         """Buttons, log window and status line."""
         buttons = ttk.Frame(self, padding=(14, 0, 14, 6))
@@ -160,20 +190,10 @@ class AutoclipApp(tk.Tk):
         self.status = ttk.Label(buttons, text="Ready.", style="Status.TLabel")
         self.status.pack(side="right")
 
-        log_frame = ttk.Frame(self, padding=(14, 0, 14, 10))
-        log_frame.pack(fill="x")
-        log_bar = ttk.Frame(log_frame)
-        log_bar.pack(fill="x", pady=(0, 2))
-        ttk.Label(log_bar, text="Log", style="Sub.TLabel").pack(side="left")
-        ttk.Button(log_bar, text="Copy log", command=self._copy_log).pack(side="right")
-        ttk.Button(log_bar, text="Copy error", command=self._copy_error).pack(side="right", padx=(0, 6))
-        text_frame = ttk.Frame(log_frame)
-        text_frame.pack(fill="both", expand=True)
-        self.log = tk.Text(text_frame, height=9, wrap="word", font="TkFixedFont", state="disabled")
-        scroll = ttk.Scrollbar(text_frame, orient="vertical", command=self.log.yview)
-        self.log.configure(yscrollcommand=scroll.set)
-        self.log.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        button_row = ttk.Frame(self, padding=(14, 0, 14, 10))
+        button_row.pack(fill="x")
+        ttk.Button(button_row, text="Copy log", command=self._copy_log).pack(side="right")
+        ttk.Button(button_row, text="Copy error", command=self._copy_error).pack(side="right", padx=(0, 6))
 
     # -- startup -----------------------------------------------------------------------------
 

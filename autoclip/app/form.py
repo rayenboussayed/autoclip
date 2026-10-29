@@ -19,6 +19,11 @@ from typing import Any
 from .fields import Option
 from .session import flatten, split_csv, unflatten
 
+try:
+    from tkinterdnd2 import DND_FILES as _DND_FILES
+except Exception:  # pragma: no cover - depends on the installed extras
+    _DND_FILES = None
+
 #: A callback that receives the changed option path and its new value.
 Changed = Callable[[str, Any], None]
 
@@ -187,6 +192,7 @@ class Form(ttk.Frame):
             ttk.Button(holder, text="Browse...", command=partial(self._browse, option)).grid(row=0, column=1, sticky="e", padx=(6, 0))
         if option.kind == "lines" and option.path == "input":
             ttk.Button(holder, text="Add videos...", command=self._browse_videos).grid(row=0, column=1, sticky="e", padx=(6, 0))
+            self._enable_drag_and_drop(holder)
         holder.columnconfigure(0, weight=1)
         help_label = ttk.Label(self, text=option.what, style="Help.TLabel", wraplength=620, justify="left")
         help_label.grid(row=row + 1, column=1, sticky="w", pady=(0, 6))
@@ -272,10 +278,48 @@ class Form(ttk.Frame):
         )
         if not picked:
             return
-        current = self._values.get("input") or []
-        merged = list(current) + [str(p) for p in picked]
+        self._add_videos([str(p) for p in picked])
+
+    def _enable_drag_and_drop(self, holder: ttk.Frame) -> None:
+        """Accept dropped video files when the platform supports it (no-op otherwise)."""
+        register = getattr(holder, "drop_target_register", None)
+        bind = getattr(holder, "dnd_bind", None)
+        if not callable(register) or not callable(bind) or _DND_FILES is None:
+            return
+        try:
+            register(_DND_FILES)
+        except Exception:
+            return
+        bind("<<Drop>>", self._on_drop_videos)
+
+    def _on_drop_videos(self, event: Any) -> str | None:
+        """Add the files from a drag-and-drop operation to the input list (de-duplicated)."""
+        data = getattr(event, "data", "")
+        try:
+            files = tuple(self.splitlist(data))  # type: ignore[attr-defined]
+        except Exception:
+            files = tuple(str(data).split())
+        self._add_videos([str(path) for path in files])
+        field = self.fields.get("input")
+        if field is not None and field.text is not None:
+            field.text.focus_set()
+        return "break"
+
+    def _add_videos(self, paths: list[str]) -> None:
+        """Merge new video paths into the input list without duplicates."""
+        field = self.fields.get("input")
+        current = list(self._values.get("input") or [])
+        merged = list(current)
+        changed = False
+        for path in paths:
+            if path and path not in merged:
+                merged.append(path)
+                changed = True
+        if not changed:
+            return
         self._values["input"] = merged
-        self.fields["input"].set(merged)
+        if field is not None:
+            field.set(merged)
         self._changed("input", merged)
 
     def _focused(self, option: Option) -> None:

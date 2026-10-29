@@ -124,7 +124,9 @@ def test_e2e_level_reads_a_positive_whole_number(env: dict[str, str] | None, exp
     assert harness.e2e_level(env) == expected
 
 
-@pytest.mark.parametrize(("raw", "message"), [("two", "positive whole number"), ("1.5", "positive whole number"), ("0", "at least 1"), ("-2", "at least 1")])
+@pytest.mark.parametrize(
+    ("raw", "message"), [("two", "positive whole number"), ("1.5", "positive whole number"), ("0", "at least 1"), ("-2", "at least 1")]
+)
 def test_e2e_level_rejects_anything_that_is_not_a_ladder_level(raw: str, message: str) -> None:
     with pytest.raises(ValueError, match=message):
         harness.e2e_level({"AUTOCLIP_E2E_LEVEL": raw})
@@ -221,7 +223,10 @@ def test_level_summary_describes_both_kinds_and_tolerates_a_missing_one() -> Non
 
 
 def test_compare_levels_ignores_a_kind_that_was_not_recorded() -> None:
-    assert harness.compare_levels({"short": {"clips": 1, "width": 144, "height": 256}}, {"short": {"clips": 1, "width": 144, "height": 256}}) == []
+    assert (
+        harness.compare_levels({"short": {"clips": 1, "width": 144, "height": 256}}, {"short": {"clips": 1, "width": 144, "height": 256}})
+        == []
+    )
 
 
 def test_pipeline_config_merges_clip_overrides_over_its_fast_defaults(tmp_path: Path) -> None:
@@ -243,12 +248,43 @@ def test_pipeline_config_merges_clip_overrides_over_its_fast_defaults(tmp_path: 
 
 def test_downloaded_files_keeps_only_media_in_the_originals_cache(tmp_path: Path) -> None:
     case = make_case(tmp_path)
+    config_path = case.config_path
+    assert config_path is not None
     folder = case.directory / "out" / ".work" / "downloads"
     folder.mkdir(parents=True)
     for name in ("a.mp4", "b.WEBM", "c.srt", "d.info.json", "e.part"):
         (folder / name).write_text("x", encoding="utf-8")
     (folder / "a-directory.mp4").mkdir()
     assert {path.name for path in harness.downloaded_files(case)} == {"a.mp4", "b.WEBM"}
+
+    # An explicit originals cache outside the result folder is resolved from the config.
+    other = tmp_path / "cache"
+    other.mkdir()
+    (other / "cached.mp4").write_text("x", encoding="utf-8")
+    (other / "cached.webm").write_text("x", encoding="utf-8")
+    (other / "readme.txt").write_text("x", encoding="utf-8")
+    config_path.write_text(json.dumps({"download": {"original_dir": str(other)}}), encoding="utf-8")
+    assert {path.name for path in harness.downloaded_files(case)} == {"cached.mp4", "cached.webm"}
+
+    # A relative cache directory is resolved against the case directory.
+    (case.directory / "relative").mkdir()
+    (case.directory / "relative" / "inner.mp4").write_bytes(b"x")
+    config_path.write_text(json.dumps({"download": {"original_dir": "./relative"}}), encoding="utf-8")
+    assert {path.name for path in harness.downloaded_files(case)} == {"inner.mp4"}
+
+    # A missing cache folder yields nothing even when the config names it.
+    config_path.write_text(json.dumps({"download": {"original_dir": str(tmp_path / "nope")}}), encoding="utf-8")
+    assert list(harness.downloaded_files(case)) == []
+    # A non-object config is not a real config file and keeps the default folder (also empty here after cleanup).
+    for entry in (case.directory / "out" / ".work" / "downloads").iterdir():
+        (entry if entry.is_file() else entry).unlink() if entry.is_file() else __import__("shutil").rmtree(entry)
+    # A non-object config file yields nothing.
+    config_path.write_text("[]", encoding="utf-8")
+    assert list(harness.downloaded_files(case)) == []
+
+    # A case without a config file resolves to the (still empty) default cache.
+    config_path.unlink()
+    assert list(harness.downloaded_files(case)) == []
 
 
 def test_english_subtitle_prefers_a_manual_file_and_ignores_other_languages(tmp_path: Path) -> None:
@@ -523,9 +559,19 @@ def test_git_commit_handles_a_checkout_a_non_repository_and_a_missing_git(monkey
 def test_environment_records_versions_arguments_and_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(harness, "_git_commit", lambda: "deadbeef")
     monkeypatch.setattr(sys, "argv", ["pytest", "-m", "e2e", "--no-cov"])
-    for name in ("AUTOCLIP_E2E_TESTS", "AUTOCLIP_NETWORK_TESTS", "AUTOCLIP_E2E_RESULTS", "AUTOCLIP_E2E_URL", "AUTOCLIP_E2E_COOKIES"):
+    for name in (
+        "AUTOCLIP_E2E_TESTS",
+        "AUTOCLIP_NETWORK_TESTS",
+        "AUTOCLIP_E2E_RESULTS",
+        "AUTOCLIP_E2E_CACHE",
+        "AUTOCLIP_E2E_LEVEL",
+        "AUTOCLIP_E2E_URL",
+        "AUTOCLIP_E2E_COOKIES",
+    ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AUTOCLIP_E2E_TESTS", "1")
+    monkeypatch.setenv("AUTOCLIP_E2E_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setenv("AUTOCLIP_E2E_LEVEL", "4")
     data = harness._environment(tmp_path)
     assert data["autoclip_version"] == __version__
     assert data["python"] == sys.version and data["executable"] == sys.executable
@@ -536,6 +582,8 @@ def test_environment_records_versions_arguments_and_flags(tmp_path: Path, monkey
         "AUTOCLIP_E2E_TESTS": "1",
         "AUTOCLIP_NETWORK_TESTS": None,
         "AUTOCLIP_E2E_RESULTS": None,
+        "AUTOCLIP_E2E_CACHE": str(tmp_path / "cache"),
+        "AUTOCLIP_E2E_LEVEL": "4",
         "AUTOCLIP_E2E_URL": None,
         "AUTOCLIP_E2E_COOKIES": None,
     }

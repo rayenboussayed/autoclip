@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}autoclip - upload{% endblock %}
+{% block body %}
+<div class="card bg-base-100 shadow-xl max-w-2xl mx-auto">
+  <div class="card-body">
+    <h1 class="card-title text-2xl">Cut a video into clips</h1>
+    <form id="upload-form" hx-post="/api/jobs" hx-encoding="multipart/form-data" hx-target="#result" hx-swap="innerHTML" class="space-y-4">
+      <div class="form-control">
+        <label class="label"><span class="label-text">Video file</span></label>
+        <input type="file" name="file" accept="video/*" class="file-input file-input-bordered w-full" required />
+      </div>
+      <div class="form-control">
+        <label class="label"><span class="label-text">Optional config JSON</span></label>
+        <input type="file" name="config" accept="application/json" class="file-input file-input-bordered w-full" />
+      </div>
+      <button type="submit" class="btn btn-primary">Upload & process</button>
+    </form>
+    <div id="result" class="mt-4"></div>
+  </div>
+</div>
+{% endblock %}

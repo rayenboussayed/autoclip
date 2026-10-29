@@ -253,7 +253,9 @@ def test_skip_caption_burns_no_captions(media: Media, tmp_path: Path) -> None:
 
 def test_skip_title_draws_no_title(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     drawn: list[str] = []
-    real = render_mod.render_text_image
+    from autoclip.core import captions as captions_mod
+
+    real = captions_mod.render_text_image
 
     def spy(*args: Any, **kwargs: Any) -> Any:
         drawn.append(str(args[0]))
@@ -277,7 +279,9 @@ def test_skip_pauses_keeps_the_whole_window(media: Media, tmp_path: Path) -> Non
 
 
 def test_render_passes_the_audio_skips(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    real = render_mod.enhance_audio
+    from autoclip.core import audio as audio_mod
+
+    real = audio_mod.enhance_audio
     seen: list[dict[str, Any]] = []
 
     def spy(*args: Any, **kwargs: Any) -> Any:

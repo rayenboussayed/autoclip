@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}autoclip - job{% endblock %}
+{% block body %}
+<div class="card bg-base-100 shadow-xl max-w-3xl mx-auto">
+  <div class="card-body">
+    <h1 class="card-title">Job {{ job.job_id }}</h1>
+    <progress id="bar" class="progress progress-primary w-full" value="{{ (job.percent or 0)|int }}" max="100"></progress>
+    <p id="step" class="mt-2">{{ job.step }} - {{ job.message }}</p>
+    <div id="files" class="mt-4"></div>
+    <a class="btn btn-success mt-4" href="/api/jobs/{{ job.job_id }}/download" id="download" style="display:none">Download clips</a>
+  </div>
+</div>
+<script>
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(proto + '://' + location.host + '/api/jobs/{{ job.job_id }}/ws');
+  ws.onmessage = (ev) => {
+    const d = JSON.parse(ev.data);
+    if (d.keepalive) return;
+    const bar = document.getElementById('bar');
+    bar.value = d.percent || 0;
+    document.getElementById('step').textContent = d.step + ' - ' + d.message;
+    if (d.state === 'completed') {
+      document.getElementById('download').style.display = 'inline-flex';
+      document.getElementById('files').innerHTML = '<p>Finished.</p>';
+    }
+    if (d.state === 'failed') {
+      document.getElementById('step').className = 'text-error';
+    }
+  };
+</script>
+{% endblock %}
