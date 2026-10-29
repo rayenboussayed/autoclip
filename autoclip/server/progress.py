@@ -15,10 +15,10 @@ class ProgressManager:
     def __init__(self) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._sockets: dict[str, set[WebSocket]] = defaultdict(set)
-        self._queues: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
+        self._tasks: set[asyncio.Task[None]] = set()
         self._lock = asyncio.Lock()
 
-    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+    def bind_loop(self, loop: asyncio.AbstractEventLoop | None) -> None:
         self._loop = loop
 
     async def register(self, job_id: str, ws: Any) -> None:
@@ -41,21 +41,20 @@ class ProgressManager:
 
     def publish(self, job_id: str, payload: dict[str, Any]) -> None:
         """Thread-safe publish from background workers."""
-        if self._loop is None:
+        loop = self._loop
+        if loop is None:
             return
+        # Build the coroutine only once the callback runs: if the loop is already closed,
+        # call_soon_threadsafe raises first and no coroutine is left un-awaited.
         with contextlib.suppress(RuntimeError):
-            self._loop.call_soon_threadsafe(self._loop.create_task, self.broadcast(job_id, payload))
+            loop.call_soon_threadsafe(self._start_broadcast, job_id, payload)
 
-    def subscribe(self, job_id: str) -> asyncio.Queue[dict[str, Any]]:
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        self._queues[job_id].append(q)
-        return q
-
-    async def feed(self, job_id: str, payload: dict[str, Any]) -> None:
-        async with self._lock:
-            queues = list(self._queues.get(job_id, ()))
-        for q in queues:
-            await q.put(payload)
+    def _start_broadcast(self, job_id: str, payload: dict[str, Any]) -> None:
+        task = asyncio.ensure_future(self.broadcast(job_id, payload))
+        # Keep a strong reference: the event loop only holds weak ones, so an unreferenced
+        # task can be garbage-collected mid-flight.
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
 
 progress_manager = ProgressManager()

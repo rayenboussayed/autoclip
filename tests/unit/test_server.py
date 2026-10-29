@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,20 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from autoclip.server import config as server_config  # noqa: E402
 from autoclip.server.main import create_app  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolate_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Keep ``get_settings`` out of the way: it is cached for the whole process.
+
+    A test that enables auth would otherwise leave auth-enabled settings behind for every later
+    test - the websocket endpoint would close at its auth check and never reach the keepalive loop.
+    """
+    monkeypatch.setenv("AUTH_USERNAME", "")
+    monkeypatch.setenv("AUTH_PASSWORD", "")
+    server_config.get_settings.cache_clear()
+    yield
+    server_config.get_settings.cache_clear()
 
 
 @pytest.fixture
@@ -195,8 +210,6 @@ def test_state_evicts_expired_jobs_and_retains_active_ones(tmp_path: Path) -> No
     )
     expired.output_dir.mkdir()
     (expired.output_dir / "clip.mp4").write_text("x", encoding="utf-8")
-    registry.create = lambda **kwargs: expired if kwargs.get("job_id") == "expired" else None  # type: ignore[assignment]
-    # directly register without relying on the overridden factory
     with registry._lock:
         registry._jobs[expired.job_id] = expired
     expired.state = JobState.completed
@@ -261,6 +274,7 @@ def test_progress_manager_fanout() -> None:
 
     manager = ProgressManager()
     loop = asyncio.new_event_loop()
+    loop2 = asyncio.new_event_loop()
     try:
         manager.bind_loop(loop)
         socket = _FakeSocket()
@@ -271,22 +285,28 @@ def test_progress_manager_fanout() -> None:
         assert socket.accepted and bad_socket.accepted
         loop.run_until_complete(manager.broadcast("job", {"hello": True}))
         assert socket.sent and bad_socket not in manager._sockets["job"]
-        # queues and thread-safe publish
-        q = manager.subscribe("job")
-        loop.run_until_complete(manager.feed("job", {"queued": True}))
-        assert q.get_nowait()["queued"] is True
-        # disconnected loop publish is ignored
-        manager.bind_loop(asyncio.new_event_loop())
+        # A publish with no loop or on a closed loop is ignored without leaving a pending coroutine.
+        manager.bind_loop(None)
         manager.publish("job", {"ignored": True})
-        # original loop's publish schedules work
-        loop2 = asyncio.new_event_loop()
+        loop3 = asyncio.new_event_loop()
+        loop3.close()
+        manager.bind_loop(loop3)
+        manager.publish("job", {"ignored": True})
+        # A live loop schedules the broadcast and the socket really receives it.
         manager.bind_loop(loop2)
         manager.publish("job", {"published": True})
-        loop2.run_until_complete(asyncio.sleep(0))
-        assert socket.sent[-1].find("published") >= 0
+        loop2.run_until_complete(asyncio.sleep(0.01))
+        assert "published" in socket.sent[-1]
+        manager.bind_loop(None)
         loop.run_until_complete(manager.unregister("job", socket))
     finally:
+        pending = asyncio.all_tasks(loop2)
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop2.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         loop.close()
+        loop2.close()
 
 
 def test_create_job_rejects_empty_and_invalid_documents(client: TestClient) -> None:
@@ -321,6 +341,9 @@ def test_delete_job_removes_an_existing_job(client: TestClient, tmp_path: Path) 
 
 
 def test_websocket_rejects_unknown_jobs_and_reports_known_state(client: TestClient, tmp_path: Path) -> None:
+    from fastapi.websockets import WebSocketDisconnect
+
+    from autoclip.server.schemas import JobState
     from autoclip.server.state import Job, registry
 
     job = Job(
@@ -331,19 +354,20 @@ def test_websocket_rejects_unknown_jobs_and_reports_known_state(client: TestClie
         config={},
     )
     job.output_dir.mkdir(exist_ok=True)
-    job.state = __import__("autoclip.server.schemas", fromlist=["JobState"]).JobState.running
+    job.state = JobState.running
     with registry._lock:
         registry._jobs[job.job_id] = job
 
-    with client.websocket_connect(f"/api/jobs/{job.job_id}/ws") as websocket:
-        payload = websocket.receive_json()
-        assert payload["job_id"] == job.job_id
-        assert payload["state"] == "running"
     try:
-        with client.websocket_connect("/api/jobs/missing/ws"):
+        with client.websocket_connect(f"/api/jobs/{job.job_id}/ws") as websocket:
+            payload = websocket.receive_json()
+            assert payload["job_id"] == job.job_id
+            assert payload["state"] == "running"
+        with pytest.raises(WebSocketDisconnect), client.websocket_connect("/api/jobs/missing/ws"):
             pass
-    except Exception:
-        pass
+    finally:
+        with registry._lock:
+            registry._jobs.pop(job.job_id, None)
 
 
 def test_view_job_404(client: TestClient) -> None:
@@ -356,7 +380,7 @@ def test_progress_manager_ignores_publish_without_a_loop() -> None:
     from autoclip.server.progress import ProgressManager
 
     manager = ProgressManager()
-    manager.bind_loop(None)  # type: ignore[arg-type]
+    manager.bind_loop(None)
     manager.publish("job", {"ignored": True})
 
 
@@ -393,17 +417,6 @@ def test_main_entrypoint_runs_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://example/otlp")
     server_config.get_settings.cache_clear()
 
-    sleep_calls = 0
-
-    async def immediate_sleep(seconds: float) -> None:
-        nonlocal sleep_calls
-        if seconds == 60:
-            sleep_calls += 1
-            if sleep_calls == 1:
-                return None  # lets the evictor reach registry.evict_expired
-            raise __import__("asyncio").CancelledError()
-        return None
-
     import autoclip.server.main as main_mod
 
     monkeypatch.setattr(main_mod, "uvicorn", fake_uvicorn, raising=False)
@@ -414,10 +427,13 @@ def test_main_entrypoint_runs_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
 
     import asyncio
 
-    # cover lifespan/evictor lines 42-45 and the available instrumentation branch
+    # Cover the lifespan evictor without waiting 60 s: shrink its tick and let one tick run while the
+    # app is alive. Never patch asyncio.sleep itself - a no-op sleep turns this loop into a spin.
+    monkeypatch.setattr(main_mod, "EVICT_SECONDS", 0.01)
+
     async def _consume_lifespan() -> None:
         async with main_mod.lifespan(main_mod.app):
-            await asyncio.sleep(0)
+            await asyncio.sleep(0.1)
 
     asyncio.run(_consume_lifespan())
 
@@ -518,38 +534,20 @@ def test_api_websocket_rejects_bad_tokens_and_unknown_jobs(tmp_path: Path, monke
     from autoclip.server import config as server_config
 
     server_config.get_settings.cache_clear()
-    import asyncio as _asyncio
 
     from fastapi.testclient import TestClient
+    from fastapi.websockets import WebSocketDisconnect
 
     from autoclip.server.main import create_app
 
-    real_sleep = _asyncio.sleep
-    sleep_calls = {"n": 0}
-
-    async def counted_sleep(seconds: float) -> None:
-        if seconds == 60:
-            sleep_calls["n"] += 1
-            if sleep_calls["n"] == 1:
-                return None
-            raise _asyncio.CancelledError()
-        if seconds == 30:
-            return None
-        await real_sleep(0)
-
-    monkeypatch.setattr("asyncio.sleep", counted_sleep)
     app = create_app()
     with TestClient(app) as client:
-        try:
-            with client.websocket_connect("/api/jobs/missing/ws?token=bad"):
-                pass
-        except Exception:
+        # Bad token: the endpoint closes with 1008 before accepting.
+        with pytest.raises(WebSocketDisconnect), client.websocket_connect("/api/jobs/missing/ws?token=bad"):
             pass
-        try:
-            with client.websocket_connect("/api/jobs/missing/ws?token=user:pass") as websocket:
-                websocket.receive_json()
-        except Exception:
-            pass
+        # Valid token on a job that does not exist is also refused.
+        with pytest.raises(WebSocketDisconnect), client.websocket_connect("/api/jobs/missing/ws?token=user:pass") as websocket:
+            websocket.receive_json()
 
 
 def test_run_job_task_ignores_missing_jobs() -> None:
@@ -560,13 +558,36 @@ def test_run_job_task_ignores_missing_jobs() -> None:
     asyncio.run(_run_job_task("does-not-exist"))
 
 
-def test_job_websocket_handles_disconnect_cleanly() -> None:
+def test_get_semaphore_is_reused_per_loop_and_rebuilt_on_a_new_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     import asyncio
 
-    from fastapi.websockets import WebSocketDisconnect
+    from autoclip.server.routers import api
+
+    monkeypatch.setattr(api, "_sem", None)
+    monkeypatch.setattr(api, "_sem_loop", None)
+
+    async def _twice() -> tuple[asyncio.Semaphore, asyncio.Semaphore]:
+        return api._get_semaphore(), api._get_semaphore()
+
+    first, second = asyncio.run(_twice())
+    assert first is second
+
+    async def _again() -> asyncio.Semaphore:
+        return api._get_semaphore()
+
+    # A semaphore is bound to the loop that created it; a new loop must get a new one.
+    assert asyncio.run(_again()) is not first
+
+
+def test_job_websocket_handles_disconnect_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+    from pathlib import Path
+    from typing import cast
+
+    from fastapi.websockets import WebSocket, WebSocketDisconnect
 
     from autoclip.server import progress as progress_mod
-    from autoclip.server.routers.api import job_websocket
+    from autoclip.server.routers import api
     from autoclip.server.state import Job, registry
 
     class _Socket:
@@ -588,12 +609,6 @@ def test_job_websocket_handles_disconnect_cleanly() -> None:
             return ""
 
     async def _run() -> None:
-        import asyncio as _asyncio
-
-        async def _sleep(seconds: float) -> None:
-            return None
-
-        _asyncio.sleep = _sleep  # type: ignore[assignment]
         job = Job(
             job_id="ws-disconnect",
             filename="clip.mp4",
@@ -604,23 +619,19 @@ def test_job_websocket_handles_disconnect_cleanly() -> None:
         job.output_dir.mkdir(exist_ok=True)
         with registry._lock:
             registry._jobs[job.job_id] = job
-
         manager = progress_mod.ProgressManager()
-        manager.bind_loop(asyncio.get_event_loop())
-        progress_mod.progress_manager = manager
-        from typing import cast
+        manager.bind_loop(asyncio.get_running_loop())
+        # Patch the module constants/managers (restored by monkeypatch), never asyncio.sleep itself:
+        # a global no-op sleep turns the server's eviction loop into an unyielding spin.
+        monkeypatch.setattr(api, "KEEPALIVE_SECONDS", 0.0)
+        monkeypatch.setattr(progress_mod, "progress_manager", manager)
+        try:
+            await api.job_websocket(cast(WebSocket, _Socket()), job.job_id)
+        finally:
+            with registry._lock:
+                registry._jobs.pop(job.job_id, None)
 
-        from fastapi.websockets import WebSocket
-
-        websocket = cast(WebSocket, _Socket())
-        await job_websocket(websocket, job.job_id)
-        with registry._lock:
-            registry._jobs.pop(job.job_id, None)
-
-    import asyncio as _asyncio
-    from pathlib import Path
-
-    _asyncio.run(_run())
+    asyncio.run(_run())
 
 
 def test_api_download_missing_job_returns_404(client: TestClient) -> None:
@@ -671,9 +682,8 @@ def test_api_missing_zip_file_returns_500(client: TestClient, monkeypatch: pytes
         registry._jobs.pop(job.job_id, None)
 
 
-def test_api_websocket_keepalive_path_is_covered(client: TestClient, tmp_path: Path) -> None:
-    import asyncio
-
+def test_api_websocket_keepalive_path_is_covered(client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.server.routers import api
     from autoclip.server.state import Job, registry
 
     job = Job(
@@ -687,25 +697,12 @@ def test_api_websocket_keepalive_path_is_covered(client: TestClient, tmp_path: P
     with registry._lock:
         registry._jobs[job.job_id] = job
 
-    sleep_calls = {"n": 0}
-    original_sleep = asyncio.sleep
-
-    async def counted_sleep(seconds: float) -> None:
-        if seconds == 30:
-            sleep_calls["n"] += 1
-            if sleep_calls["n"] == 1:
-                return None
-            raise asyncio.CancelledError()
-        await original_sleep(0)
-
-    import unittest.mock as mock
-
-    with mock.patch("asyncio.sleep", counted_sleep):
-        try:
-            with client.websocket_connect(f"/api/jobs/{job.job_id}/ws") as websocket:
-                websocket.receive_json()
-        except Exception:
-            pass
+    # Shrink the keepalive tick instead of replacing asyncio.sleep globally: a global no-op sleep
+    # would also turn the server's eviction loop into an unyielding spin.
+    monkeypatch.setattr(api, "KEEPALIVE_SECONDS", 0.01)
+    with client.websocket_connect(f"/api/jobs/{job.job_id}/ws") as websocket:
+        assert websocket.receive_json()["job_id"] == job.job_id
+        assert websocket.receive_json()["keepalive"] is True
     with registry._lock:
         registry._jobs.pop(job.job_id, None)
 

@@ -13,6 +13,9 @@ from .progress import progress_manager
 from .routers import api, view
 from .state import registry
 
+# How often the lifespan task removes expired jobs. A module constant so tests can shrink it.
+EVICT_SECONDS = 60.0
+
 # OpenTelemetry setup
 try:
     from opentelemetry import trace
@@ -41,8 +44,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     async def evictor() -> None:
         while True:
-            await asyncio.sleep(60)
-            registry.evict_expired(settings.job_ttl_seconds)
+            await asyncio.sleep(EVICT_SECONDS)
+            # Disk deletion must never block the event loop (or a websocket handshake behind it).
+            await asyncio.to_thread(registry.evict_expired, settings.job_ttl_seconds)
 
     task = asyncio.ensure_future(evictor())
     try:

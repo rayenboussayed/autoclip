@@ -38,6 +38,9 @@ runs/
 *.work/
 .autoclip/
 
+# server runtime data (default OUTPUT_DIR / CACHE_DIR)
+.server/
+
 # editors / OS
 .idea/
 .vscode/

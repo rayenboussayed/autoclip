@@ -18,6 +18,10 @@ router = APIRouter(prefix="/api", tags=["api"], dependencies=[])
 
 _TASKS: set[asyncio.Task[Any]] = set()
 
+# How long an idle websocket waits before a keepalive frame. A module constant (not a literal in the
+# loop) so tests can shrink it instead of patching asyncio.sleep globally.
+KEEPALIVE_SECONDS = 30.0
+
 
 @router.post("/jobs", response_model=JobCreated, status_code=status.HTTP_201_CREATED)
 async def create_job(
@@ -92,7 +96,7 @@ async def _run_job_task(job_id: str) -> None:
 
         progress_manager.bind_loop(loop)
         await asyncio.to_thread(run_job, job, None)
-        registry.evict_expired(settings.job_ttl_seconds)
+        await asyncio.to_thread(registry.evict_expired, settings.job_ttl_seconds)
 
 
 @router.get("/jobs/{job_id}", response_model=JobStatus)
@@ -158,8 +162,8 @@ async def job_websocket(websocket: WebSocket, job_id: str) -> None:
             )
         )
         while True:
-            await asyncio.sleep(30)
-            await websocket.send_text(__import__("json").dumps({"job_id": job_id, "keepalive": True}))
+            await asyncio.sleep(KEEPALIVE_SECONDS)
+            await websocket.send_text(json.dumps({"job_id": job_id, "keepalive": True}))
     except WebSocketDisconnect:
         pass
     finally:
@@ -183,11 +187,16 @@ async def delete_job(job_id: str, user: str = Depends(require_auth)) -> JSONResp
 
 
 _sem: asyncio.Semaphore | None = None
+_sem_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _get_semaphore() -> asyncio.Semaphore:
-    global _sem  # noqa: PLW0603
-    if _sem is None:
+    # A Semaphore belongs to the loop that first waits on it. Tests (and a restarted loop) would
+    # otherwise reuse one bound to a closed loop, so recreate it whenever the running loop changes.
+    global _sem, _sem_loop  # noqa: PLW0603
+    loop = asyncio.get_running_loop()
+    if _sem is None or _sem_loop is not loop:
         settings = get_settings()
         _sem = asyncio.Semaphore(settings.max_concurrent_jobs)
+        _sem_loop = loop
     return _sem
