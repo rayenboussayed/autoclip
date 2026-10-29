@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import zipfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
+from autoclip import __version__  # noqa: E402
 from autoclip.server import config as server_config  # noqa: E402
 from autoclip.server.main import create_app  # noqa: E402
 
@@ -45,6 +47,11 @@ def test_index_page_renders(client: TestClient) -> None:
     response = client.get("/view/")
     assert response.status_code == 200
     assert "autoclip" in response.text
+    # The form posts to the JSON API; the page follows the created job to its progress page.
+    assert 'hx-post="/api/jobs"' in response.text
+    assert "htmx:afterRequest" in response.text
+    assert "/view/jobs/" in response.text
+    assert create_app().version == __version__
 
 
 def test_upload_rejects_an_empty_or_oversized_file(client: TestClient) -> None:
@@ -87,6 +94,7 @@ def test_run_job_processes_a_small_video(monkeypatch: pytest.MonkeyPatch, media:
             audio={"denoise": "none"},
             compute={"device": "cpu"},
             clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}},
+            video={"thumbnail": True},
         )
     )
     custom.pop("input", None)
@@ -110,6 +118,16 @@ def test_run_job_processes_a_small_video(monkeypatch: pytest.MonkeyPatch, media:
     assert any(p.suffix == ".mp4" for p in job.outputs)
     archive = zip_outputs(job)
     assert archive.is_file()
+    with zipfile.ZipFile(archive) as zf:
+        names = zf.namelist()
+    clips = [name for name in names if name.endswith(".mp4")]
+    # The archive mirrors the output folder: clips, their sidecars and the index, never the work folder.
+    assert len(clips) == len(job.outputs) == 1, names
+    assert clips[0].startswith("short/"), names
+    assert any(name.endswith(".srt") for name in names), names
+    assert any(name.endswith(".jpg") for name in names), names
+    assert any(name.endswith("clips.json") for name in names), names
+    assert all(".work" not in Path(name).parts for name in names), names
 
     # Split mode renders the source into several consecutive parts.
     split_cfg = dataclasses.asdict(make_cfg(media, tmp_path / "out2", clips={"mode": "split", "split_seconds": 10}))

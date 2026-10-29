@@ -1,0 +1,17 @@
+# The image only needs the package metadata and the source trees; the test runs and their caches are large.
+.git
+.github
+.venv
+.server
+dist
+build
+tests
+tools
+docs
+assets
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache

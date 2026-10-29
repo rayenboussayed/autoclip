@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -113,8 +116,8 @@ async def get_job(job_id: str, user: str = Depends(require_auth)) -> JobStatus:
         percent=job.percent,
         error=job.error,
         outputs=job.to_status()["outputs"],
-        created_at=__import__("datetime").datetime.fromtimestamp(job.created_at),
-        finished_at=__import__("datetime").datetime.fromtimestamp(job.finished_at) if job.finished_at else None,
+        created_at=datetime.fromtimestamp(job.created_at),
+        finished_at=datetime.fromtimestamp(job.finished_at) if job.finished_at else None,
     )
 
 
@@ -138,7 +141,9 @@ async def job_websocket(websocket: WebSocket, job_id: str) -> None:
     if settings.auth_enabled:
         token = websocket.query_params.get("token", "")
         expected = f"{settings.auth_username}:{settings.auth_password}"
-        if token != expected:
+        # Browsers cannot set an Authorization header on a WebSocket, so the same credentials arrive
+        # as a query token; compare it the same constant-time way as the Basic header.
+        if not secrets.compare_digest(token, expected):
             await websocket.close(code=1008)
             return
     job = registry.get(job_id)
@@ -151,7 +156,7 @@ async def job_websocket(websocket: WebSocket, job_id: str) -> None:
     try:
         # send current state immediately
         await websocket.send_text(
-            __import__("json").dumps(
+            json.dumps(
                 {
                     "job_id": job_id,
                     "step": job.step,
@@ -175,14 +180,10 @@ async def delete_job(job_id: str, user: str = Depends(require_auth)) -> JSONResp
     job = registry.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
-    import shutil as _sh
-
-    _sh.rmtree(job.output_dir, ignore_errors=True)
+    shutil.rmtree(job.output_dir, ignore_errors=True)
     if job.input_path.exists():
         job.input_path.unlink(missing_ok=True)
-    # remove from registry
-    with registry._lock:
-        registry._jobs.pop(job_id, None)
+    registry.remove(job_id)
     return JSONResponse({"deleted": job_id})
 
 

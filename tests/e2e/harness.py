@@ -39,6 +39,8 @@ DEFAULT_CACHE = Path(__file__).resolve().parent.parent / ".cache" / "e2e"
 RESERVED_CASE_NAMES = frozenset({"clips"})
 #: The download ladder: every extra level adds this much source video (up to the full length).
 CHUNK_SECONDS = 360
+#: The ``saved <path> (<platform>)`` line the command line logs for every original it downloads.
+_SAVED_LINE = re.compile(r"(?:^|\|\s*)saved (.+?) \(\w+\)\s*$", re.MULTILINE)
 DEFAULT_LEVEL = 1
 LEDGER_NAME = "levels.json"
 #: The manifest cases always render one short and one long clip; the long kind uses the production range.
@@ -431,17 +433,24 @@ def pipeline_config(output_dir: Path, source: Path, transcript: Path, clips: dic
 
 
 def downloaded_files(case: CaseResult) -> list[Path]:
-    """Every media file in the case's originals cache (``download.original_dir`` when the config sets one)."""
+    """The media files this run saved, or every media file in its originals cache.
+
+    The ladder cache is shared between runs, so its folder can also hold originals of an earlier
+    format id (the format id is part of the cache key). The ``saved`` lines of the run name exactly
+    the files it produced; when they are absent (a hand-made case) the cache folder is the answer.
+    """
     from autoclip.core.download import MEDIA_EXTS
 
-    folder = case.directory / "out" / ".work" / "downloads"
-    if case.config_path is not None and case.config_path.is_file():
-        config = json.loads(case.config_path.read_text(encoding="utf-8"))
-        download = config.get("download") if isinstance(config, dict) else None
-        if isinstance(download, dict) and download.get("original_dir"):
-            folder = Path(str(download["original_dir"]))
-            if not folder.is_absolute():
-                folder = case.directory / folder
+    saved = [
+        path
+        for match in _SAVED_LINE.finditer(case.stdout)
+        if (path := _resolve(Path(match.group(1)), case.directory)).is_file()
+        and path.suffix.lower().lstrip(".") in MEDIA_EXTS
+        and ".media." not in path.name
+    ]
+    if saved:
+        return sorted(saved)
+    folder = _originals_folder(case)
     if not folder.is_dir():
         return []
     return [
@@ -449,8 +458,32 @@ def downloaded_files(case: CaseResult) -> list[Path]:
     ]
 
 
+def _originals_folder(case: CaseResult) -> Path:
+    """The folder the case downloads into (``download.original_dir`` when its config sets one)."""
+    folder = case.directory / "out" / ".work" / "downloads"
+    if case.config_path is not None and case.config_path.is_file():
+        config = json.loads(case.config_path.read_text(encoding="utf-8"))
+        download = config.get("download") if isinstance(config, dict) else None
+        if isinstance(download, dict) and download.get("original_dir"):
+            folder = _resolve(Path(str(download["original_dir"])), case.directory)
+    return folder
+
+
+def _resolve(path: Path, base: Path) -> Path:
+    """``path`` against the case folder when it is relative (the config paths are already absolute)."""
+    return path if path.is_absolute() else base / path
+
+
 def english_subtitle(media: Path) -> Path:
-    """The English subtitle downloaded next to ``media`` (a human-made one wins over automatic captions)."""
+    """The English subtitle downloaded next to ``media`` (a human-made one wins over automatic captions).
+
+    The subtitle of ``media`` itself wins over another original in the same shared cache folder; the
+    folder-wide search is the fallback for a media file with an unexpected name.
+    """
+    for suffix in (".manual.en.srt", ".auto.en.srt"):
+        candidate = media.with_suffix(suffix)
+        if candidate.is_file():
+            return candidate
     folder = media.parent
     manual = sorted(folder.glob("*.manual.en.srt"))
     automatic = sorted(folder.glob("*.auto.en.srt"))

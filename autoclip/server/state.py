@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import threading
 import time
 import uuid
@@ -82,6 +83,11 @@ class JobRegistry:
         with self._lock:
             return list(self._jobs.values())
 
+    def remove(self, job_id: str) -> None:
+        """Drop a job from the registry (the caller has already deleted its files)."""
+        with self._lock:
+            self._jobs.pop(job_id, None)
+
     def evict_expired(self, ttl_seconds: int) -> None:
         now = time.time()
         with self._lock:
@@ -89,8 +95,6 @@ class JobRegistry:
             for jid in expired:
                 j = self._jobs.pop(jid)
                 if j.output_dir.exists():
-                    import shutil
-
                     shutil.rmtree(j.output_dir, ignore_errors=True)
 
 

@@ -14,8 +14,9 @@ render (enhance audio, cut pauses/fillers, layout, burn captions, encode on GPU 
 * Free, local, no service dependencies (downloading is off unless `input` holds an http(s) URL; the optional local
   LLM re-rank is the only other network use).
 * Runs on Linux, macOS and Windows, Python >= 3.10 (developed and verified on 3.12). No system ffmpeg required.
-* Three parts: `core` (the engine), `cli` (the command line) and `app` (the desktop app, Tk).
-* Version 2.2.0. ~7,800 lines of package code in 31 modules, ~7,000 lines of tests (100% statement + branch coverage).
+* Four parts: `core` (the engine), `cli` (the command line), `app` (the desktop app, Tk) and `server` (the optional
+  FastAPI/WebSocket service).
+* Version 2.2.0. ~9,000 lines of package code in 43 modules, ~10,800 lines of tests (100% statement + branch coverage).
 
 ## 2. Commands
 
@@ -23,6 +24,7 @@ render (enhance audio, cut pauses/fillers, layout, burn captions, encode on GPU 
 pip install -r requirements-dev.txt            # runtime + dev tools (pytest, pytest-cov, mypy, ruff)
 pip install -U "Pillow>=12.3"                  # security fixes; MoviePy's "<12" pin is conservative (CI runs both)
 pip install -e .                               # optional: gives the `autoclip` console command
+pip install -e ".[server]"                     # optional: the FastAPI server (tests get it through requirements-dev.txt)
 
 python -m autoclip --init config.json          # tiny starter config      (--init-full: every option + default)
 python -m autoclip [config.json]               # run (no config: ./config.json if present, else ./input.mp4 + defaults; exit 0/1/2)
@@ -31,6 +33,7 @@ python -m autoclip --formats URL               # every format of a URL and the o
 python -m autoclip --platforms [URL] config.json        # the allow/deny policy (and where that URL would go)
 python -m autoclip --download-only config.json # download the URLs of `input` and stop (originals in .work/downloads)
 python -m autoclip --allow youtube,vimeo --deny tiktok config.json   # override the lists for one run
+python -m autoclip.server                      # the HTTP/WebSocket service (/view/, /docs; PORT, AUTH_*, MAX_FILE_SIZE)
 
 python -m PyInstaller autoclip.spec --noconfirm  # standalone build (needs pyinstaller; see the build workflow)
 python tools/make_appimage.py                   # the AppImage (Linux) from that build
@@ -41,7 +44,8 @@ mypy autoclip tests tools                       # strict typing, tests and tools
 pytest                                         # offline unit suite; FAILS if branch coverage < 95%
 pytest tests/unit/test_moments.py -k scene --no-cov   # a focused run (always add --no-cov for partial runs)
 AUTOCLIP_NETWORK_TESTS=1 pytest -m "network and not e2e" --no-cov   # the real-YouTube downloader checks
-AUTOCLIP_E2E_TESTS=1 pytest tests/e2e -m e2e --no-cov               # CLI end-to-end runs (results in tests/results)
+AUTOCLIP_E2E_TESTS=1 pytest tests/e2e -m e2e --no-cov               # CLI/server end-to-end runs (results in tests/results)
+AUTOCLIP_E2E_TESTS=1 AUTOCLIP_E2E_LEVEL=3 pytest tests/e2e -m e2e --no-cov   # 18-minute ladder level (cache is reused)
 ```
 
 **Definition of done** (all four must pass before you finish): `ruff check .`, `ruff format --check .`,
@@ -87,17 +91,30 @@ autoclip/
     form.py         the form: one row per option, the control that fits its kind (incl. JSON), the scroll area
     session.py      the behaviour without widgets: read/write/validate the config, default_config_path, start/stop
     window.py       the window: tabs, details panel, log, Run / Stop / Save / Load / Reset, debug mode
+  server/         THE OPTIONAL HTTP SERVICE - python -m autoclip.server (FastAPI + Jinja2/HTMX/DaisyUI)
+    config.py       Settings from the environment (PORT, MAX_FILE_SIZE, AUTH_*, OUTPUT_DIR, CACHE_DIR, TTL)
+    auth.py         HTTP Basic, enforced only when both AUTH_USERNAME and AUTH_PASSWORD are set
+    state.py        Job + JobRegistry (in memory, lock-protected, TTL expiry)
+    progress.py     ProgressManager: per-job queues -> WebSocket frames (loop-safe publish)
+    service.py      the pipeline stages one by one, config preparation, ZIP packaging
+    schemas.py      Pydantic API models (JobCreated, JobStatus, ProgressEvent)
+    routers/api.py  /api/jobs, status, ZIP download, delete, WebSocket (the JSON API)
+    routers/view.py /view/ upload page and /view/jobs/{id} (the HTML pages)
+    main.py         create_app, lifespan evictor, OpenTelemetry (OTLP only when configured)
+    templates/      base/index/job/404 (Jinja2 + HTMX + DaisyUI from a CDN)
 tests/            support.py - pure helpers shared by both suites; conftest.py - fixtures and the e2e/network gates
   unit/           mirrors the modules (the default, offline `pytest` run); test_version.py guards the versions
                   test_support.py / test_e2e_harness.py / test_conftest.py - the shared helpers, the e2e harness and
                   the suite's own gating/annotations, all exercised offline
-  e2e/            opt-in real-network checks: test_network.py and the CLI end-to-end cases
-    harness.py      pure e2e logic: results folders, subprocess runs, config builders, clip/DB readers
+  e2e/            opt-in real-network checks: test_network.py, the CLI cases and the localhost server case
+    harness.py      pure e2e logic: results folders, subprocess runs, config builders, clip/DB readers, ladder/cache
     conftest.py     the e2e fixtures and the outcome-recording hook around that harness
   assets/         youtube.json - the videos the e2e cases use
   results/        per-run configs, logs and outputs (ignored by git)
 autoclip.spec     the PyInstaller spec: a standalone build (engine + command line + desktop app + yt-dlp/EJS)
 snapcraft.yaml    the snap: the same build as a snap (linux, amd64 + arm64)
+Dockerfile        the server image (python:3.12-slim + ffmpeg + the `server` extra)
+docker-compose.yml  the same image with volumes and the environment variables
 assets/           the icon and the desktop file of the AppImage and the snap
 tools/            frozen_entry.py - the entry point of the frozen build (a frozen __main__ has no package around it)
                   make_appimage.py - builds the AppDir and the AppImage from the PyInstaller build
@@ -131,6 +148,8 @@ runner            <- hardware, log, models, render, resources, store
 pipeline          <- everything of the engine (the per-video run)
 cli               <- core.pipeline, core.download, core.config, core.errors, core.hardware, core.log, core.resources
 app               <- core.config, core.errors (+ tkinter)
+server            <- core.config, core.hardware, core.media, core.moments, core.pipeline, core.render, core.runner,
+                     core.store, core.transcript (+ fastapi/pydantic-settings, imported only by the server)
 ```
 `RenderJob` lives in `models.py` (not `runner.py`) precisely to avoid a `render <-> runner` cycle; `Encoder` is in
 `models.py` and its logic in `hardware.py` to avoid `models <-> media`. `Downloaded` is in `models.py` for the same
@@ -217,6 +236,30 @@ given back (the fillers first), so a clip never ends up shorter than the user as
 `ProcessPoolExecutor` with the `spawn` context (same on every OS). A worker killed by the OS (`BrokenProcessPool`) is
 retried alone, in-process. Workers re-run `setup_logging(log_file, level, None)` and `RESOURCES.configure(cfg)`.
 
+### The HTTP server (`server/`)
+`create_app` builds a FastAPI app with the JSON API under `/api`, the HTML pages under `/view` and the WebSocket
+`/api/jobs/{id}/ws`. A job lives in the in-memory `JobRegistry` (id, uploaded file, job folder, prepared config, state,
+step, percent, outputs); nothing else is persisted except the job folder and the ZIP cache.
+
+1. `POST /api/jobs` streams the upload to `OUTPUT_DIR/<job_id>/input<ext>` while enforcing `MAX_FILE_SIZE` (413 above
+   it), parses `config_json`/`config` and replaces `input`/`output_dir` with the uploaded file and job folder.
+2. The job is queued behind an `asyncio.Semaphore(MAX_CONCURRENT_JOBS)`; a FastAPI `BackgroundTask` runs `run_job` in
+   the thread pool, so the event loop stays free.
+3. `run_job` repeats `process_video` stage by stage so each one can publish progress: `validating` 2 % -> `probing` 5 %
+   -> `transcribing` 12/35 % -> `selecting` 45 % -> `rendering` 60 % -> `packaging` 90 % -> `completed` 100 %
+   (`failed` keeps the error text). Split mode short-circuits at `rendering` 50 %. It creates a fresh `Store`, a
+   `Cache`, picks the encoder once and calls `render_all` with the same `RenderJob`s the CLI builds.
+4. `ProgressManager` keeps the set of WebSockets watching each job; `publish` is safe from the worker thread
+   (`call_soon_threadsafe`) and keeps task references so the frames are not garbage-collected. The WebSocket sends the
+   current snapshot, then every update, and a keepalive frame every `KEEPALIVE_SECONDS` (`api.py`).
+5. `GET /api/jobs/{id}` reports state/step/percent/error/outputs; `GET .../download` builds the ZIP in `CACHE_DIR`
+   (clips, `.srt`/`.jpg` and every `clips.json`, under their relative output paths so two `clips.json` files do not
+   collide; `.work` is left out); `DELETE` removes the job, its input and its output folder.
+6. The lifespan task evicts expired jobs every `EVICT_SECONDS` (`main.py`); the TTL is `JOB_TTL_SECONDS`.
+7. Auth is HTTP Basic and is skipped unless **both** `AUTH_USERNAME` and `AUTH_PASSWORD` are set; the WebSocket accepts
+   `?token=<user>:<password>` because browsers cannot set an `Authorization` header on it. OpenTelemetry instruments
+   FastAPI and exports OTLP only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+
 ## 5. Invariants - do not break these
 
 1. **Fresh database per video, every run.** `Store(..., fresh=True)` deletes the DB and its `-wal/-shm/-journal`.
@@ -274,20 +317,37 @@ retried alone, in-process. Workers re-run `setup_logging(log_file, level, None)`
     `skip.audio` mutes the clip and stops audio decoding, so pause removal cannot run. `audio.enhance: false` stays the
     master switch of clip-audio processing. `needs_text(cfg)` decides whether a transcript is loaded at all
     (highlights, or captions/titles that are not skipped).
+17. **The server owns the input and the output folder.** `prepare_config` always drops `input` and `output_dir` from the
+    uploaded config and sets them to the uploaded file and the job folder; a server job can never write outside its
+    own folder. The registry is in memory (a restart loses the jobs, not their files), and `OUTPUT_DIR`/`CACHE_DIR`
+    are the only locations it writes to.
+18. **Server background work must be loop-safe.** `run_job` runs in a worker thread, so `ProgressManager.publish` goes
+    through `loop.call_soon_threadsafe`; the concurrency semaphore is recreated when the running loop changes (each
+    `TestClient` starts a new one). Never patch `asyncio.sleep` globally in a test - shrink the `KEEPALIVE_SECONDS` /
+    `EVICT_SECONDS` module constants instead, or every await in the client starves.
+19. **Server auth is opt-in and compared in constant time.** Basic auth is enforced only when **both** `AUTH_USERNAME`
+    and `AUTH_PASSWORD` are non-empty (`secrets.compare_digest`); an empty pair means a public API. Never log the
+    credentials, and keep the WebSocket `?token=` fallback in sync with the header check.
 
 ## 6. Configuration (`config.py`)
 
 `Config` = nested dataclasses: `input` (list; files, globs and http(s) URLs), `output_dir`, `clips` (`mode`, `kinds`,
 `scenes`, `short: KindCfg`, `long: KindCfg`, `keywords`, `lexicon_file`, `skip_intro_seconds`, `snap_to_cuts`, `pad_*`,
-`split_seconds`), `download`, `transcript`, `llm`, `video` (`short_side`, `fps`, `layout`, `background`, `fade_seconds`,
-`gpu`, `crf`, `preset`, `maxrate_mbps`, `thumbnail`), `captions`, `title`, `audio`, `silence`, `skip`, `processing`,
-`resources`, `storage`, `logging`. `KindCfg` = `count` (per scene), `min_seconds`, `target_seconds` (recommended,
-optional), `max_seconds`, `aspect`, `ranges` - the length of a clip is `clip(minimum, recommended, maximum)`.
+`split_seconds`), `download`, `transcript`, `llm`, `video` (`short_side`, `upscale`, `fps`, `layout`, `background`,
+`fade_seconds`, `codec`, `gpu`, `crf`, `preset`, `maxrate_mbps`, `audio_bitrate_kbps`, `container`, `thumbnail`),
+`captions`, `title`, `audio`, `silence`, `skip`, `processing`, `resources`, `storage`, `logging`. `KindCfg` = `count` (per
+scene), `min_seconds`, `target_seconds` (recommended, optional), `max_seconds`, `aspect`, `ranges` - the length of a clip is
+`clip(minimum, recommended, maximum)`.
 `SkipCfg` = `stt`, `denoise`, `audio_enhance`, `audio`, `pauses`, `caption`, `title`, `fade`, `thumbnail`, `llm`, `snap`
 (all `false`; see invariant 16).
 `DownloadCfg` = `quality`, `fps`, `prefer`, `codec`, `container`, `audio_quality`, `audio_language`, `original_dir`,
 `metadata`, `subtitles`, `playlist`, `max_videos`, `time_range`, `cookies`, `network`, `js_runtime`, `platforms`;
 `PlatformsCfg` = `allow`, `deny`, `groups`, `settings`, `group_by_platform`.
+Defaults aim at quality: `download.quality: "best"`, `download.fps: null` (any), `video.fps: null` (source fps),
+`video.upscale: false` (never enlarge a smaller source), `video.crf: 18`, `video.preset: "veryslow"`,
+`video.maxrate_mbps: 0`, `video.codec: "h264"` and `video.container: "mp4"`. `formats.choose` prefers a direct
+HTTPS format over HLS/DASH at equal quality and fps (the segmented variants report inflated bitrates and throttle);
+`audio_language: null` follows `info["language"]` (the original track) instead of the highest-bitrate dub.
 
 * **Pydantic validates the file** (`pydantic.dataclasses.dataclass` + `ConfigDict(extra="forbid")`): an unknown key, a
   wrong type or an out-of-range value becomes a `ConfigError` (`parse()` wraps the `ValidationError`). Numeric fields use
@@ -387,6 +447,16 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     `clips/index.html` (a gallery that plays them in a browser). The folder is ignored by git.
     `AUTOCLIP_E2E_RESULTS`, `AUTOCLIP_E2E_URL` and `AUTOCLIP_E2E_COOKIES` override the defaults. Never mark a
     fake-based test `e2e`.
+  * E2E ladder: every manifest case downloads the first `AUTOCLIP_E2E_LEVEL * 360` seconds of its video (default
+    level 1 = six minutes; the last level is the full video) into `tests/.cache/e2e/<id>/level_<n>` (or
+    `AUTOCLIP_E2E_CACHE`), renders one short and one long clip, and writes `levels.json` so the run can compare the
+    clips with the previous level. Deeper levels reuse the cached originals. `tests/e2e/test_server_e2e.py` starts a
+    real `python -m autoclip.server` on a free port, uploads the fixture video, follows the WebSocket, downloads the
+    ZIP, probes the clip and deletes the job (localhost only).
+  * Server: `tests/unit/test_server.py` uses FastAPI's `TestClient` (the `fastapi` import is skipped only when the
+    optional extra is genuinely absent); `tests/e2e/test_server_e2e.py` is the real-process check. The module-level
+    `KEEPALIVE_SECONDS`/`EVICT_SECONDS` are patched instead of `asyncio.sleep`, `get_settings.cache_clear()` runs
+    between tests, and the auth env vars are reset so one test cannot make another public or private.
   * OS-specific logic (font folders, GPU priority per OS, cgroups) is tested by **passing the platform/paths in**
     (`font_dirs(system, env, home)`, `pick_encoder(cfg, system)`, `cgroup_*(root)`), never by running on that OS.
   * Hardware: `hardware.works` is `functools.cache`d - the test module clears it (`_fresh_probe_cache`). A software
@@ -496,6 +566,21 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     (`@pytest.mark.network`, gated by `AUTOCLIP_NETWORK_TESTS=1`, run weekly by `.github/workflows/network.yml`) and
     the CLI end-to-end cases (`@pytest.mark.e2e`, gated by `AUTOCLIP_E2E_TESTS=1`) are the checks that the real API
     still works. Keep both: never mark a fake-based test `network` or `e2e`.
+27. **Never patch `asyncio.sleep` globally in a server test.** Replacing it with a no-op starves every await in
+    `TestClient.__enter__` and the suite hangs forever instead of failing. `KEEPALIVE_SECONDS` (`routers/api.py`) and
+    `EVICT_SECONDS` (`main.py`) are module constants precisely so a test can shrink just those loops.
+28. **Starlette's test client now prefers `httpx2`.** `starlette.testclient` catches `ModuleNotFoundError` (not the
+    broader `ImportError`) when falling back to `httpx`, so a broken `httpx2` install fails loudly. `httpx>=0.27` is in
+    the `dev` extra/`requirements-dev.txt` for Python 3.10, where the newer package may not be available; the runtime
+    `server` extra does not need it.
+29. **Do not add a console span exporter to the server.** It printed every span and, once the test session closed its
+    streams, raised `ValueError: I/O operation on closed file` at shutdown. OTel is configured only when
+    `OTEL_EXPORTER_OTLP_ENDPOINT` is set; otherwise no span processor is added.
+30. **YouTube's HLS/DASH variants can throttle a range download to ~24 KB/s while looking healthy.** The old format
+    choice (`625+251`) took eight minutes for six minutes of video; the direct HTTPS VP9 variant (`313+140`) downloads
+    at normal speed. `formats._protocol_rank` therefore prefers a direct HTTP(S) format at equal quality and fps.
+    Related: `audio_language: null` must follow `info["language"]`, not the highest-bitrate track - otherwise a Malay
+    dub wins over the original English audio.
 
 ## 10. Recipes
 

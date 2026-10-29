@@ -34,6 +34,7 @@ from .harness import (
     collect_clips,
     download_config,
     downloaded_files,
+    english_subtitle,
     level_range,
     level_seconds,
     level_summary,
@@ -103,7 +104,7 @@ def test_manifest_video_renders_short_and_long_clips(
         assert 60 <= info.duration <= ladder_level * 360 + 5, (info.duration, source.name)
     # ``quality: best`` really picks a high-resolution format (the old default capped it at 480p).
     assert max(info.width, info.height) >= 720, (info.width, info.height, source.name)
-    subtitle = next(iter(sorted(source.parent.glob("*.manual.en.srt")) or sorted(source.parent.glob("*.auto.en.srt"))))
+    subtitle = english_subtitle(source)
     cues = parse_srt(subtitle.read_text(encoding="utf-8-sig"))
     assert len(cues) > 20, len(cues)
     assert 0 <= cues[0]["start"] <= 5, cues[0]

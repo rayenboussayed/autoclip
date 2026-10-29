@@ -16,6 +16,15 @@
       <button type="submit" class="btn btn-primary">Upload & process</button>
     </form>
     <div id="result" class="mt-4"></div>
+    <script>
+      // The API answers JSON; from this page, follow the new job to its progress page instead.
+      document.body.addEventListener('htmx:afterRequest', (event) => {
+        if (!event.detail.elt || event.detail.elt.id !== 'upload-form') return;
+        let data;
+        try { data = JSON.parse(event.detail.xhr.responseText); } catch (e) { return; }
+        if (data.job_id) window.location.assign('/view/jobs/' + data.job_id);
+      });
+    </script>
   </div>
 </div>
 {% endblock %}

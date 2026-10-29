@@ -465,7 +465,7 @@ class DownloadCfg(Section):
     codec: Literal["auto", "h264", "vp9", "av1", "h265"] = "auto"  # auto = h264, then vp9, av1, h265, other
     container: Literal["auto", "mp4", "mkv", "webm"] = "auto"  # auto = the format's own container
     audio_quality: Literal["best", "worst"] = "best"
-    audio_language: str | None = None  # e.g. "en"; None = the platform's default track
+    audio_language: str | None = None  # e.g. "en"; None = the video's original language
     original_dir: str | None = None  # None = <output_dir>/.work/downloads
     metadata: MetadataCfg = field(default_factory=MetadataCfg)
     subtitles: SubtitlesCfg = field(default_factory=SubtitlesCfg)

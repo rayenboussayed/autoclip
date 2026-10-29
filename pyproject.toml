@@ -20,7 +20,7 @@ denoise = ["noisereduce>=3.0"]
 enhance = ["sherpa-onnx>=1.13"]
 scenes = ["scenedetect[opencv]>=0.7"]
 server = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "jinja2>=3.1", "python-multipart>=0.0.9", "pydantic-settings>=2.4", "opentelemetry-api>=1.26", "opentelemetry-sdk>=1.26", "opentelemetry-instrumentation-fastapi>=0.47b0", "opentelemetry-exporter-otlp>=1.26", "aiofiles>=23"]
-dev = ["pytest>=8", "pytest-cov>=5", "mypy>=1.8", "ruff>=0.5", "noisereduce>=3.0", "sherpa-onnx>=1.13", "scenedetect[opencv]>=0.7"]
+dev = ["pytest>=8", "pytest-cov>=5", "mypy>=1.8", "ruff>=0.5", "noisereduce>=3.0", "sherpa-onnx>=1.13", "scenedetect[opencv]>=0.7", "fastapi>=0.115", "uvicorn[standard]>=0.30", "websockets>=12", "jinja2>=3.1", "python-multipart>=0.0.9", "pydantic-settings>=2.4", "opentelemetry-api>=1.26", "opentelemetry-sdk>=1.26", "opentelemetry-instrumentation-fastapi>=0.47b0", "opentelemetry-exporter-otlp>=1.26", "aiofiles>=23", "httpx>=0.27"]
 
 [project.scripts]
 autoclip = "autoclip.cli:main"
@@ -51,7 +51,7 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 markers = [
     "network: talks to the real internet (skipped unless AUTOCLIP_NETWORK_TESTS=1 or AUTOCLIP_E2E_TESTS=1)",
-    "e2e: runs the command line against real URLs (skipped unless AUTOCLIP_E2E_TESTS=1)",
+    "e2e: runs the command line against real URLs or starts the local server (skipped unless AUTOCLIP_E2E_TESTS=1)",
 ]
 # Capture at the Python level, not the fd level: pytest's default fd capture replaces the standard OS
 # handles, and on Windows that intermittently breaks Tcl's file-channel reads ("couldn't read file

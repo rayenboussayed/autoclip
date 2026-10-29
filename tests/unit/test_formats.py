@@ -165,6 +165,42 @@ def test_audio_language_preference_and_fallback() -> None:
     assert fallback.format_id == "v+fr" and "no audio track in language 'de'" in fallback.warnings[0]
 
 
+def test_the_original_language_beats_a_higher_bitrate_dub() -> None:
+    formats = [
+        video("v", 1920, 1080),
+        audio("en", abr=128, language="en"),
+        audio("ms", abr=142, language="ms"),
+    ]
+    choice = choose({"formats": formats, "language": "en"}, DownloadCfg())
+    assert choice.format_id == "v+en"
+    assert choice.warnings == ()
+    # An explicit request still wins over the original language.
+    assert choose({"formats": formats, "language": "en"}, DownloadCfg(audio_language="ms")).format_id == "v+ms"
+
+
+def test_an_unknown_original_language_falls_back_without_a_warning() -> None:
+    formats = [
+        video("v", 1920, 1080),
+        audio("en", abr=128, language="en"),
+        audio("fr", abr=256, language="fr"),
+    ]
+    choice = choose({"formats": formats, "language": "ja"}, DownloadCfg())
+    assert choice.format_id == "v+fr" and choice.warnings == ()
+
+
+def test_a_direct_format_beats_a_segmented_one_at_equal_quality() -> None:
+    formats = [
+        video("hls", 1920, 1080, protocol="m3u8_native", tbr=2511),
+        video("direct", 1920, 1080, protocol="https", tbr=1131),
+        video("dash", 1920, 1080, protocol="http_dash_segments", tbr=3000),
+        video("frag", 1920, 1080, protocol="websocket_frag", tbr=3000),
+    ]
+    assert pick(formats, quality="best").format_id == "direct"
+    # The protocol only breaks a tie: a better resolution still wins.
+    formats.append(video("4k-hls", 3840, 2160, protocol="m3u8_native"))
+    assert pick(formats, quality="best").format_id == "4k-hls"
+
+
 def test_audio_bitrate_falls_back_to_tbr() -> None:
     low = {"format_id": "low", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "tbr": 64}
     high = {"format_id": "high", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "tbr": 192}

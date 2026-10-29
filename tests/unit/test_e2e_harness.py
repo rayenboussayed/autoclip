@@ -287,6 +287,33 @@ def test_downloaded_files_keeps_only_media_in_the_originals_cache(tmp_path: Path
     assert list(harness.downloaded_files(case)) == []
 
 
+def test_downloaded_files_prefers_the_files_the_run_saved(tmp_path: Path) -> None:
+    case = make_case(tmp_path)
+    folder = case.directory / "out" / ".work" / "downloads"
+    folder.mkdir(parents=True)
+    stale = folder / "video [id] [270+140] [0-360s].mp4"
+    fresh = folder / "video [id] [137+140] [0-360s].mp4"
+    stale.write_text("x", encoding="utf-8")
+    fresh.write_text("x", encoding="utf-8")
+    (folder / "video [id] [137+140] [0-360s].auto.en.srt").write_text("x", encoding="utf-8")
+    case.stdout = f"08:25:12 | saved {fresh} (youtube)\n08:25:12 | finished: 1 original(s) downloaded, 0 URL(s) failed\n"
+    assert harness.downloaded_files(case) == [fresh]
+
+    # A saved path that no longer exists (or is not media) falls back to the cache folder.
+    case.stdout = "08:00:00 | saved missing.mp4 (youtube)\n"
+    assert {path.name for path in harness.downloaded_files(case)} == {stale.name, fresh.name}
+
+
+def test_english_subtitle_matches_the_original_itself_in_a_shared_cache(tmp_path: Path) -> None:
+    first = tmp_path / "video [id] [137+140].mp4"
+    second = tmp_path / "video [id] [270+140].mp4"
+    first.write_text("x", encoding="utf-8")
+    second.write_text("x", encoding="utf-8")
+    first.with_suffix(".auto.en.srt").write_text("first", encoding="utf-8")
+    second.with_suffix(".auto.en.srt").write_text("second", encoding="utf-8")
+    assert harness.english_subtitle(second).read_text(encoding="utf-8") == "second"
+
+
 def test_english_subtitle_prefers_a_manual_file_and_ignores_other_languages(tmp_path: Path) -> None:
     media = tmp_path / "video [id] [270+140].mp4"
     media.write_text("x", encoding="utf-8")

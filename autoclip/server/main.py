@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .. import __version__
 from .config import get_settings
 from .progress import progress_manager
 from .routers import api, view
@@ -22,14 +23,14 @@ try:
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
     settings = get_settings()
     provider = TracerProvider(resource=Resource.create({"service.name": "autoclip-server"}))
+    # Export only when a collector is configured: the console exporter would print every span (and
+    # fail noisily once the process closes its streams).
     if settings.otp_endpoint:
         provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=settings.otp_endpoint)))
-    else:
-        provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
     trace.set_tracer_provider(provider)
     _OTEL_AVAILABLE = True
 except Exception:
@@ -58,7 +59,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="autoclip server", version="2.2.0", lifespan=lifespan)
+    app = FastAPI(title="autoclip server", version=__version__, lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=os.environ.get("CORS_ALLOW_ORIGINS", "*").split(","),

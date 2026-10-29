@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import json
 import logging
 import os
 import zipfile
@@ -12,7 +14,7 @@ from ..core.hardware import pick_encoder
 from ..core.media import probe
 from ..core.models import RenderJob
 from ..core.moments import energy_track, select_moments
-from ..core.pipeline import needs_text, ranges_moments
+from ..core.pipeline import needs_text, ranges_moments, split_video
 from ..core.render import canvas_size, estimate_render_bytes
 from ..core.resources import RESOURCES
 from ..core.runner import render_all
@@ -20,14 +22,13 @@ from ..core.store import Cache, Store
 from ..core.transcript import get_transcript
 from .config import get_settings
 from .progress import progress_manager
+from .schemas import JobState
 from .state import Job
 
 log = logging.getLogger("autoclip.server")
 
 
 def _publish(job: Job, step: str, message: str, percent: float, state: str | None = None) -> None:
-    from .schemas import JobState
-
     job.update(step=step, message=message, percent=percent, state=JobState(state) if state else None)
     progress_manager.publish(
         job.job_id,
@@ -76,10 +77,8 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
                 out = job.output_dir / "long" / job.input_path.stem
                 out.mkdir(parents=True, exist_ok=True)
                 _publish(job, "rendering", "Splitting video", 50.0)
-                from ..core.pipeline import split_video
-
                 parts = split_video(job.input_path, out, cc.split_seconds, info.duration, job.input_path.stem)
-                (out / "clips.json").write_text(__import__("json").dumps([p.name for p in parts], indent=2), encoding="utf-8")
+                (out / "clips.json").write_text(json.dumps([p.name for p in parts], indent=2), encoding="utf-8")
                 job.outputs = parts
                 _publish(job, "completed", "Done", 100.0, state="completed")
                 return
@@ -147,7 +146,7 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
                 done = [r for r in rows if r["kind"] == kind and r["status"] == "done"]
                 summary = [{k: (round(r[k], 2) if isinstance(r[k], float) else r[k]) for k in keys} for r in done]
                 (job.output_dir / kind / job.input_path.stem / "clips.json").write_text(
-                    __import__("json").dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
+                    json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
                 )
             job.outputs = [p for p in job.output_dir.rglob("*.mp4") if ".work" not in p.relative_to(job.output_dir).parts]
             failed = sum(r["status"] != "done" for r in rows)
@@ -157,25 +156,28 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
             else:
                 _publish(job, "completed", "Done", 100.0, state="completed")
         finally:
-            import contextlib
-
             with contextlib.suppress(Exception):
                 cache.close()
             with contextlib.suppress(Exception):
                 store.close()
     except Exception as e:
-        job.update(state=__import__("autoclip.server.schemas", fromlist=["JobState"]).JobState.failed, error=str(e))
+        job.update(state=JobState.failed, error=str(e))
         _publish(job, "failed", str(e), 100.0, state="failed")
         log.exception("server job %s failed", job.job_id)
 
 
 def zip_outputs(job: Job) -> Path:
+    """Archive a finished job, mirroring its output folder (clips, sidecars and every ``clips.json``).
+
+    The work folder is left out: it holds the database and the transcript cache, which a downloader
+    does not need. Keeping the relative paths avoids two ``clips.json`` files (one per kind) colliding
+    when the same source produced both a short and a long clip.
+    """
     settings = get_settings()
     zip_path = settings.cache_dir / f"{job.job_id}.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for path in job.outputs:
-            zf.write(path, arcname=path.name)
-        # include clips.json sidecars
-        for path in job.output_dir.rglob("clips.json"):
-            zf.write(path, arcname=f"{path.parent.name}/clips.json")
+        for path in sorted(job.output_dir.rglob("*")):
+            relative = path.relative_to(job.output_dir)
+            if path.is_file() and ".work" not in relative.parts:
+                zf.write(path, arcname=str(relative))
     return zip_path

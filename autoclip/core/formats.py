@@ -127,6 +127,17 @@ def _container_rank(fmt: dict[str, Any], container: str) -> int:
     return 0 if str(fmt.get("ext") or "").lower() in CONTAINER_EXT[container] else 1
 
 
+def _protocol_rank(fmt: dict[str, Any]) -> int:
+    """0 for a direct download, 1 for a segmented one (HLS/DASH).
+
+    YouTube hands out an m3u8 variant next to the direct one for the same resolution. The segmented
+    variant reports an inflated bitrate (the fragments' peak) and throttles badly on a range download,
+    so a direct URL wins whenever quality and fps are equal.
+    """
+    protocol = str(fmt.get("protocol") or "").lower()
+    return 1 if any(part in protocol for part in ("m3u8", "dash", "frag")) else 0
+
+
 def _audio_rank(fmt: dict[str, Any], cfg: DownloadCfg) -> tuple[float, int, str]:
     """Sort key for an audio format (smaller is better)."""
     bitrate = _num(fmt.get("abr") or fmt.get("tbr"))
@@ -147,18 +158,24 @@ def _language_matches(fmt: dict[str, Any], language: str) -> bool:
     return bool(value) and (value == language or value.startswith((language + "-", language + "_")))
 
 
-def _pick_audio(formats: list[dict[str, Any]], cfg: DownloadCfg) -> tuple[dict[str, Any] | None, list[str]]:
-    """The best (or worst) audio-only format, preferring the requested language."""
+def _pick_audio(formats: list[dict[str, Any]], cfg: DownloadCfg, language: str) -> tuple[dict[str, Any] | None, list[str]]:
+    """The best (or worst) audio-only format, preferring the requested or original language.
+
+    ``language`` is the original audio language of the video (``info["language"]``). It is only a
+    fallback for when ``audio_language`` is not set: a dubbed track must never win merely because
+    it has a slightly higher bitrate.
+    """
     audios = _audio_formats(formats)
     if not audios:
         return None, []
     warnings: list[str] = []
-    language = (cfg.audio_language or "").strip().lower()
-    if language:
-        matching = [f for f in audios if _language_matches(f, language)]
+    wanted = (cfg.audio_language or "").strip().lower()
+    preferred = wanted or language
+    if preferred:
+        matching = [f for f in audios if _language_matches(f, preferred)]
         if matching:
             audios = matching
-        else:
+        elif wanted:
             warnings.append(f"no audio track in language {cfg.audio_language!r}; using the default")
     return min(audios, key=lambda f: _audio_rank(f, cfg)), warnings
 
@@ -203,9 +220,10 @@ def choose(info: dict[str, Any], cfg: DownloadCfg) -> Choice:
     """
     formats = [f for f in info.get("formats") or [] if isinstance(f, dict)]
     videos = _video_formats(formats)
+    language = str(info.get("language") or "").strip().lower()
     warnings: list[str] = []
     if not videos:
-        audio, audio_warnings = _pick_audio(formats, cfg)
+        audio, audio_warnings = _pick_audio(formats, cfg, language)
         if audio is None:
             raise DownloadError("the URL offers no downloadable video or audio format")
         return Choice(str(audio.get("format_id") or "best"), tuple(audio_warnings), has_video=False)
@@ -219,6 +237,7 @@ def choose(info: dict[str, Any], cfg: DownloadCfg) -> Choice:
         key=lambda f: (
             *_quality_key(f, cfg),
             *_fps_key(f, cfg),
+            _protocol_rank(f),
             CODEC_RANK.get(_codec(f), 4) if cfg.codec == "auto" else 0,
             _container_rank(f, cfg.container),
             -_num(f.get("tbr")),
@@ -229,7 +248,7 @@ def choose(info: dict[str, Any], cfg: DownloadCfg) -> Choice:
     warnings.extend(_fps_warnings(best, cfg))
     format_id = str(best.get("format_id") or "best")
     if str(best.get("acodec") or "").lower() == "none":
-        audio, audio_warnings = _pick_audio(formats, cfg)
+        audio, audio_warnings = _pick_audio(formats, cfg, language)
         warnings.extend(audio_warnings)
         if audio is None:
             warnings.append("the chosen video format has no audio track")

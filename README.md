@@ -29,6 +29,9 @@ the config file**:
   a missing file is fine - the built-in defaults are kept in memory (no dialog, nothing written) until
   you press *Save config*, *Save as...* or *Run*; a broken config resets the form to the defaults
   without overwriting the file;
+- drag video files onto the **Videos** list to add them (when `tkinterdnd2` is installed; otherwise the
+  *Add videos...* button does the same), and drag the divider above the log to make the log pane as
+  tall or short as you need;
 - *Copy error* and *Copy log* in the log header put the last error (or the whole log) on the clipboard;
 - `AUTOCLIP_DEBUG=1` makes an unexpected window error print its traceback, close the window and
   re-raise it (the default keeps Tk's error dialog).
@@ -106,8 +109,10 @@ same pipeline as a local file:
 
 * **Quality and format:** `quality` is a short side in pixels (144-4320) or `"best"`/`"worst"`; `fps`
   (`null` = any), `codec` (`auto`, `h264`, `vp9`, `av1`, `h265`), `container` (`auto`, `mp4`, `mkv`,
-  `webm`; a preference, not a forced remux) and `audio_quality`/`audio_language`. `prefer` is
-  `closest` (default), `at_most` or `at_least`, and applies to quality and fps.
+  `webm`; a preference, not a forced remux) and `audio_quality`/`audio_language` (`null` keeps the
+  video's original language, so a dub never wins on bitrate alone). `prefer` is `closest` (default),
+  `at_most` or `at_least`, and applies to quality and fps. A direct download beats an HLS/DASH variant
+  with the same quality and fps: the segmented one reports an inflated bitrate and throttles badly.
 * **Originals** are kept in `{output_dir}/.work/downloads/` (or `download.original_dir`) and reused
   by later runs; the clip folders stay clips-only. The output name is `<title> [<video id>]`, and a
   time range adds `[<start>-<end>]`.
@@ -138,6 +143,52 @@ same pipeline as a local file:
   `--allow a,b` and `--deny c` override the loaded lists for one run. Inspection modes create no
   folders and configure no logging. A run with only local files never imports yt-dlp and makes no
   network request.
+
+## HTTP server (optional)
+
+The same pipeline runs as a small FastAPI service for a web front end or another program: upload a
+video, follow the steps over a WebSocket, then download a ZIP with the clips, their `.srt`/`.jpg`
+sidecars and every `clips.json` (relative paths mirror the output folder, so the two indexes of a
+short and a long clip do not collide). The service calls the pipeline stages one by one (probe,
+transcript, selection, render) so progress is visible while the job runs; it is stateless apart from
+the render cache on disk.
+
+```bash
+pip install -e ".[server]"
+python -m autoclip.server              # http://127.0.0.1:8000/view/  (HTML) and /docs (OpenAPI)
+# or
+docker compose up --build
+```
+
+| endpoint | what it does |
+| --- | --- |
+| `GET /view/` | the HTML upload page (Jinja2 + HTMX + DaisyUI) |
+| `GET /view/jobs/{job_id}` | the job page with progress and the clip links |
+| `POST /api/jobs` | multipart upload: `file` plus an optional `config_json` string or `config` JSON file |
+| `GET /api/jobs/{job_id}` | state (`queued`/`running`/`completed`/`failed`), step, percent, error, outputs |
+| `GET /api/jobs/{job_id}/download` | a ZIP of the finished clips and their sidecars |
+| `DELETE /api/jobs/{job_id}` | remove the job and its files |
+| `WS /api/jobs/{job_id}/ws` | the current snapshot, then every step/percent update (plus keepalive frames) |
+
+The uploaded config keeps every option (clip length, scenes, captions, quality, ...); `input` and
+`output_dir` are ignored because the server owns the uploaded file and the job folder. The defaults
+are the same as the command line - notably `download.quality: "best"`, source fps, no upscaling and
+`video.crf: 18`/`preset: "veryslow"` - so a server job produces the highest-quality clips unless the
+config asks for something else.
+
+| environment variable | default | meaning |
+| --- | --- | --- |
+| `HOST` / `PORT` | `0.0.0.0` / `8000` | where uvicorn listens |
+| `MAX_FILE_SIZE` | `1073741824` (1 GiB) | larger uploads get HTTP 413 |
+| `MAX_CONCURRENT_JOBS` | `2` | renders running at once (the rest wait in the queue) |
+| `OUTPUT_DIR` / `CACHE_DIR` | `.server/outputs` / `.server/cache` | jobs, work folders and ZIPs |
+| `JOB_TTL_SECONDS` | `3600` | expired jobs are evicted in the background |
+| `AUTH_USERNAME` / `AUTH_PASSWORD` | empty | HTTP Basic auth **only when both are set**; otherwise the API is public |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | export OpenTelemetry spans to a collector (none are exported when unset) |
+
+If auth is enabled, the WebSocket takes the same credentials as `?token=<user>:<password>` (put the
+server behind HTTPS when it is reachable from outside). The Docker image installs ffmpeg and the
+`server` extra; `docker-compose.yml` mounts two named volumes and reads the same variables.
 
 ## Where the work runs
 `compute.device` decides whether the GPU is used at all:
@@ -357,21 +408,38 @@ inspected without opening the nested case folders. The folder is ignored by git.
 `AUTOCLIP_E2E_TESTS=1` also enables the `network` tests; `AUTOCLIP_NETWORK_TESTS=1` alone does not
 run the e2e cases.
 
+The manifest cases walk a **download ladder**: each level keeps the first six minutes of every video,
+and every extra level adds six minutes (`AUTOCLIP_E2E_LEVEL`, default `1`; the last level is the full
+video). Originals live in `tests/.cache/e2e/` (or `AUTOCLIP_E2E_CACHE`), so a deeper level reuses what
+an earlier one downloaded instead of starting over, and `levels.json` compares the clips of a level
+with the previous one so a quality regression is visible in the results. Use `AUTOCLIP_E2E_LEVEL=3`
+for eighteen-minute sources, or a high level to reach the full videos.
+
+`tests/e2e/test_server_e2e.py` starts the real server (`python -m autoclip.server`) on a free port,
+uploads the generated fixture video, follows the WebSocket, downloads the ZIP, probes the rendered
+clip and deletes the job - no network needed beyond localhost. It runs with the other `e2e` cases:
+
+```bash
+AUTOCLIP_E2E_TESTS=1 pytest tests/e2e/test_server_e2e.py -m e2e --no-cov
+```
+
 The `e2e` GitHub workflow runs the end-to-end cases by hand (Actions -> e2e -> Run workflow) and keeps
 `tests/results/` as a downloadable artifact; `network.yml` runs the downloader checks weekly.
 
-The package has three parts:
+The package has four parts:
 
 ```
 autoclip/
   core/   the engine: config, media, audio, transcript, moments, captions, render, runner, store
   cli/    the command line: python -m autoclip config.json
   app/    the desktop app:  python -m autoclip.app   (Tk, native look)
+  server/ the optional HTTP/WebSocket service: python -m autoclip.server
 ```
 
-`core` knows nothing about a user interface; the CLI and the app are thin layers on top of it, and
-the app keeps its behaviour (reading and writing the config, starting and stopping the pipeline) in
-`app/session.py`, so it can be tested without a display.
+`core` knows nothing about a user interface; the CLI, the app and the server are thin layers on top of
+it, and the app keeps its behaviour (reading and writing the config, starting and stopping the
+pipeline) in `app/session.py`, so it can be tested without a display. The server imports FastAPI only
+when it is used, because the runtime `server` extra is optional.
 
 `tools/compare_stt.py` compares transcription models and enhancement backends on one scene of a video:
 

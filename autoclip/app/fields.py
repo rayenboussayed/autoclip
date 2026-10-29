@@ -173,10 +173,10 @@ DOWNLOAD = Section(
             "download.audio_language",
             "Audio language",
             "str",
-            "The language of the audio track, for example `en`; empty takes the platform's default.",
-            "A video with several audio tracks may default to one you do not want.",
+            "The language of the audio track, for example `en`; empty keeps the video's original language.",
+            "A video with several audio tracks may otherwise give you a dub you do not want.",
             "Only for videos with more than one track.",
-            placeholder="platform default",
+            placeholder="original language",
             advanced=True,
         ),
         _o(
