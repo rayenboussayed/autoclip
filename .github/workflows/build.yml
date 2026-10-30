@@ -17,6 +17,8 @@ on:
       - "snapcraft.yaml"
       - ".github/workflows/build.yml"
       - "pyproject.toml"
+      - "install.sh"
+      - "install.ps1"
 
 concurrency:
   group: build-${{ github.ref }}
@@ -135,8 +137,11 @@ jobs:
       - name: Install the package and PyInstaller
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . "pyinstaller>=6.10"
+          python -m pip install -e ".[server]" "pyinstaller>=6.10"
       - name: Build the standalone app
+        env:
+          # a release build must contain the server pages: the spec re-raises when they are missing
+          AUTOCLIP_REQUIRE_SERVER: "1"
         run: python -m PyInstaller autoclip.spec --noconfirm --clean
       - name: Check the binary
         shell: bash
@@ -169,6 +174,32 @@ jobs:
           JSON
           "$BIN" build-run.json
           ls build-out/short/build-check/*.mp4
+      - name: Check the frozen server serves the pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="dist/autoclip/autoclip"
+          [ -x "$BIN" ] || BIN="dist/autoclip/autoclip.exe"
+          PORT=8123
+          # the first launch of a PyInstaller folder can take a while on a cold runner
+          "$BIN" serve --host 127.0.0.1 --port "$PORT" >server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:$PORT/view/" >/dev/null 2>&1; then
+              echo "the frozen server serves /view/"
+              exit 0
+            fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "::error file=autoclip.spec::the frozen server exited before answering /view/"
+              cat server.log
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "::error file=autoclip.spec::the frozen server did not answer /view/ within 60 s"
+          cat server.log
+          exit 1
       - name: Build the AppImage (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -234,7 +265,10 @@ jobs:
     permissions:
       actions: read
       contents: write
+      id-token: write
+      attestations: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -249,13 +283,24 @@ jobs:
               *-packages)
                 cp "$dir"/* "$here"/
                 ;;
-              *)
-                # the artifact holds the contents of dist/, so autoclip/ is at its root
+              *-windows-*)
+                # install.ps1 downloads autoclip-windows-x64.zip
                 (cd "$dir" && zip -qr "$here/$name.zip" autoclip)
+                ;;
+              *)
+                # install.sh downloads autoclip-<target>.tar.gz
+                (cd "$dir" && tar -czf "$here/$name.tar.gz" autoclip)
                 ;;
             esac
           done
+          # both installers verify the archive against SHA256SUMS; ship the scripts themselves too
+          cp install.sh install.ps1 "$here"/
+          (cd "$here" && sha256sum *.tar.gz *.zip *.AppImage *.snap install.sh install.ps1 > SHA256SUMS)
           ls -la release
+      - name: Attest the release assets
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release/*
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -272,3 +317,82 @@ jobs:
           fi
           gh release upload "$TAG" release/* --clobber
           gh release edit "$TAG" --draft=false
+
+  installers:
+    name: installers-${{ matrix.name }}
+    needs: [check, build]
+    if: needs.check.outputs.build == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            artifact: autoclip-linux-x64
+            target: linux-x64
+          - name: windows-x64
+            os: windows-latest
+            artifact: autoclip-windows-x64
+            target: windows-x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+      - name: Package, serve and run install.sh
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p serve
+          # install.sh extracts autoclip/ into its app folder
+          tar -czf "serve/${{ matrix.artifact }}.tar.gz" -C dist autoclip
+          cp install.sh serve/
+          (cd serve && sha256sum "${{ matrix.artifact }}.tar.gz" > SHA256SUMS)
+          python -m http.server 8765 --bind 127.0.0.1 --directory serve >server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -fsS "http://127.0.0.1:8765/SHA256SUMS" >/dev/null 2>&1 && break
+            sleep 1
+          done
+          AUTOCLIP_BASE_URL="http://127.0.0.1:8765" \
+            AUTOCLIP_TARGET="${{ matrix.target }}" \
+            AUTOCLIP_HOME="$PWD/installed" \
+            AUTOCLIP_BIN_DIR="$PWD/bin" \
+            sh serve/install.sh
+          "$PWD/bin/autoclip" --version
+      - name: Package, serve and run install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force serve | Out-Null
+          # install.ps1 extracts autoclip/ into its app folder
+          Compress-Archive -Path dist/autoclip -DestinationPath "serve/${{ matrix.artifact }}.zip" -Force
+          Copy-Item install.ps1 serve/
+          $hash = (Get-FileHash "serve/${{ matrix.artifact }}.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.artifact }}.zip" | Set-Content serve/SHA256SUMS -Encoding ascii
+          $server = Start-Process python -ArgumentList "-m","http.server","8765","--bind","127.0.0.1","--directory","serve" -PassThru -WindowStyle Hidden
+          try {
+            $ready = $false
+            foreach ($attempt in 1..30) {
+              try {
+                Invoke-WebRequest "http://127.0.0.1:8765/SHA256SUMS" -UseBasicParsing | Out-Null
+                $ready = $true
+                break
+              } catch {
+                Start-Sleep -Seconds 1
+              }
+            }
+            if (-not $ready) { throw "the local asset server did not start" }
+            $env:AUTOCLIP_BASE_URL = "http://127.0.0.1:8765"
+            $env:AUTOCLIP_HOME = Join-Path $PWD "installed"
+            & ./serve/install.ps1
+            $exe = Join-Path $env:AUTOCLIP_HOME "app/autoclip.exe"
+            & $exe --version
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
