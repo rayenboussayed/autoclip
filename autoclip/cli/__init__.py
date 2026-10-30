@@ -288,7 +288,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     if cmd == "download":
         return _run_command(["--download-only", *rest])
     if cmd in ("-h", "--help"):
-        print("autoclip: run|serve|gui|init|doctor|models|download")
+        print("autoclip commands (run `autoclip <command> --help` for details):")
+        for name, help_text in (
+            ("run", "run the pipeline for a config file"),
+            ("serve", "run the optional HTTP / WebSocket service"),
+            ("gui", "open the desktop app"),
+            ("init", "write a starter config file"),
+            ("doctor", "diagnose the setup and exit 0 (OK) or 1 (NOT READY)"),
+            ("models", "list or pull Whisper models"),
+            ("download", "download the URLs of `input` and stop"),
+        ):
+            print(f"  {name:<10} {help_text}")
+        print("legacy form `autoclip [config.json]` still works (equivalent to `autoclip run`)")
         return 0
     if cmd == "--version":
         print(f"autoclip {__version__}")

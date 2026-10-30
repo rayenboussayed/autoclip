@@ -53,8 +53,13 @@ def _init(rest: Sequence[str]) -> int:
     ap.add_argument("--full", action="store_true")
     args = ap.parse_args(rest)
     from ..cli import init_config
+    from ..core.errors import ConfigError
 
-    init_config(args.config or Path("config.json"), args.full)
+    try:
+        init_config(args.config or Path("config.json"), args.full)
+    except (ConfigError, OSError) as e:
+        print(f"error: {e}")
+        return 2
     return 0
 
 
