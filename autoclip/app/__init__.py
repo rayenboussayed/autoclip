@@ -10,12 +10,28 @@ line and this package can still be imported.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
 
 def launch(config_path: Path | None = None) -> int:
-    """Open the desktop app (returns the exit status of the app)."""
+    """Open the desktop app (returns the exit status of the app).
+
+    A missing tkinter is reported before the console is hidden: the error has to stay visible.
+    """
+    try:
+        import tkinter  # noqa: F401
+    except ImportError:
+        print(
+            "error: the desktop app needs tkinter (install python3-tk, or use the command line)",
+            file=sys.stderr,
+        )
+        return 2
+
+    from .console import hide_console
+
+    hide_console()  # a frozen Windows launch owns a console it does not need (best effort)
     from .window import launch as _launch
 
     return _launch(config_path)

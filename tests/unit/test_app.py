@@ -437,6 +437,43 @@ def test_the_package_launches_the_window(monkeypatch: pytest.MonkeyPatch) -> Non
     assert called == [Path("x.json")]
 
 
+def test_the_console_is_hidden_before_the_window_opens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A frozen Windows launch hides its console only once the app can really open."""
+    import autoclip.app as app_pkg
+
+    order: list[str] = []
+
+    def fake_hide() -> bool:
+        order.append("console")
+        return True
+
+    def fake_launch(path: Path | None) -> int:
+        order.append("window")
+        return 0
+
+    monkeypatch.setattr("autoclip.app.console.hide_console", fake_hide)
+    monkeypatch.setattr("autoclip.app.window.launch", fake_launch)
+    assert app_pkg.launch(None) == 0
+    assert order == ["console", "window"]
+
+
+def test_a_machine_without_tkinter_gets_a_visible_error(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """The error is printed before hiding the console, so the user can still read it."""
+    import autoclip.app as app_pkg
+
+    hidden: list[bool] = []
+
+    def fake_hide() -> bool:
+        hidden.append(True)
+        return True
+
+    monkeypatch.setattr("autoclip.app.console.hide_console", fake_hide)
+    monkeypatch.setitem(sys.modules, "tkinter", None)
+    assert app_pkg.launch(None) == 2
+    assert hidden == []
+    assert "tkinter" in capsys.readouterr().err
+
+
 def test_the_package_exposes_the_window_class() -> None:
     """``AutoclipApp`` is reachable without importing tkinter by hand."""
     import autoclip.app as app_pkg

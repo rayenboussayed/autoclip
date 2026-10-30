@@ -1,7 +1,7 @@
 # autoclip
 
 Cut long videos into the best **short** and **long** clips (TikTok / Reels / Shorts and YouTube-style highlights).
-Free, local, one command. Runs on **Linux, macOS and Windows** (Python 3.10+). No system ffmpeg needed.
+Free, local, one command. Runs on **Linux, macOS and Windows** (Python 3.11+). No system ffmpeg needed.
 
 ```bash
 pip install -r requirements.txt
@@ -316,13 +316,27 @@ To build it yourself (for the machine you are on):
 ```bash
 python -m pip install -e . "pyinstaller>=6.10"
 python -m PyInstaller autoclip.spec --noconfirm
-./dist/autoclip/autoclip --gui          # the desktop app
-./dist/autoclip/autoclip config.json    # the command line
+./dist/autoclip/autoclip              # the desktop app (no argument)
+./dist/autoclip/autoclip --gui        # the same, explicitly
+./dist/autoclip/autoclip config.json  # the command line
 ```
 
 `dist/autoclip/` holds the program and everything it needs, ffmpeg included. It is a folder and
 not a single file because the program is big (numpy, OpenCV, the Whisper runtime and ffmpeg are
 inside it) and a folder starts much faster.
+
+Every standalone binary follows one rule: **without an argument it opens the desktop app, with one
+it runs the command line** - so `autoclip config.json`, `autoclip run`, `autoclip --gui`, `--help`
+and the rest work unchanged. On Windows a double-click opens a console first; the app hides it when
+it is the only program using it (a launch from an existing terminal leaves that terminal alone),
+because the command line still needs its output. Windows Terminal may keep its window visible; the
+app opens anyway. On macOS the zip contains the `autoclip` folder, not an `.app`: open
+`autoclip/autoclip` from Finder (Terminal starts, then the window opens); Gatekeeper still applies
+to an unsigned download.
+
+`python -m autoclip` keeps its old rule: with no arguments it runs `./config.json` or
+`./input.mp4`. That rule belongs to the command line; the no-argument desktop app is the convention
+of the packaged binary.
 
 The optional extras - the speech enhancement and the spectral denoising - are not in the binary:
 they are optional, the app works without them, and they would make it noticeably bigger.

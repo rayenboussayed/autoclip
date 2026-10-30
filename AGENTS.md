@@ -62,6 +62,7 @@ the version skips the build; a pull request builds without releasing.
 ```
 autoclip/
   __main__.py     python -m autoclip entry (freeze_support for frozen Windows builds)
+  frozen.py       the one-file build: no argument -> desktop app, any argument -> command line
   core/           THE ENGINE - no user interface, heavy imports stay inside functions
     config.py       typed config dataclasses (Pydantic validates them), strict loader, input globbing + URLs
     platforms.py    download policy: extractor families, built-in/user groups, allow/deny, per-platform settings
@@ -116,7 +117,8 @@ snapcraft.yaml    the snap: the same build as a snap (linux, amd64 + arm64)
 Dockerfile        the server image (python:3.12-slim + ffmpeg + the `server` extra)
 docker-compose.yml  the same image with volumes and the environment variables
 assets/           the icon and the desktop file of the AppImage and the snap
-tools/            frozen_entry.py - the entry point of the frozen build (a frozen __main__ has no package around it)
+tools/            frozen_entry.py - the frozen build's entry point: freeze_support, then autoclip.frozen.main
+                  (a frozen __main__ has no package around it)
                   make_appimage.py - builds the AppDir and the AppImage from the PyInstaller build
                   make_icon.py     - draws the icon (assets/autoclip.png)
                   compare_stt.py   - development aid: STT models x enhancement backends on one scene
@@ -124,7 +126,7 @@ tools/            frozen_entry.py - the entry point of the frozen build (a froze
 docs/             stt-comparison.md - the measured comparison of transcription models and denoisers
 AGENTS.md        this file (guidance for coding agents)
 pyproject.toml    deps, ruff, mypy(strict), pytest(+coverage gate, `network` marker), coverage(multiprocessing)
-.github/workflows/ci.yml       ubuntu/macos/windows x py3.10/3.12, then re-run with Pillow>=12.3
+.github/workflows/ci.yml       ubuntu/macos/windows x py3.11/3.12/3.13, then re-run with Pillow>=12.3
 .github/workflows/network.yml  weekly (and manual) real-platform downloader tests
 .github/workflows/e2e.yml      manual command-line end-to-end runs (results uploaded as an artifact)
 ```
@@ -146,6 +148,7 @@ download          <- config, errors, formats, log, media, models, platforms
 transcript, moments, captions, render <- the layers above
 runner            <- hardware, log, models, render, resources, store
 pipeline          <- everything of the engine (the per-video run)
+frozen            <- app, cli (both imported inside main: the entry point of the one-file build)
 cli               <- core.pipeline, core.download, core.config, core.errors, core.hardware, core.log, core.resources
 app               <- core.config, core.errors (+ tkinter)
 server            <- core.config, core.hardware, core.media, core.moments, core.pipeline, core.render, core.runner,
@@ -521,8 +524,9 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 15. **Do not use `caplog` for CLI tests** (see section 8) and do not call `setup_logging` in library code.
 16. **Config key names matter:** `scenes` = scene types; `snap_to_cuts` = shot-change snapping. Do not reintroduce `style` or `snap_scenes`.
 17. **A frozen build has no Python and no package.** `tools/frozen_entry.py` is its entry point (a frozen
-    `__main__` cannot use a relative import), and the app runs *itself* for a pipeline
-    (`session.pipeline_command` checks `sys.frozen`) instead of `python -m autoclip`. The bundle is a
+    `__main__` cannot use a relative import); it only calls `autoclip.frozen.main`, where no argument opens
+    the desktop app and any argument runs the command line. The app runs *itself* for a pipeline
+    (`core.process.pipeline_command` checks `sys.frozen`) instead of `python -m autoclip`. The bundle is a
     folder, not a single file: numpy, OpenCV, the Whisper runtime and ffmpeg are big and a folder
     starts much faster. The optional extras are not bundled - the app degrades gracefully without them.
 18. **The Linux packages wrap the same build.** The AppImage and the snap do not compile anything:
@@ -581,6 +585,15 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     at normal speed. `formats._protocol_rank` therefore prefers a direct HTTP(S) format at equal quality and fps.
     Related: `audio_language: null` must follow `info["language"]`, not the highest-bitrate track - otherwise a Malay
     dub wins over the original English audio.
+31. **A frozen Windows launch hides its console, it does not detach it.** The binary is a console program because
+    the command line needs stdout, so a double-click opens a console before the app appears. `app.console.hide_console`
+    only calls `ShowWindow(SW_HIDE)`, and only when `GetConsoleProcessList` returns 1 (this process is the sole user;
+    a terminal launch also lists the shell). Detaching (`FreeConsole`) would close the handles the workers write to and
+    would give console-subsystem children a new visible console; it also does not reliably close a Windows Terminal tab.
+    The handle from `GetConsoleWindow` is pointer-sized (`restype = c_void_p`): truncated to 32 bits it hides nothing on
+    64-bit Windows. The tkinter check runs before hiding, so a missing toolkit still produces a readable error. Windows
+    Terminal may ignore the request - the app still opens. Unit tests use a fake `ctypes.windll`; real Windows
+    behaviour is not verified in this sandbox.
 
 ## 10. Recipes
 

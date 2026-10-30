@@ -34,6 +34,7 @@ HIDDEN = [
     "autoclip.core.hardware",
     "autoclip.core.media",
     "autoclip.core.store",
+    "autoclip.frozen",
     "autoclip.cli",
     "autoclip.cli.subcommands",
     "faster_whisper",
@@ -50,6 +51,7 @@ HIDDEN = [
 if not HEADLESS:
     HIDDEN += [
         "autoclip.app",
+        "autoclip.app.console",
         "autoclip.app.window",
         "autoclip.app.form",
         "autoclip.app.session",

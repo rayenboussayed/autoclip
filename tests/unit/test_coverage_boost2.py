@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import queue
 import subprocess
 import time
 from pathlib import Path
@@ -14,18 +15,17 @@ from autoclip.app.session import PipelineHandle, _QueueHandler, cancel_pipeline,
 from autoclip.core.events import Cancelled, CancelToken
 
 
+class RaisingQueue(queue.Queue[str]):
+    """A GUI queue that always fails, like one whose window is gone."""
+
+    def put(self, item: str, block: bool = True, timeout: float | None = None) -> None:
+        raise RuntimeError("boom")
+
+
 def test_queue_handler_emit_exception() -> None:
-    q: Any = []
-    _QueueHandler(q) if False else None
-
-    # build a real queue handler on a fake queue object that raises on put
-    class Q:
-        def put(self, x: str) -> None:
-            raise RuntimeError("boom")
-
     hh = _QueueHandler.__new__(_QueueHandler)
     logging.Handler.__init__(hh)
-    hh.queue = Q()
+    hh.queue = RaisingQueue()
     rec = logging.LogRecord("a", logging.INFO, "f", 1, "msg", (), None)
     hh.emit(rec)  # should not raise
 
@@ -62,7 +62,7 @@ def test_run_pipeline_downloader_config_error(media: Any, tmp_path: Path, monkey
     p.write_text(_json.dumps(asdict(cfg)), encoding="utf-8")
 
     class FakeDL:
-        def __init__(self, *a, **k):
+        def __init__(self, *a: Any, **k: Any) -> None:
             raise __import__("autoclip.core.errors", fromlist=["ConfigError"]).ConfigError("bad cfg")
 
     monkeypatch.setattr("autoclip.core.download.Downloader", FakeDL)
@@ -86,10 +86,10 @@ def test_run_pipeline_downloader_autoclip_error(media: Any, tmp_path: Path, monk
     p.write_text(_json.dumps(asdict(cfg)), encoding="utf-8")
 
     class FakeDL:
-        def __init__(self, *a, **k):
+        def __init__(self, *a: Any, **k: Any) -> None:
             pass
 
-        def download(self, *a, **k):
+        def download(self, *a: Any, **k: Any) -> None:
             from autoclip.core.errors import AutoclipError
 
             raise AutoclipError("boom")
@@ -148,7 +148,7 @@ def test_unique_name_duplicate() -> None:
     assert _unique_name("foo", used) == "foo (3)"
 
 
-def test_window_drain_when_destroyed(tmp_path, monkeypatch):
+def test_window_drain_when_destroyed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from autoclip.app.window import AutoclipApp
 
     app = AutoclipApp(tmp_path / "x.json")
@@ -160,17 +160,9 @@ def test_window_drain_when_destroyed(tmp_path, monkeypatch):
 
 
 def test_queue_handler_emit_exception2() -> None:
-    import logging
-
-    class Q:
-        def put(self, x: str) -> None:
-            raise RuntimeError("boom")
-
-    from autoclip.app.session import _QueueHandler
-
     hh = _QueueHandler.__new__(_QueueHandler)
     logging.Handler.__init__(hh)
-    hh.queue = Q()
+    hh.queue = RaisingQueue()
     rec = logging.LogRecord("a", logging.INFO, "f", 1, "msg", (), None)
     hh.emit(rec)
 
