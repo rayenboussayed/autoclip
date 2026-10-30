@@ -357,7 +357,8 @@ def test_main_config_errors_and_init(tmp_path: Path, capsys: pytest.CaptureFixtu
     data = json.loads(full.read_text(encoding="utf-8"))
     assert data["resources"]["memory_fraction"] == 0.75 and data["clips"]["long"]["aspect"] == "16:9" and data["video"]["gpu"] == "auto"
     assert data["processing"] == {"chunk_threshold_minutes": 0, "chunk_minutes": 5}
-    assert data["transcript"]["model"] == "large-v3" and data["transcript"]["enhance"]["enabled"] is True
+    # The default model is resolved for the machine: large-v3 with CUDA, small on the CPU.
+    assert data["transcript"]["model"] in {"small", "large-v3"} and data["transcript"]["enhance"]["enabled"] is True
 
 
 def test_generated_configs_load_without_errors(tmp_path: Path) -> None:

@@ -205,7 +205,8 @@ def transcribe(src: Path, cfg: Config, info: MediaInfo, db: F32, enhancer: Speec
             if os.environ.get("AUTOCLIP_ASSUME_YES") != "1":
                 try:
                     answer = input(f"Download Whisper model '{model_name}' now? [y/N] ").strip()
-                except EOFError:
+                except (EOFError, OSError):
+                    # No usable stdin (a GUI, a service, a closed pipe): treat it as "no".
                     answer = ""
                 if not answer.lower().startswith("y"):
                     from .errors import AutoclipError

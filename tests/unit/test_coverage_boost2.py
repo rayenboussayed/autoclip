@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 # app session
@@ -238,68 +239,47 @@ def test_process_terminate_tree_no_psutil(monkeypatch: pytest.MonkeyPatch) -> No
     terminate_tree(proc)
 
 
-def test_transcript_consent_reject(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _missing_model_downloader(*a: Any, **k: Any) -> bool:
+    """A downloader whose cache is empty: the local-only call fails, the online one would succeed."""
+    if k.get("local_files_only"):
+        raise RuntimeError("missing")
+    return True
+
+
+def _transcribe_without_consent(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: Any) -> None:
+    """Run Whisper with an uncached model and the given stdin behaviour; consent must be refused."""
     from autoclip.core import transcript
+    from autoclip.core.errors import AutoclipError
+    from autoclip.core.media import probe
     from tests.support import install_stub_whisper, make_cfg
 
-    # make download_model available and simulate missing cache
-    def dm(*a: Any, **k: Any) -> bool:
-        if k.get("local_files_only"):
-            raise RuntimeError("missing")
-        return True
-
-    monkeypatch.setattr(transcript, "download_model", dm, raising=False)
-    import faster_whisper.utils as _fwu
-
-    monkeypatch.setattr(_fwu, "download_model", dm)
-    install_stub_whisper(monkeypatch, media, {}, cuda=0)
+    install_stub_whisper(monkeypatch, media, {}, cuda=0, download_model=_missing_model_downloader)
     monkeypatch.setenv("AUTOCLIP_ASSUME_YES", "0")
-    monkeypatch.setattr("builtins.input", lambda _: "n", raising=False)
+    monkeypatch.setattr("builtins.input", answer, raising=False)
     cfg = make_cfg(media, tmp_path / "o", transcript={"model": "small"})
     cfg.transcript.offline = False
+    with pytest.raises(AutoclipError, match="not cached"):
+        transcript.transcribe(media.video, cfg, probe(media.video), np.zeros(10, dtype=np.float32), None)
 
-    import numpy as np
 
-    from autoclip.core.media import probe
-
-    info = probe(media.video)
-    db_arr = np.zeros(10, dtype=np.float32)
-    from autoclip.core.errors import AutoclipError
-
-    with contextlib.suppress(AutoclipError, Exception):
-        transcript.transcribe(media.video, cfg, info, db_arr, None)
+def test_transcript_consent_reject(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _transcribe_without_consent(media, tmp_path, monkeypatch, lambda _: "n")
 
 
 def test_transcript_consent_eof(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from autoclip.core import transcript
-    from tests.support import install_stub_whisper, make_cfg
-
-    def dm(*a: Any, **k: Any) -> bool:
-        if k.get("local_files_only"):
-            raise RuntimeError("missing")
-        return True
-
-    monkeypatch.setattr(transcript, "download_model", dm, raising=False)
-    import faster_whisper.utils as _fwu
-
-    monkeypatch.setattr(_fwu, "download_model", dm)
-    install_stub_whisper(monkeypatch, media, {}, cuda=0)
-    monkeypatch.setenv("AUTOCLIP_ASSUME_YES", "0")
-
     def boom(*a: Any, **k: Any) -> str:
         raise EOFError
 
-    monkeypatch.setattr("builtins.input", boom, raising=False)
-    cfg = make_cfg(media, tmp_path / "o2", transcript={"model": "small"})
-    cfg.transcript.offline = False
-    import numpy as np
+    _transcribe_without_consent(media, tmp_path, monkeypatch, boom)
 
-    from autoclip.core.media import probe
 
-    info = probe(media.video)
-    db_arr = np.zeros(10, dtype=np.float32)
-    with contextlib.suppress(Exception):
-        transcript.transcribe(media.video, cfg, info, db_arr, None)
+def test_transcript_consent_without_stdin(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A GUI or service has no readable stdin: that is a refusal, not an OSError escaping transcribe."""
+
+    def no_stdin(*a: Any, **k: Any) -> str:
+        raise OSError("stdin is unavailable")
+
+    _transcribe_without_consent(media, tmp_path, monkeypatch, no_stdin)
 
 
 def test_reporter_cancel_before(monkeypatch: pytest.MonkeyPatch) -> None:

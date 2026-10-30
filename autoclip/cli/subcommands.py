@@ -96,9 +96,7 @@ def _doctor(rest: Sequence[str]) -> int:
     report["js_runtime"] = js
     # disk
     try:
-        target = Path.cwd()
-        st = os.statvfs(str(target))
-        report["free_disk_bytes"] = int(st.f_bavail * st.f_frsize)
+        report["free_disk_bytes"] = shutil.disk_usage(Path.cwd()).free
     except Exception as e:
         report["free_disk_bytes"] = f"error: {e}"
     # models cache (best effort)

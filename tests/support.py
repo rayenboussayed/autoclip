@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -117,9 +118,18 @@ def load_manifest(path: Path | None = None) -> list[ManifestEntry]:
 
 
 def install_stub_whisper(
-    monkeypatch: pytest.MonkeyPatch, media: Media, record: dict[str, Any], cuda: int = 0, full_samples: int = FIXTURE_SAMPLES
+    monkeypatch: pytest.MonkeyPatch,
+    media: Media,
+    record: dict[str, Any],
+    cuda: int = 0,
+    full_samples: int = FIXTURE_SAMPLES,
+    download_model: Callable[..., Any] | None = None,
 ) -> None:
-    """A stand-in for faster-whisper / ctranslate2 with the real call signatures (the model host is offline in CI)."""
+    """A stand-in for faster-whisper / ctranslate2 with the real call signatures (the model host is offline in CI).
+
+    ``download_model`` installs a ``faster_whisper.utils`` module; by default the stub has none, so the
+    download-consent path is skipped exactly as it is when the real package is absent.
+    """
     segments = json.loads(media.transcript.read_text(encoding="utf-8"))
 
     class WhisperModel:
@@ -148,6 +158,15 @@ def install_stub_whisper(
     fw, ct = ModuleType("faster_whisper"), ModuleType("ctranslate2")
     fw.WhisperModel = WhisperModel  # type: ignore[attr-defined]
     ct.get_cuda_device_count = lambda: cuda  # type: ignore[attr-defined]
+    # An empty package path makes ``faster_whisper.utils`` unimportable: the real submodule may already
+    # be cached by another test, and ``transcribe`` must see the stub, not the real model downloader.
+    fw.__dict__["__path__"] = []
+    monkeypatch.delitem(sys.modules, "faster_whisper.utils", raising=False)
+    if download_model is not None:
+        utils = ModuleType("faster_whisper.utils")
+        utils.download_model = download_model  # type: ignore[attr-defined]
+        fw.__dict__["utils"] = utils
+        monkeypatch.setitem(sys.modules, "faster_whisper.utils", utils)
     monkeypatch.setitem(sys.modules, "faster_whisper", fw)
     monkeypatch.setitem(sys.modules, "ctranslate2", ct)
 
