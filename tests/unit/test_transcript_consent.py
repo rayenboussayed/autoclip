@@ -101,6 +101,8 @@ def test_an_uncached_model_is_not_downloaded_without_consent(
 
 
 def test_yes_downloads_the_model_once_and_then_transcribes(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Pretend the stubbed stdin is a real terminal so the prompt branch runs.
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
     downloader = Downloader()
     segs = _run(media, tmp_path, monkeypatch, downloader, answer=lambda *a, **k: "yes please")
     assert [s.text for s in segs] == SENTENCES

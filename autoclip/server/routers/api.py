@@ -92,6 +92,9 @@ async def _run_job_task(job_id: str) -> None:
         return
     sem = _get_semaphore()
     async with sem:
+        if job.cancel_requested:
+            job.update(state=JobState.cancelled, error="cancelled")
+            return
         job.state = JobState.running
         job.step = "queued"
         job.message = "Starting"

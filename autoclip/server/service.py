@@ -134,6 +134,7 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
             cmd,
             cwd=str(config_path.parent),
             env=env,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -142,6 +143,8 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
         )
         job.process = proc
         cancelled = False
+        result_failed: int | None = None
+        stderr_tail: list[str] = []
         for raw_line in proc.stdout or []:
             line = raw_line.strip()
             if not line:
@@ -149,6 +152,9 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
             try:
                 ev = json.loads(line)
             except (json.JSONDecodeError, ValueError):
+                if len(stderr_tail) >= 20:
+                    del stderr_tail[0]
+                stderr_tail.append(line)
                 continue
             if not isinstance(ev, dict):
                 continue
@@ -158,19 +164,21 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
                 msg = str(ev.get("message", ""))
                 _publish(job, step, msg, pct)
             elif ev.get("event") == "result":
-                # nothing extra; outputs collected after exit
-                pass
+                if isinstance(ev.get("failed"), int):
+                    result_failed = ev["failed"]
         rc = proc.wait()
         job.process = None
         if job.cancel_requested:
             cancelled = True
-        # If process killed by signal -> cancelled
+        crash_msg: str | None = None
         if rc is not None and rc < 0:
-            cancelled = True
+            if job.cancel_requested or cancelled:
+                cancelled = True
+            else:
+                crash_msg = f"worker killed by signal {-rc}"
         _publish(job, "packaging", "Collecting outputs", 90.0)
         # collect outputs from clips.json rows
         outs: list[Path] = []
-        failed_count = 0
         for cj in sorted(job.output_dir.rglob("clips.json")):
             if ".work" in cj.relative_to(job.output_dir).parts:
                 continue
@@ -186,15 +194,25 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
                     p = cj.parent / str(name)
                     if p.is_file():
                         outs.append(p)
-                    else:
-                        failed_count += 1
         job.outputs = outs
+        failed_count = result_failed if result_failed is not None else 0
         if cancelled:
             job.update(state=JobState.cancelled, error="cancelled")
             _publish(job, "cancelled", "Cancelled", 100.0, state="cancelled")
-        elif rc not in (0, None) and not outs:
-            job.update(state=JobState.failed, error="no clips produced")
-            _publish(job, "failed", "No clips produced", 100.0, state="failed")
+        elif crash_msg is not None:
+            detail = crash_msg
+            if stderr_tail:
+                detail = crash_msg + ": " + " | ".join(stderr_tail[-5:])
+            job.update(state=JobState.failed, error=detail)
+            _publish(job, "failed", detail, 100.0, state="failed")
+        elif rc not in (0, None):
+            detail = " | ".join(stderr_tail[-20:]) if stderr_tail else f"worker exited with code {rc}"
+            job.update(state=JobState.failed, error=detail)
+            _publish(job, "failed", detail, 100.0, state="failed")
+        elif failed_count > 0 and not outs:
+            detail = f"{failed_count} clip(s) failed"
+            job.update(state=JobState.failed, error=detail)
+            _publish(job, "failed", detail, 100.0, state="failed")
         else:
             job.update(error=f"{failed_count} clip(s) failed" if failed_count else None)
             if failed_count:

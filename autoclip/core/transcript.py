@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import re
+import sys
 import time
 from collections.abc import Iterable, Mapping
 from itertools import pairwise
@@ -211,10 +212,16 @@ def transcribe(src: Path, cfg: Config, info: MediaInfo, db: F32, enhancer: Speec
         if tc.offline:
             raise AutoclipError(f"Whisper model '{model_name}' is not cached and transcript.offline is set")
         if os.environ.get("AUTOCLIP_ASSUME_YES") != "1":
-            try:
-                answer = input(f"Download Whisper model '{model_name}' now? [y/N] ").strip()
-            except (EOFError, OSError):
-                # No usable stdin (a GUI, a service, a closed pipe): treat it as "no".
+            answer = ""
+            # Never block a GUI/server child: input() on an idle pipe hangs forever.
+            if sys.stdin is not None and sys.stdin.isatty():
+                try:
+                    answer = input(
+                        f"Download Whisper model '{model_name}' (cached under {cache_dir or 'default cache dir'}) now? [y/N] "
+                    ).strip()
+                except (EOFError, OSError):
+                    answer = ""
+            else:
                 answer = ""
             if not answer.lower().startswith("y"):
                 raise AutoclipError(
