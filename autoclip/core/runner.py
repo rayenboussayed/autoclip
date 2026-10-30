@@ -12,6 +12,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wai
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import replace
 
+from .events import CancelToken, Reporter
 from .hardware import HW_MAX_WORKERS
 from .log import setup_logging, traced
 from .models import RenderJob
@@ -64,30 +65,47 @@ def _srt_time(t: float) -> str:
 
 
 @traced("render_all")
-def render_all(jobs: list[RenderJob], est_bytes: int) -> None:
+def render_all(
+    jobs: list[RenderJob],
+    est_bytes: int,
+    *,
+    report: Reporter | None = None,
+    cancel: CancelToken | None = None,
+) -> None:
     """Run the jobs with adaptive parallelism; outcomes end up in the ``clips`` table.
 
     Before *every* submission the plan is recomputed from the CPU budget and the RAM free at that moment, so
     concurrency grows when memory is plentiful and shrinks when it gets tight. With one usable core (or one
-    job) everything runs in-process. A worker killed by the OS (usually out of memory) is retried alone.
+    job) everything runs in-process. A worker killed by the OS (usually out of memory) is retried alone. When
+    ``cancel`` is set, pending submissions stop as soon as the token is tripped and the pool is shut down; when
+    ``report`` is set, it reports (render, finished/total, ...) after every finished clip.
     """
     if not jobs:
         return
+    total = len(jobs)
+    finished = 0
     pending = deque(jobs)
     limit = HW_MAX_WORKERS if jobs[0].encoder.hardware else 1 << 30  # GPUs allow only a few encode sessions
     plan = RESOURCES.plan_workers(est_bytes, len(jobs), limit)
     capacity = min(RESOURCES.cpu_budget(), RESOURCES.res.max_workers or RESOURCES.cpu_budget(), len(jobs), limit)
     log.info("parallel plan: up to %d worker(s) x %d thread(s) for %d clip(s)", plan.workers, plan.threads, len(jobs))
+    if cancel is not None and cancel.cancelled:
+        return
     if capacity <= 1:
         for job in jobs:
+            if cancel is not None and cancel.cancelled:
+                break
             render_job(replace(job, threads=RESOURCES.cpu_budget()))
+            finished += 1
+            if report is not None:
+                report("render", finished / total, f"clip {finished}/{total}")
         return
     running: dict[Future[bool], RenderJob] = {}
     retry: list[RenderJob] = []
     with ProcessPoolExecutor(max_workers=capacity, mp_context=multiprocessing.get_context("spawn")) as pool:
-        while pending or running:
+        while (pending or running) and (cancel is None or not cancel.cancelled):
             plan = RESOURCES.plan_workers(est_bytes, len(pending) + len(running), limit)
-            while pending and len(running) < plan.workers:
+            while pending and len(running) < plan.workers and (cancel is None or not cancel.cancelled):
                 job = replace(pending.popleft(), threads=plan.threads)
                 log.info(
                     "submit clip %d (running=%d allowed=%d threads=%d | %s)",
@@ -98,6 +116,8 @@ def render_all(jobs: list[RenderJob], est_bytes: int) -> None:
                     RESOURCES.brief(),
                 )
                 running[pool.submit(render_job, job)] = job
+            if not running:
+                break
             done, _ = wait(running, return_when=FIRST_COMPLETED)
             for future in done:
                 job = running.pop(future)
@@ -106,8 +126,20 @@ def render_all(jobs: list[RenderJob], est_bytes: int) -> None:
                 except BrokenProcessPool:
                     log.warning("worker for clip %d died (probably out of memory): retrying it alone", job.clip_id)
                     retry.append(job)
+                finished += 1
+                if report is not None:
+                    report("render", finished / total, f"clip {finished}/{total}")
             if retry and not running:
                 break
+    if cancel is not None and cancel.cancelled:
+        for future in running:
+            future.cancel()
+        return
     for job in retry + list(pending):
         gc.collect()
+        if cancel is not None and cancel.cancelled:
+            break
         render_job(replace(job, threads=RESOURCES.cpu_budget()))
+        finished += 1
+        if report is not None:
+            report("render", finished / total, f"clip {finished}/{total}")

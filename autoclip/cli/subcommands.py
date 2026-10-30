@@ -87,32 +87,47 @@ def _doctor(rest: Sequence[str]) -> int:
         report["cuda_devices"] = int(ctranslate2.get_cuda_device_count()) if hasattr(ctranslate2, "get_cuda_device_count") else 0
     except Exception as e:
         report["cuda_devices"] = f"error: {e}"
-    # js runtime
+    # js runtime (only needed for YouTube URLs; a warning, not a blocker)
     js = None
     for name in ("deno", "node", "bun", "qjs", "quickjs"):
         if shutil.which(name):
             js = name
             break
     report["js_runtime"] = js
+    warnings: list[str] = []
+    blocking: list[str] = []
+    if js is None:
+        warnings.append("no JavaScript runtime (deno/node/bun/qjs/quickjs) found; needed only for YouTube URLs")
+    if "error" in str(report.get("ffmpeg", "")):
+        blocking.append("ffmpeg is unavailable")
     # disk
     try:
         report["free_disk_bytes"] = shutil.disk_usage(Path.cwd()).free
     except Exception as e:
         report["free_disk_bytes"] = f"error: {e}"
-    # models cache (best effort)
-    report["model_cache"] = os.path.expanduser("~/.cache/huggingface")
+        blocking.append(f"cannot read free disk: {e}")
+    # models cache (best effort, honour the same env vars as the transcription code)
+    report["model_cache"] = os.environ.get("HF_HUB_CACHE") or os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface")
 
-    ok = True
-    if "error" in str(report.get("ffmpeg", "")):
-        ok = False
-    if js is None:
-        ok = False
+    ok = not blocking
+    report["warnings"] = warnings
+    report["blocking"] = blocking
 
     if args.json:
         print(json.dumps(report, indent=2, default=str))
     else:
         for key, value in report.items():
+            if key in ("warnings", "blocking"):
+                continue
             print(f"{key}: {value}")
+        if warnings:
+            print("warnings:")
+            for w in warnings:
+                print(f"  - {w}")
+        if blocking:
+            print("blocking:")
+            for b in blocking:
+                print(f"  - {b}")
         print("OK" if ok else "NOT READY")
     return 0 if ok else 1
 

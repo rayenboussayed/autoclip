@@ -67,7 +67,8 @@ def run_batch(
     failed = 0
     inputs = list(cfg.input)
     for i, item in enumerate(inputs, 1):
-        reporter("validate", i / max(len(inputs), 1), f"input {i}/{len(inputs)}")
+        scoped = reporter.scoped(i, len(inputs)) if inputs else reporter
+        scoped("validate", 0.0, f"input {i}/{len(inputs)}")
         label = item if is_url(item) else Path(item).name
         log.info("=== input %d/%d: %s ===", i, len(inputs), label)
         if is_url(item):
@@ -97,8 +98,8 @@ def run_batch(
                     name=name,
                     subtitle=subtitle,
                     subtitle_manual=subtitle_manual,
-                    report=reporter,
-                    cancel=cancel if cancel is not None else reporter._cancel,
+                    report=scoped,
+                    cancel=reporter.cancel if cancel is None else cancel,
                 )
             except Exception as e:  # one broken video must not stop the batch
                 log.error("%s failed: %s: %s", path.name, type(e).__name__, e, exc_info=not isinstance(e, AutoclipError))

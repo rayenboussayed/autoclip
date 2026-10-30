@@ -68,18 +68,33 @@ class CancelToken:
 
 
 class Reporter:
-    """Turns ``(stage, fraction)`` into monotonic percentages; one instance per run."""
+    """Turns ``(stage, fraction)`` into monotonic percentages; one instance per run.
+
+    A batch of several inputs gives every input its own :meth:`scoped` slice of 0..100, so the bar
+    advances through the whole batch instead of sticking at 100% after the first video.
+    """
 
     def __init__(self, sink: ProgressSink = ignore, cancel: CancelToken | None = None) -> None:
         self._sink = sink
         self._cancel = cancel if cancel is not None else CancelToken()
         self._last = 0.0
+        self._base, self._span = 0.0, 100.0
+
+    @property
+    def cancel(self) -> CancelToken:
+        return self._cancel
+
+    def scoped(self, index: int, total: int) -> Reporter:
+        """A reporter for input ``index`` (1-based) of ``total``, mapped into its slice of the run."""
+        child = Reporter(self._sink, self._cancel)
+        child._base, child._span = 100.0 * (index - 1) / total, 100.0 / total
+        return child
 
     def __call__(self, stage: str, fraction: float = 0.0, message: str = "") -> None:
         # Every report is a cancellation point.
         self._cancel.check()
         lo, hi = STAGES[stage]
-        frac = min(max(fraction, 0.0), 1.0)
-        pct = max(self._last, lo + (hi - lo) * frac)
+        inner = lo + (hi - lo) * min(max(fraction, 0.0), 1.0)
+        pct = max(self._last, self._base + self._span * inner / 100.0)
         self._last = pct
         self._sink(Progress(stage, round(pct, 1), message))

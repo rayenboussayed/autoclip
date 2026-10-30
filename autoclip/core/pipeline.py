@@ -157,8 +157,9 @@ def process_video(
         if not jobs:
             raise AutoclipError("no clips found for any requested kind (is the video shorter than the length ranges?)")
         reporter("select", 1.0, f"{len(jobs)} clips planned")
-        render_all(jobs, needs)
-        reporter("render", 1.0, "rendered")
+        reporter("render", 0.0, f"0/{len(jobs)} clips rendered")
+        render_all(jobs, needs, report=reporter, cancel=cancel)
+        reporter("render", 1.0, f"{len(jobs)}/{len(jobs)} clips rendered")
         rows = store.clips()
     finally:
         cache.close()

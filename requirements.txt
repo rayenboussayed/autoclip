@@ -16,5 +16,5 @@ tkinterdnd2>=0.7                  # drag and drop of video files (graceful fallb
 
 # optional: speech denoising, scene-cut snapping and speech enhancement (all degrade gracefully when absent)
 noisereduce>=3.0
-sherpa-onnx>=1.13
+sherpa-onnx>=1.13,<2
 scenedetect[opencv]>=0.7
