@@ -82,7 +82,7 @@ def terminate_tree(process: subprocess.Popen[str]) -> None:
     """Kill ``process`` and every descendant (best effort, never raises)."""
     try:
         import psutil
-    except ImportError:  # pragma: no cover - psutil is a core dependency
+    except ImportError:  # psutil is a core dependency; the fallback keeps terminate_tree usable without it
         psutil = None
     if psutil is not None:
         try:

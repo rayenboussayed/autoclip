@@ -170,6 +170,24 @@ def asr_device(cfg: Config) -> str:
     return "cuda" if has_cuda else "cpu"
 
 
+def _model_is_cached(model_name: str, cache_dir: str | None) -> bool:
+    """Whether faster-whisper already has ``model_name`` under ``cache_dir`` (never touches the network)."""
+    from faster_whisper.utils import download_model
+
+    try:
+        download_model(model_name, cache_dir=cache_dir, local_files_only=True)
+    except Exception:
+        return False
+    return True
+
+
+def _download_model(model_name: str, cache_dir: str | None) -> None:
+    """Download ``model_name`` into ``cache_dir`` (called only after the user consented)."""
+    from faster_whisper.utils import download_model
+
+    download_model(model_name, cache_dir=cache_dir, local_files_only=False)
+
+
 @traced("transcribe")
 def transcribe(src: Path, cfg: Config, info: MediaInfo, db: F32, enhancer: SpeechEnhancer | None = None) -> list[Segment]:
     """Transcribe with faster-whisper using every allowed core (and the GPU when there is one).
@@ -182,39 +200,27 @@ def transcribe(src: Path, cfg: Config, info: MediaInfo, db: F32, enhancer: Speec
     """
     from faster_whisper import WhisperModel
 
-    try:
-        from faster_whisper.utils import download_model
-    except Exception:  # stub in tests has no .utils
-        download_model = None
-
     tc, proc = cfg.transcript, cfg.processing
     device = asr_device(cfg)
     _model = tc.model or "small"
     model_name = fit_whisper_model(_model, device) if tc.auto_downgrade else _model
     threads = RESOURCES.cpu_budget()
     cache_dir = tc.model_dir
-    # consent for a first download (offline never downloads); skipped when the module is a test stub
-    if download_model is not None:
-        try:
-            download_model(model_name, cache_dir=cache_dir, local_files_only=True)
-        except Exception:
-            if tc.offline:
-                from .errors import AutoclipError
-
-                raise AutoclipError(f"Whisper model '{model_name}' is not cached and transcript.offline is set") from None
-            if os.environ.get("AUTOCLIP_ASSUME_YES") != "1":
-                try:
-                    answer = input(f"Download Whisper model '{model_name}' now? [y/N] ").strip()
-                except (EOFError, OSError):
-                    # No usable stdin (a GUI, a service, a closed pipe): treat it as "no".
-                    answer = ""
-                if not answer.lower().startswith("y"):
-                    from .errors import AutoclipError
-
-                    raise AutoclipError(
-                        f"model '{model_name}' not cached; run 'autoclip models pull {model_name}' or set AUTOCLIP_ASSUME_YES=1"
-                    ) from None
-            download_model(model_name, cache_dir=cache_dir, local_files_only=False)
+    # consent for a first download (offline never downloads)
+    if not _model_is_cached(model_name, cache_dir):
+        if tc.offline:
+            raise AutoclipError(f"Whisper model '{model_name}' is not cached and transcript.offline is set")
+        if os.environ.get("AUTOCLIP_ASSUME_YES") != "1":
+            try:
+                answer = input(f"Download Whisper model '{model_name}' now? [y/N] ").strip()
+            except (EOFError, OSError):
+                # No usable stdin (a GUI, a service, a closed pipe): treat it as "no".
+                answer = ""
+            if not answer.lower().startswith("y"):
+                raise AutoclipError(
+                    f"model '{model_name}' not cached; run 'autoclip models pull {model_name}' or set AUTOCLIP_ASSUME_YES=1"
+                )
+        _download_model(model_name, cache_dir)
     log.info("whisper model=%s device=%s%s cpu_threads=%d", model_name, device, " (GPU)" if device == "cuda" else "", threads)
     model = WhisperModel(
         model_name,

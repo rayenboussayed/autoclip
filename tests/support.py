@@ -167,6 +167,27 @@ def install_stub_whisper(
         utils.download_model = download_model  # type: ignore[attr-defined]
         fw.__dict__["utils"] = utils
         monkeypatch.setitem(sys.modules, "faster_whisper.utils", utils)
+    # ``transcribe`` reaches faster-whisper through two seams, so a test never depends on whether the
+    # real ``faster_whisper.utils`` happens to be cached in ``sys.modules`` by another test.
+    from autoclip.core import transcript
+
+    if download_model is None:
+        monkeypatch.setattr(transcript, "_model_is_cached", lambda *a, **k: True, raising=False)
+        monkeypatch.setattr(transcript, "_download_model", lambda *a, **k: None, raising=False)
+    else:
+
+        def _model_is_cached(model_name: str, cache_dir: str | None) -> bool:
+            try:
+                download_model(model_name, cache_dir=cache_dir, local_files_only=True)
+            except Exception:
+                return False
+            return True
+
+        def _download_model(model_name: str, cache_dir: str | None) -> None:
+            download_model(model_name, cache_dir=cache_dir, local_files_only=False)
+
+        monkeypatch.setattr(transcript, "_model_is_cached", _model_is_cached, raising=False)
+        monkeypatch.setattr(transcript, "_download_model", _download_model, raising=False)
     monkeypatch.setitem(sys.modules, "faster_whisper", fw)
     monkeypatch.setitem(sys.modules, "ctranslate2", ct)
 

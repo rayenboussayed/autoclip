@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, JSONResponse
 
+from ...core.process import terminate_tree
 from ..auth import require_auth
 from ..config import get_settings
 from ..schemas import JobCreated, JobState, JobStatus
@@ -182,14 +183,10 @@ async def delete_job(job_id: str, user: str = Depends(require_auth)) -> JSONResp
         raise HTTPException(status_code=404, detail="job not found")
     if job.process is not None:
         job.cancel_requested = True
-        from ..core.process import terminate_tree
-
-        terminate_tree(job.process)
+        await asyncio.to_thread(terminate_tree, job.process)
         job.process = None
     # give the worker a moment to release handles before removing the folder
-    import time
-
-    time.sleep(0.2)
+    await asyncio.sleep(0.2)
     shutil.rmtree(job.output_dir, ignore_errors=True)
     if job.input_path.exists():
         job.input_path.unlink(missing_ok=True)

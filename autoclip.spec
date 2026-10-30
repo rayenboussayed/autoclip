@@ -89,16 +89,15 @@ hiddenimports = (
     + collect_submodules("yt_dlp")
     + collect_submodules("yt_dlp_ejs")
 )
+#: The ffmpeg binary of imageio-ffmpeg, the EJS solver scripts of yt-dlp and the server pages.
 datas = collect_data_files("imageio_ffmpeg") + collect_data_files("yt_dlp_ejs")
-# server templates
+# The HTTP server is optional, but a release build sets AUTOCLIP_REQUIRE_SERVER=1 so a bundle that
+# cannot serve /view/ fails the build instead of shipping silently.
 try:
-    datas = datas + collect_data_files("autoclip.server")
+    datas += collect_data_files("autoclip.server")
 except Exception:
-    pass
-
-#: The ffmpeg binary of imageio-ffmpeg (used when there is no ffmpeg on the PATH) and the EJS solver
-#: scripts of yt-dlp (the JavaScript challenge solver is data, not a Python module).
-datas = collect_data_files("imageio_ffmpeg") + collect_data_files("yt_dlp_ejs")
+    if os.environ.get("AUTOCLIP_REQUIRE_SERVER") == "1":
+        raise
 
 a = Analysis(  # noqa: F821 - PyInstaller injects these names
     [str(Path(SPECPATH) / "tools" / "frozen_entry.py")],
