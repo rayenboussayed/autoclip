@@ -183,3 +183,18 @@ def test_ask_with_a_consent_provider_true_downloads(media: Any, tmp_path: Path, 
     )
     assert [s.text for s in segs] == SENTENCES
     assert [call["local_files_only"] for call in downloader.calls] == [True, False]
+
+
+def test_an_uncached_model_on_a_tty_with_input_failure(
+    media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+
+    def throw(*a: Any, **k: Any) -> str:
+        raise OSError("stdin is unavailable")
+
+    monkeypatch.setattr("builtins.input", throw)
+    downloader = Downloader()
+    with pytest.raises(AutoclipError, match="not cached"):
+        _run(media, tmp_path, monkeypatch, downloader, consent="ask")
+    assert downloader.online == []
