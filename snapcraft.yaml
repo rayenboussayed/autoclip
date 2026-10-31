@@ -1,6 +1,6 @@
 name: autoclip
 base: core24
-version: "3.0.2"
+version: "3.0.3"
 summary: Cut long videos into the best short and long clips
 description: |
   autoclip turns long videos into the best short (TikTok, Reels, Shorts) and long clips.

@@ -124,6 +124,7 @@ def install_stub_whisper(
     cuda: int = 0,
     full_samples: int = FIXTURE_SAMPLES,
     download_model: Callable[..., Any] | None = None,
+    cuda_fails: bool = False,
 ) -> None:
     """A stand-in for faster-whisper / ctranslate2 with the real call signatures (the model host is offline in CI).
 
@@ -135,10 +136,14 @@ def install_stub_whisper(
     class WhisperModel:
         def __init__(self, name: str, device: str, compute_type: str, cpu_threads: int, **kwargs: Any) -> None:
             record["init"] = (name, device, compute_type, cpu_threads)
+            self.device = device
 
         def transcribe(self, audio: Any, **options: Any) -> tuple[Any, Any]:
+            if cuda_fails and self.device == "cuda":
+                raise RuntimeError("CUDA driver/runtime mismatch")
             record["options"] = options
-            if isinstance(audio, np.ndarray) and len(audio) < full_samples - 16000:  # a chunk, not the whole file
+            # The 1 s CUDA warm-up passes no language; a real chunk call always does.
+            if isinstance(audio, np.ndarray) and len(audio) < full_samples - 16000 and "language" in options:  # a chunk
                 record.setdefault("chunks", []).append((len(audio), options["language"]))
                 seg = SimpleNamespace(start=0.5, end=2.5, text=" chunk", words=[SimpleNamespace(start=0.5, end=1.5, word=" chunk")])
                 return iter([seg]), SimpleNamespace(language="en", language_probability=0.9, duration=len(audio) / 16000)

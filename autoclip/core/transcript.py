@@ -14,6 +14,8 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .config import Config, ProcessingCfg, TranscriptCfg
 from .denoise import SpeechEnhancer
 from .errors import AutoclipError
@@ -165,12 +167,12 @@ def asr_device(cfg: Config) -> str:
     import ctranslate2
 
     has_cuda = ctranslate2.get_cuda_device_count() > 0
-    if cfg.compute.device == "gpu" or cfg.transcript.device == "cuda":
-        if has_cuda:
-            return "cuda"
+    if (cfg.compute.device == "gpu" or cfg.transcript.device == "cuda") and not has_cuda:
         log.warning("a GPU was requested but no CUDA device was found: using the CPU")
         return "cpu"
-    return "cuda" if has_cuda else "cpu"
+    if not has_cuda:
+        return "cpu"
+    return "cuda"
 
 
 def _model_is_cached(model_name: str, cache_dir: str | None) -> bool:
@@ -189,6 +191,19 @@ def _download_model(model_name: str, cache_dir: str | None) -> None:
     from faster_whisper.utils import download_model
 
     download_model(model_name, cache_dir=cache_dir, local_files_only=False)
+
+
+def _warmup_model(model: Any) -> None:
+    """Run a second of silence through ``model`` so a broken CUDA runtime fails now, not mid-file.
+
+    ``ctranslate2`` links a specific CUDA/cuBLAS/cuDNN combination: a newer toolkit or a
+    half-installed driver can let the model *load* and only fail on the first real inference.
+    Probing a library name was Linux-only and missed cuDNN; an actual inference is portable and
+    fails exactly where the real work would.
+    """
+    stream, _ = model.transcribe(np.zeros(WHISPER_SR, dtype=np.float32), vad_filter=False, word_timestamps=False)
+    for _ in stream:  # consume the generator: the compute happens here
+        pass
 
 
 @traced("transcribe")
@@ -251,15 +266,29 @@ def transcribe(
                     "transcript.consent: auto (or AUTOCLIP_ASSUME_YES=1)"
                 )
         _download_model(model_name, cache_dir)
+
+    def load(dev: str) -> Any:
+        return WhisperModel(
+            model_name,
+            device=dev,
+            compute_type="float16" if dev == "cuda" else "int8",
+            cpu_threads=threads,
+            download_root=cache_dir,
+            local_files_only=True,
+        )
+
+    model: Any
+    if device == "cuda":
+        try:
+            model = load(device)
+            _warmup_model(model)
+        except Exception as e:  # a broken CUDA runtime must degrade to the CPU, not fail the run
+            log.warning("the CUDA runtime cannot run Whisper (%s): using the CPU", e)
+            device = "cpu"
+            model = load(device)
+    else:
+        model = load(device)
     log.info("whisper model=%s device=%s%s cpu_threads=%d", model_name, device, " (GPU)" if device == "cuda" else "", threads)
-    model = WhisperModel(
-        model_name,
-        device=device,
-        compute_type="float16" if device == "cuda" else "int8",
-        cpu_threads=threads,
-        download_root=cache_dir,
-        local_files_only=True,
-    )
     segmented = info.duration >= proc.chunk_threshold_minutes * 60
     bounds = chunk_bounds(info.duration, db, proc.chunk_minutes * 60) if segmented else [(0.0, info.duration)]
     language, raw, t0 = tc.language, [], time.perf_counter()

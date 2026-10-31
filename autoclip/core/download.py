@@ -13,6 +13,7 @@ import logging
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -25,7 +26,7 @@ from .config import Config, DownloadCfg, JsRuntimeCfg, parse, parse_hms
 from .errors import AutoclipError, DownloadError
 from .formats import Choice, choose
 from .log import traced
-from .media import ffmpeg_exe, probe, trim_video
+from .media import bundled_ffmpeg_exe, external_env, ffmpeg_exe, probe, trim_video
 from .models import Downloaded
 from .platforms import (
     GENERIC,
@@ -339,6 +340,7 @@ def _write_srt(source: Path, target: Path, rng: tuple[float, float] | None, dfxp
                 capture_output=True,
                 text=True,
                 check=False,
+                env=external_env(),
             )
             if result.returncode != 0 or not temp.is_file():
                 raise DownloadError(f"ffmpeg cannot convert the {ext} subtitles: {result.stderr.strip()[:200]}")
@@ -502,7 +504,11 @@ class Downloader:
             self.allowed_extractors = extractor_patterns(self.permitted_families)
         self.js_runtimes = self._runtime_config(cfg.download.js_runtime)
         self.remote_components = ["ejs:github"] if cfg.download.js_runtime.remote_components == "ejs" else []
-        self._range_supported = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+        # A frozen build has no ffprobe next to its bundled ffmpeg (and a system ffmpeg would
+        # inherit PyInstaller's LD_LIBRARY_PATH), so yt-dlp cannot cut a range safely there:
+        # download the whole file and trim it locally with media.trim_video instead.
+        frozen = bool(getattr(sys, "frozen", False))
+        self._range_supported = not frozen and bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 
     # ------------------------------------------------------------------ policy
 
@@ -939,7 +945,7 @@ class Downloader:
             "allowed_extractors": list(self.allowed_extractors),
             "js_runtimes": copy.deepcopy(self.js_runtimes),
             "remote_components": list(self.remote_components),
-            "ffmpeg_location": ffmpeg_exe(),
+            "ffmpeg_location": bundled_ffmpeg_exe() if getattr(sys, "frozen", False) else ffmpeg_exe(),
         }
         if settings.network.proxy:
             params["proxy"] = settings.network.proxy

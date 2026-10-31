@@ -21,7 +21,7 @@ from pathlib import Path
 from .config import Config, KindCfg, parse_hms
 from .errors import AutoclipError
 from .events import CancelToken, Reporter
-from .media import ffmpeg_exe, probe
+from .media import external_env, ffmpeg_exe, probe
 from .models import Encoder, MediaInfo, Moment, RenderJob
 from .moments import energy_track, make_title, select_moments
 from .render import canvas_size, estimate_render_bytes
@@ -55,7 +55,7 @@ def split_video(src: Path, out_dir: Path, seconds: float, duration: float, name:
             "make_zero",
             str(dst),
         ]
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, env=external_env())
         parts.append(dst)
     return parts
 

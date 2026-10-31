@@ -277,6 +277,33 @@ def set_option(app: Any, path: str, value: Any) -> None:
     raise AssertionError(f"no such option: {path}")
 
 
+def pane_count(pane: ttk.PanedWindow) -> int:
+    """The number of panes in a paned window (``panes()`` is untyped in the stubs)."""
+    return len(cast(Any, pane).panes())
+
+
+def assert_panes_within_bounds(pane: ttk.PanedWindow) -> None:
+    """Every pane keeps between 20% and 80% of the paned window's height.
+
+    Pane heights are derived from the sash positions (never from ``winfo_height``, which lags
+    behind a sash move). A sash is counted at ``SASH_ALLOWANCE``, the widest a theme draws it, so
+    the derived heights are a lower bound.
+    """
+    from autoclip.app.window import BODY_MAX_HEIGHT, BODY_MIN_HEIGHT, SASH_ALLOWANCE, _sashpos
+
+    total = pane.winfo_height()
+    assert total > 1
+    minimum = int(total * BODY_MIN_HEIGHT)
+    maximum = int(total * BODY_MAX_HEIGHT)
+    positions = [_sashpos(pane, index) for index in range(pane_count(pane) - 1)]
+    heights = [positions[0]] if positions else [total]
+    for before, after in zip(positions, positions[1:], strict=False):
+        heights.append(after - before - SASH_ALLOWANCE)
+    heights.append(total - positions[-1] - SASH_ALLOWANCE)
+    assert all(height >= minimum for height in heights), heights
+    assert heights[0] <= maximum, heights
+
+
 @needs_display
 def test_the_window_shows_every_option_and_saves_a_valid_config(tmp_path: Path) -> None:
     """The window builds, shows every option and writes a config the core accepts."""
@@ -293,6 +320,150 @@ def test_the_window_shows_every_option_and_saves_a_valid_config(tmp_path: Path) 
         assert (tmp_path / "config.json").exists()
     finally:
         app.destroy()
+
+
+@needs_display
+def test_the_body_panes_keep_their_height_bounds(tmp_path: Path) -> None:
+    """The body panes stay between 20% and 80% at startup and after a resize."""
+    from autoclip.app.window import AutoclipApp, _sashpos, clamp_panes
+
+    app = AutoclipApp(tmp_path / "config.json")
+    try:
+        app.update()
+        assert_panes_within_bounds(app.body)
+        sashes = [_sashpos(app.body, index) for index in range(pane_count(app.body) - 1)]
+        clamp_panes(app.body)  # already within the bounds: nothing moves
+        assert [_sashpos(app.body, index) for index in range(pane_count(app.body) - 1)] == sashes
+        for geometry in ("900x620", "1200x900"):
+            app.geometry(geometry)
+            app.update()
+            assert_panes_within_bounds(app.body)
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_dragging_a_body_sash_cannot_squeeze_a_pane(tmp_path: Path) -> None:
+    """Releasing a sash at either extreme brings the panes back within their bounds."""
+    from autoclip.app.window import AutoclipApp, _sashpos
+
+    app = AutoclipApp(tmp_path / "config.json")
+    try:
+        app.update()
+        total = app.body.winfo_height()
+        for position, point in ((0, 2), (total, total - 2)):
+            _sashpos(app.body, 0, position)
+            app.body.event_generate("<ButtonRelease-1>", x=2, y=point)
+            app.update()
+            assert_panes_within_bounds(app.body)
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_the_reference_window_panes_keep_their_height_bounds(tmp_path: Path) -> None:
+    """The option tree and its explanation share the reference window within the same bounds."""
+    from autoclip.app.window import BODY_MAX_HEIGHT, AutoclipApp, ReferenceWindow, _sashpos
+
+    app = AutoclipApp(tmp_path / "config.json")
+    window = ReferenceWindow(app)
+    try:
+        app.update()
+        assert_panes_within_bounds(window.pane)
+        total = window.pane.winfo_height()
+        for position, point in ((0, 2), (total, total - 2)):
+            _sashpos(window.pane, 0, position)
+            window.pane.event_generate("<ButtonRelease-1>", x=2, y=point)
+            app.update()
+            assert_panes_within_bounds(window.pane)
+        # two panes leave room for the full 80% maximum
+        assert _sashpos(window.pane, 0) <= int(total * BODY_MAX_HEIGHT)
+    finally:
+        window.destroy()
+        app.destroy()
+
+
+@needs_display
+def test_the_footer_buttons_are_taller_and_clear(tmp_path: Path) -> None:
+    """Both footer rows get their full height and the actions are taller than the default."""
+    from autoclip.app.window import FOOTER_BUTTON_PADDING, AutoclipApp
+
+    app = AutoclipApp(tmp_path / "config.json")
+    try:
+        app.update()
+        padding = tuple(int(value) for value in app.tk.splitlist(ttk.Style(app).lookup("Footer.TButton", "padding")))
+        assert padding == FOOTER_BUTTON_PADDING
+        buttons = [child for child in app.footer.winfo_children() if isinstance(child, ttk.Button)]
+        assert len(buttons) >= 7
+        assert all(int(button.pack_info().get("ipady", 0)) == 0 for button in buttons)
+        assert int(app.status.pack_info().get("ipady", 0)) == 0
+        # the expanding body must not steal the height of either footer row
+        for row in (app.footer, app.footer_row):
+            assert row.winfo_ismapped()
+            assert row.winfo_height() >= row.winfo_reqheight()
+        for button in buttons:
+            assert button.winfo_height() >= button.winfo_reqheight()
+        default = ttk.Button(app, text="default")
+        default.update_idletasks()
+        assert app.run_button.winfo_reqheight() > default.winfo_reqheight()
+        default.destroy()
+    finally:
+        app.destroy()
+
+
+@needs_display
+def test_clamp_panes_ignores_a_window_that_cannot_hold_the_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unmapped, single-pane, too-small or destroyed paned window is left alone."""
+    from autoclip.app import window
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        pane = ttk.PanedWindow(root, orient="vertical")
+        monkeypatch.setattr(pane, "winfo_height", lambda: 100)
+        window.clamp_panes(pane)  # no panes
+        pane.add(ttk.Label(pane, text="one"))
+        window.clamp_panes(pane)  # a single pane is not a split
+        pane.add(ttk.Label(pane, text="two"))
+        monkeypatch.setattr(pane, "winfo_height", lambda: 20)
+        window.clamp_panes(pane)  # no room for two minimum panes and their sashes
+        monkeypatch.setattr(pane, "winfo_height", lambda: 3)
+        window.clamp_panes(pane)  # a 0 px minimum
+        monkeypatch.undo()
+        pane.destroy()
+        window.clamp_panes(pane)  # the window is gone
+    finally:
+        root.destroy()
+
+
+@needs_display
+def test_clamp_panes_stops_quietly_when_tk_refuses_a_sash(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A TclError while reading or moving a sash ends the clamp without raising."""
+    from autoclip.app import window
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        pane = ttk.PanedWindow(root, orient="vertical")
+        pane.add(ttk.Label(pane, text="one"))
+        pane.add(ttk.Label(pane, text="two"))
+        monkeypatch.setattr(pane, "winfo_height", lambda: 300)
+
+        def refuse_read(_pane: ttk.PanedWindow, _index: int, _position: int | None = None) -> int:
+            raise tk.TclError("no sash")
+
+        monkeypatch.setattr(window, "_sashpos", refuse_read)
+        window.clamp_panes(pane)
+
+        def refuse_write(_pane: ttk.PanedWindow, _index: int, _position: int | None = None) -> int:
+            if _position is None:
+                return 0
+            raise tk.TclError("no sash")
+
+        monkeypatch.setattr(window, "_sashpos", refuse_write)
+        window.clamp_panes(pane)
+    finally:
+        root.destroy()
 
 
 @needs_display

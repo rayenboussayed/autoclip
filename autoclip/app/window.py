@@ -17,7 +17,7 @@ import traceback
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from types import TracebackType
-from typing import Any
+from typing import Any, cast
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -73,6 +73,71 @@ def debug_enabled(env: dict[str, str] | None = None) -> bool:
     return env.get("AUTOCLIP_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+#: A pane of the body (or of the reference window) keeps at least this share of its height.
+BODY_MIN_HEIGHT = 0.20
+#: No pane takes more than this share of the paned window's height.
+BODY_MAX_HEIGHT = 0.80
+#: Conservative sash thickness in pixels: themes draw 4-6 px, and every pane needs room for its sash.
+SASH_ALLOWANCE = 8
+#: The footer actions are a little taller than the platform default, so they are easy to hit.
+FOOTER_BUTTON_PADDING = (12, 8)
+
+
+def _sashpos(pane: ttk.PanedWindow, index: int, position: int | None = None) -> int:
+    """Read (or set) one sash position of a paned window."""
+    if position is None:
+        return int(cast(Any, pane).sashpos(index))
+    cast(Any, pane).sashpos(index, position)
+    return position
+
+
+def clamp_panes(pane: ttk.PanedWindow) -> None:
+    """Keep every pane of a vertical paned window between the height bounds.
+
+    The bounds are fractions of the paned window's own height. Sashes are clamped from the top
+    down, so every pane keeps its minimum after a drag or a resize. In a three-pane window the
+    first pane therefore tops out near 60%: the two panes below still need their share. The 80%
+    maximum is reached only when the other panes fit, as in the two-pane reference window.
+    """
+    try:
+        total = pane.winfo_height()
+        count = len(cast(Any, pane).panes())
+    except tk.TclError:  # the window is closing
+        return
+    if total <= 1 or count < 2:
+        return
+    minimum = int(total * BODY_MIN_HEIGHT)
+    maximum = int(total * BODY_MAX_HEIGHT)
+    if minimum <= 0 or maximum <= minimum:
+        return
+    # Every pane needs its minimum plus the sash above it; leave a window that cannot fit them alone.
+    if total < count * (minimum + SASH_ALLOWANCE):
+        return
+    previous = 0
+    for index in range(count - 1):
+        remaining = count - index - 1
+        lower = minimum if index == 0 else previous + minimum + SASH_ALLOWANCE
+        upper = total - remaining * (minimum + SASH_ALLOWANCE)
+        try:
+            current = _sashpos(pane, index)
+        except tk.TclError:
+            return
+        target = max(lower, min(current, upper, maximum))
+        if target != current:
+            try:
+                _sashpos(pane, index, target)
+            except tk.TclError:
+                return
+        previous = target
+
+
+def bind_pane_clamp(pane: ttk.PanedWindow) -> None:
+    """Clamp a paned window's panes after it is resized or one of its sashes is dragged."""
+    pane.bind("<Configure>", lambda _event: clamp_panes(pane))
+    # The widget binding runs before ttk's class binding that ends the drag, so wait for idle.
+    pane.bind("<ButtonRelease-1>", lambda _event: pane.after_idle(lambda: clamp_panes(pane)), add="+")
+
+
 class AutoclipApp(tk.Tk):
     """The application window."""
 
@@ -103,6 +168,10 @@ class AutoclipApp(tk.Tk):
         self._build_header()
         self._build_body()
         self._build_footer()
+        # The body is packed after the footer on purpose: pack allocates in call order, so an
+        # expanding body packed first would leave the bottom rows clipped. The footer rows claim
+        # their height from the bottom, and the body fills whatever is left in the middle.
+        self.body.pack(fill="both", expand=True, padx=14, pady=(0, 8))
         self._startup()
         self._load_into_form()
         self._after_id = self.after(100, self._drain_log)
@@ -119,6 +188,7 @@ class AutoclipApp(tk.Tk):
         style.configure("Title.TLabel", font=("TkDefaultFont", 13, "bold"))
         style.configure("Sub.TLabel", foreground="#666666")
         style.configure("Status.TLabel", foreground="#333333")
+        style.configure("Footer.TButton", padding=FOOTER_BUTTON_PADDING)
 
     def _build_header(self) -> None:
         """Title, config file and the shortcut to the output folder."""
@@ -139,8 +209,10 @@ class AutoclipApp(tk.Tk):
 
     def _build_body(self) -> None:
         """The notebook with the option groups and the details panel."""
-        body = ttk.PanedWindow(self, orient="vertical")
-        body.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+        self.body = ttk.PanedWindow(self, orient="vertical")
+        bind_pane_clamp(self.body)
+
+        body = self.body
 
         self.notebook = ttk.Notebook(body)
         for section in SECTIONS:
@@ -177,25 +249,27 @@ class AutoclipApp(tk.Tk):
         body.add(log_pane, weight=1)
 
     def _build_footer(self) -> None:
-        """Buttons, log window and status line."""
+        """The two action rows, packed from the bottom so the body cannot squeeze them away."""
+        button_row = ttk.Frame(self, padding=(14, 0, 14, 10))
+        button_row.pack(side="bottom", fill="x")
+        self.footer_row = button_row
+        ttk.Button(button_row, text="Copy log", command=self._copy_log, style="Footer.TButton").pack(side="right")
+        ttk.Button(button_row, text="Copy error", command=self._copy_error, style="Footer.TButton").pack(side="right", padx=(0, 6))
+
         buttons = ttk.Frame(self, padding=(14, 0, 14, 6))
-        buttons.pack(fill="x")
-        self.run_button = ttk.Button(buttons, text="Run", command=self._run)
+        buttons.pack(side="bottom", fill="x")
+        self.footer = buttons
+        self.run_button = ttk.Button(buttons, text="Run", command=self._run, style="Footer.TButton")
         self.run_button.pack(side="left")
-        self.stop_button = ttk.Button(buttons, text="Stop", command=self._stop, state="disabled")
+        self.stop_button = ttk.Button(buttons, text="Stop", command=self._stop, state="disabled", style="Footer.TButton")
         self.stop_button.pack(side="left", padx=(6, 18))
-        ttk.Button(buttons, text="Save config", command=self._save).pack(side="left")
-        ttk.Button(buttons, text="Save as...", command=self._save_as).pack(side="left", padx=6)
-        ttk.Button(buttons, text="Load config...", command=self._load).pack(side="left")
-        ttk.Button(buttons, text="Reset", command=self._reset).pack(side="left", padx=6)
-        ttk.Button(buttons, text="All options...", command=self._show_reference).pack(side="left")
+        ttk.Button(buttons, text="Save config", command=self._save, style="Footer.TButton").pack(side="left")
+        ttk.Button(buttons, text="Save as...", command=self._save_as, style="Footer.TButton").pack(side="left", padx=6)
+        ttk.Button(buttons, text="Load config...", command=self._load, style="Footer.TButton").pack(side="left")
+        ttk.Button(buttons, text="Reset", command=self._reset, style="Footer.TButton").pack(side="left", padx=6)
+        ttk.Button(buttons, text="All options...", command=self._show_reference, style="Footer.TButton").pack(side="left")
         self.status = ttk.Label(buttons, text="Ready.", style="Status.TLabel")
         self.status.pack(side="right")
-
-        button_row = ttk.Frame(self, padding=(14, 0, 14, 10))
-        button_row.pack(fill="x")
-        ttk.Button(button_row, text="Copy log", command=self._copy_log).pack(side="right")
-        ttk.Button(button_row, text="Copy error", command=self._copy_error).pack(side="right", padx=(0, 6))
 
     # -- startup -----------------------------------------------------------------------------
 
@@ -417,7 +491,7 @@ class AutoclipApp(tk.Tk):
                     self._append(line)
         except queue.Empty:
             pass
-        self.after(100, self._drain_log)
+        self._after_id = self.after(100, self._drain_log)
 
     def _stop(self) -> None:
         """Stop the running pipeline."""
@@ -534,8 +608,10 @@ class ReferenceWindow(tk.Toplevel):
         ttk.Entry(search, textvariable=self._query).pack(side="left", fill="x", expand=True)
         self._query.trace_add("write", self._filter)
 
-        pane = ttk.PanedWindow(self, orient="vertical")
-        pane.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.pane = ttk.PanedWindow(self, orient="vertical")
+        self.pane.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        bind_pane_clamp(self.pane)
+        pane = self.pane
         self.tree = ttk.Treeview(pane, columns=("label", "path"), show="headings", height=18)
         self.tree.heading("label", text="Option")
         self.tree.heading("path", text="Config path")

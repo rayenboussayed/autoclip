@@ -30,8 +30,9 @@ the config file**:
   you press *Save config*, *Save as...* or *Run*; a broken config resets the form to the defaults
   without overwriting the file;
 - drag video files onto the **Videos** list to add them (when `tkinterdnd2` is installed; otherwise the
-  *Add videos...* button does the same), and drag the divider above the log to make the log pane as
-  tall or short as you need;
+  *Add videos...* button does the same), and drag the divider above the log: every pane keeps between
+  20% and 80% of the height, so no section can be squeezed away, and the action buttons at the bottom
+  are a little taller than the platform default so they are easy to hit;
 - *Copy error* and *Copy log* in the log header put the last error (or the whole log) on the clipboard;
 - `AUTOCLIP_DEBUG=1` makes an unexpected window error print its traceback, close the window and
   re-raise it (the default keeps Tk's error dialog).

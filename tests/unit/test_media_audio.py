@@ -46,6 +46,7 @@ def test_ffmpeg_exe_prefers_path_then_bundle_then_fails(monkeypatch: pytest.Monk
     monkeypatch.setattr(shutil, "which", lambda _n: None)
     assert Path(media.ffmpeg_exe()).exists()  # imageio-ffmpeg's bundled binary
     media.ffmpeg_exe.cache_clear()
+    media.bundled_ffmpeg_exe.cache_clear()
     real_import = builtins.__import__
 
     def no_imageio(name: str, *a: Any, **k: Any) -> Any:
@@ -94,11 +95,34 @@ def test_trim_video_re_encodes_an_exact_range(media: Media, tmp_path: Path, monk
         trim_video(media.video, tmp_path / "bad.mkv", 0.0, 1.0)
 
 
-def test_energy_track_sees_speech_and_pauses(media: Media) -> None:
+def test_energy_track_sees_speech_and_pauses(media: Media, monkeypatch: pytest.MonkeyPatch) -> None:
     db = frame_energy_db(media.video)
-    assert db is not None and len(db) == pytest.approx(80, abs=2)
+    assert len(db) == pytest.approx(80, abs=2)
     assert db[1] > db[7] + 20  # 0.5-1 s is speech, 3.5-4 s is the pause
-    assert frame_energy_db(media.silent) is None
+    # a file with no audio stream makes ffmpeg fail: that is a real error, not a flat track
+    with pytest.raises(AutoclipError, match="cannot analyse"):
+        frame_energy_db(media.silent)
+    monkeypatch.setattr(media_mod, "ffmpeg_exe", lambda: "false")
+    with pytest.raises(AutoclipError, match="cannot analyse"):
+        frame_energy_db(media.video)
+
+
+def test_external_env_strips_the_frozen_library_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A frozen build must not leak its bundled libs (libssl) into a system ffmpeg subprocess."""
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    monkeypatch.delenv("DYLD_LIBRARY_PATH", raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", None, raising=False)
+    assert media.external_env() is None  # a normal run inherits the environment untouched
+    monkeypatch.setattr(sys, "_MEIPASS", "/tmp/app/_internal")
+    assert media.external_env() is None  # frozen, but nothing of it in the environment
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/lib:/tmp/app/_internal")
+    monkeypatch.setenv("DYLD_LIBRARY_PATH", "/tmp/app/_internal")
+    monkeypatch.setenv("PATH", "/tmp/app/_internal:/usr/bin")
+    env = media.external_env()
+    assert env is not None
+    assert env["LD_LIBRARY_PATH"] == "/usr/lib"
+    assert "DYLD_LIBRARY_PATH" not in env  # only the bundled folder was there
+    assert env["PATH"] == "/usr/bin"
 
 
 def test_snap_helpers() -> None:

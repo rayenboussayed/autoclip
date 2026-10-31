@@ -14,6 +14,7 @@ import subprocess
 from collections.abc import Callable
 
 from .config import VideoCfg
+from .media import external_env
 from .models import Encoder
 
 log = logging.getLogger("autoclip")
@@ -106,7 +107,11 @@ def works(encoder: Encoder) -> bool:
     try:  # same argument order as MoviePy's writer: preset first, then our parameters
         return (
             subprocess.run(
-                [*cmd, "-preset", encoder.preset, *encoder.params, "-f", "null", "-"], capture_output=True, timeout=60, check=False
+                [*cmd, "-preset", encoder.preset, *encoder.params, "-f", "null", "-"],
+                capture_output=True,
+                timeout=60,
+                check=False,
+                env=external_env(),
             ).returncode
             == 0
         )

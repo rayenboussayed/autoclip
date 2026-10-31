@@ -251,8 +251,9 @@ def energy_track(src: Path, info: MediaInfo, cache: Cache) -> F32:
     st = src.stat()
 
     def compute() -> F32:
-        db = frame_energy_db(src)
-        return db if db is not None else np.zeros(int(info.duration / FRAME) + 1, dtype=np.float32)
+        if not info.has_audio:
+            return np.zeros(int(info.duration / FRAME) + 1, dtype=np.float32)
+        return frame_energy_db(src)
 
     track: F32 = cache.memoize_array(f"energy:{src.name}:{st.st_size}:{st.st_mtime_ns}", compute).astype(np.float32, copy=False)
     return track

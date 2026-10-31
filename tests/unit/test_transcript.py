@@ -180,6 +180,24 @@ def test_transcribe_gpu_multilingual_without_downgrade(
     assert rec["init"][:3] == ("large-v3", "cuda", "float16") and rec["options"]["multilingual"] is True
 
 
+def test_a_broken_cuda_runtime_falls_back_to_the_cpu(
+    media: Media,
+    monkeypatch: pytest.MonkeyPatch,
+    info_db: tuple[MediaInfo, F32],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A GPU that loads but cannot run must not fail the run: the CPU model takes over."""
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec, cuda=1, cuda_fails=True)
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "large-v3"})
+    with caplog.at_level(logging.WARNING, logger="autoclip"):
+        segs = transcribe(media.video, cfg, *info_db)
+    assert rec["init"][:3] == ("large-v3", "cpu", "int8")  # the CPU model replaced the GPU one
+    assert "CUDA runtime" in caplog.text
+    assert [s.text for s in segs] == SENTENCES
+
+
 @pytest.fixture
 def store(tmp_path: Path):  # type: ignore[no-untyped-def]
     st = Store(tmp_path / "t.db")
