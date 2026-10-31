@@ -185,9 +185,7 @@ def test_ask_with_a_consent_provider_true_downloads(media: Any, tmp_path: Path, 
     assert [call["local_files_only"] for call in downloader.calls] == [True, False]
 
 
-def test_an_uncached_model_on_a_tty_with_input_failure(
-    media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_an_uncached_model_on_a_tty_with_input_failure(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
 
     def throw(*a: Any, **k: Any) -> str:
