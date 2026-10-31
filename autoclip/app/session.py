@@ -174,7 +174,7 @@ def _resolve_log_file(cfg: Config) -> Path | None:
     return Path(cfg.output_dir) / "logs" / f"autoclip_{datetime.now():%Y%m%d_%H%M%S}.log"
 
 
-def run_pipeline(config_path: Path, *, cancel: CancelToken, on_line: Callable[[str], None]) -> int:
+def run_pipeline(config_path: Path, *, cancel: CancelToken, on_line: Callable[[str], None], consent: Any = None) -> int:
     """Run one config file entirely in-process (no CLI subprocess).
 
     Reports every log line through ``on_line`` and returns the exit code (0 ok, 1 failed, 2 bad config).
@@ -262,7 +262,7 @@ def run_pipeline(config_path: Path, *, cancel: CancelToken, on_line: Callable[[s
     from ..core.batch import run_batch
 
     try:
-        result = run_batch(cfg, downloader=downloader, encoder=encoder, log_file=log_file, report=reporter, cancel=cancel)
+        result = run_batch(cfg, downloader=downloader, encoder=encoder, log_file=log_file, report=reporter, cancel=cancel, consent=consent)
         on_line(f"finished: {result.clips_done} done, {result.clips_failed} failed")
         _cleanup_handlers(_LOG, (adapter,))
         on_line("")
@@ -295,7 +295,7 @@ def cancel_pipeline(handle: PipelineHandle) -> None:
     handle.done = True
 
 
-def start_pipeline(config_path: Path) -> PipelineHandle:
+def start_pipeline(config_path: Path, consent: Any = None) -> PipelineHandle:
     """Compatibility shim: spawn a handle whose worker runs ``run_pipeline`` in-process."""
     from ..core.events import CancelToken
 
@@ -306,7 +306,7 @@ def start_pipeline(config_path: Path) -> PipelineHandle:
         lines.put(line)
 
     def worker() -> None:
-        code = run_pipeline(config_path, cancel=cancel, on_line=on_line)
+        code = run_pipeline(config_path, cancel=cancel, on_line=on_line, consent=consent)
         handle.result = code
         handle.done = True
 

@@ -336,7 +336,7 @@ def test_running_starts_the_pipeline_and_shows_its_log(tmp_path: Path, monkeypat
     from autoclip.app import window
     from autoclip.app.window import AutoclipApp
 
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None) -> None:
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None) -> None:
         on_line("all done")
         on_line("")
 
@@ -367,7 +367,7 @@ def test_stopping_the_pipeline_is_possible(tmp_path: Path, monkeypatch: pytest.M
 
     stopped: list[object] = []
 
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None) -> None:
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None) -> None:
         on_line("")
 
     monkeypatch.setattr(window, "run_pipeline", _fake)
@@ -939,7 +939,7 @@ def test_closing_the_window_stops_the_pipeline(tmp_path: Path, monkeypatch: pyte
 
     stopped: list[object] = []
 
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None) -> None:
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None) -> None:
         on_line("")
 
     monkeypatch.setattr(window, "run_pipeline", _fake)
@@ -1075,7 +1075,7 @@ def test_a_run_without_a_writable_config_does_not_start(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(messagebox, "showerror", lambda *a, **k: None)
 
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None) -> None:
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None) -> None:
         pytest.fail("started without a config")
 
     monkeypatch.setattr(window, "run_pipeline", _fake)
@@ -1100,7 +1100,7 @@ def test_the_pipeline_cannot_be_started_twice(tmp_path: Path, monkeypatch: pytes
     from autoclip.app import window
     from autoclip.app.window import AutoclipApp
 
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None) -> None:
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None) -> None:
         on_line("")
 
     monkeypatch.setattr(window, "run_pipeline", _fake)

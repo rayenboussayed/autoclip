@@ -6,6 +6,11 @@ whole per-video flow and never raises for a single broken clip.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from autoclip.core.transcript import ConsentProvider
+
 import json
 import logging
 import math
@@ -78,6 +83,7 @@ def process_video(
     name: str | None = None,
     subtitle: Path | None = None,
     subtitle_manual: bool = False,
+    consent: ConsentProvider | None = None,
     report: Reporter | None = None,
     cancel: CancelToken | None = None,
 ) -> tuple[int, int]:
@@ -121,6 +127,7 @@ def process_video(
             subtitle=subtitle,
             subtitle_manual=subtitle_manual,
             name=stem,
+            consent=consent,
         )
         reporter("transcribe", 1.0, "transcript ready")
         jobs: list[RenderJob] = []

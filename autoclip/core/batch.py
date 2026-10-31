@@ -6,6 +6,11 @@ single implementation so progress and cancellation behave identically everywhere
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from autoclip.core.transcript import ConsentProvider
+
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +58,7 @@ def run_batch(
     log_file: Path | None,
     report: Reporter | None = None,
     cancel: CancelToken | None = None,
+    consent: ConsentProvider | None = None,
 ) -> BatchResult:
     """Run the configured batch and return its aggregate result.
 
@@ -98,6 +104,7 @@ def run_batch(
                     name=name,
                     subtitle=subtitle,
                     subtitle_manual=subtitle_manual,
+                    consent=consent,
                     report=scoped,
                     cancel=reporter.cancel if cancel is None else cancel,
                 )

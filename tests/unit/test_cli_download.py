@@ -93,6 +93,7 @@ def record_pipeline(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         name: str | None = None,
         subtitle: Path | None = None,
         subtitle_manual: bool = False,
+        consent: Any = None,
         report: Any = None,
         cancel: Any = None,
     ) -> tuple[int, int]:

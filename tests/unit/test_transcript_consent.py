@@ -42,8 +42,10 @@ def _run(
     downloader: Downloader,
     *,
     offline: bool = False,
+    consent: str = "ask",
     answer: Any = None,
     assume_yes: bool = False,
+    consent_provider: Any = None,
 ) -> list[Segment]:
     install_stub_whisper(monkeypatch, media, {}, download_model=downloader)
     monkeypatch.setenv("AUTOCLIP_ASSUME_YES", "1" if assume_yes else "0")
@@ -56,11 +58,12 @@ def _run(
             "model": "small",
             "model_dir": str(tmp_path / "models"),
             "offline": offline,
+            "consent": consent,
             "auto_downgrade": False,
         },
     )
     info: MediaInfo = probe(media.video)
-    return transcript.transcribe(media.video, cfg, info, np.zeros(10, dtype=np.float32), None)
+    return transcript.transcribe(media.video, cfg, info, np.zeros(10, dtype=np.float32), None, consent=consent_provider)
 
 
 def test_a_cached_model_needs_no_prompt_and_no_download(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -139,3 +142,44 @@ def test_the_seams_ask_faster_whisper_with_the_right_flags(monkeypatch: pytest.M
     transcript._download_model("small", str(tmp_path / "models"))
     assert [call["local_files_only"] for call in calls] == [True, True, False]
     assert all(call["model"] == "small" for call in calls)
+
+
+def test_auto_downloads_without_prompting(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    downloader = Downloader()
+    segs = _run(media, tmp_path, monkeypatch, downloader, consent="auto", answer=lambda *a, **k: pytest.fail("auto: no prompt"))
+    assert [s.text for s in segs] == SENTENCES
+    assert [call["local_files_only"] for call in downloader.calls] == [True, False]
+
+
+def test_never_fails_without_downloading(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    downloader = Downloader()
+    with pytest.raises(AutoclipError, match="consent is 'never'"):
+        _run(media, tmp_path, monkeypatch, downloader, consent="never", answer=lambda *a, **k: pytest.fail("never: no prompt"))
+    assert downloader.online == []
+
+
+def test_ask_with_a_consent_provider_false_fails(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    downloader = Downloader()
+    provider_calls: list[tuple[str, str]] = []
+
+    def provider(title: str, message: str) -> bool:
+        provider_calls.append((title, message))
+        return False
+
+    with pytest.raises(AutoclipError, match="not cached"):
+        _run(media, tmp_path, monkeypatch, downloader, consent_provider=provider, answer=lambda *a, **k: pytest.fail("ask: no TTY input"))
+    assert provider_calls and "Download Whisper" in provider_calls[0][1]
+    assert downloader.online == []
+
+
+def test_ask_with_a_consent_provider_true_downloads(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    downloader = Downloader()
+
+    def provider(title: str, message: str) -> bool:
+        return True
+
+    segs = _run(
+        media, tmp_path, monkeypatch, downloader, consent_provider=provider, answer=lambda *a, **k: pytest.fail("ask: no TTY input")
+    )
+    assert [s.text for s in segs] == SENTENCES
+    assert [call["local_files_only"] for call in downloader.calls] == [True, False]

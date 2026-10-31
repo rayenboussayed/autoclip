@@ -168,6 +168,7 @@ class TranscriptCfg(Section):
     model: str | None = None  # tiny base small medium large-v3 (multilingual, NOT *.en); None = auto (large-v3 on CUDA, small otherwise)
     model_dir: str | None = None  # where Whisper models are cached; None = the default HuggingFace cache
     offline: Bool = False  # never download a model; fail fast if it is not cached
+    consent: Literal["ask", "auto", "never"] = "ask"  # ask = prompt (TTY/GUI), auto = download without asking, never = fail fast
     auto_downgrade: Bool = True  # pick a smaller model when free RAM cannot hold the chosen one
     language: str | None = None  # None = auto-detect
     multilingual: Bool = True  # detect the language per segment (mixed-language audio)

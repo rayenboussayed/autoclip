@@ -660,6 +660,16 @@ TRANSCRIPT = Section(
             "Turn it on for air-gapped runs.",
         ),
         _o(
+            "transcript.consent",
+            "Consent for downloads",
+            "choice",
+            "What to do when a Whisper model is not yet on the machine: `ask` prompts (a dialog in the app, a question on the "
+            "terminal), `auto` downloads it without asking, `never` fails fast.",
+            "A download is several hundred megabytes, but running with a too-small model gives a worse transcript.",
+            "Keep `ask` on a workstation, set `auto` for unattended or server runs, `never` for air-gapped machines.",
+            choices=("ask", "auto", "never"),
+        ),
+        _o(
             "transcript.auto_downgrade",
             "Use a smaller model when memory is tight",
             "bool",

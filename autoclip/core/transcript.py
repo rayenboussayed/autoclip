@@ -9,7 +9,7 @@ import os
 import re
 import sys
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -24,6 +24,8 @@ from .resources import MB, RESOURCES
 from .store import Store
 
 log = logging.getLogger("autoclip")
+
+ConsentProvider = Callable[[str, str], bool]
 WHISPER_SR = 16000  # Whisper models expect 16 kHz mono audio
 CJK = "\u3040-\u30ff\u3400-\u9fff\u0e00-\u0e7f"  # scripts written without spaces: Japanese, Chinese, Thai
 SRT_TIME = re.compile(r"(\d+):(\d\d):(\d\d)[,.](\d{1,3})\s*-->\s*(\d+):(\d\d):(\d\d)[,.](\d{1,3})")
@@ -190,7 +192,15 @@ def _download_model(model_name: str, cache_dir: str | None) -> None:
 
 
 @traced("transcribe")
-def transcribe(src: Path, cfg: Config, info: MediaInfo, db: F32, enhancer: SpeechEnhancer | None = None) -> list[Segment]:
+def transcribe(
+    src: Path,
+    cfg: Config,
+    info: MediaInfo,
+    db: F32,
+    enhancer: SpeechEnhancer | None = None,
+    *,
+    consent: ConsentProvider | None = None,
+) -> list[Segment]:
     """Transcribe with faster-whisper using every allowed core (and the GPU when there is one).
 
     The audio is processed in ``processing.chunk_minutes`` chunks (5 by default) so neither the
@@ -209,23 +219,36 @@ def transcribe(src: Path, cfg: Config, info: MediaInfo, db: F32, enhancer: Speec
     cache_dir = tc.model_dir
     # consent for a first download (offline never downloads)
     if not _model_is_cached(model_name, cache_dir):
-        if tc.offline:
-            raise AutoclipError(f"Whisper model '{model_name}' is not cached and transcript.offline is set")
-        if os.environ.get("AUTOCLIP_ASSUME_YES") != "1":
-            answer = ""
-            # Never block a GUI/server child: input() on an idle pipe hangs forever.
-            if sys.stdin is not None and sys.stdin.isatty():
+        if tc.offline or tc.consent == "never":
+            raise AutoclipError(
+                f"Whisper model '{model_name}' is not cached and transcript.offline is set"
+                if tc.offline
+                else f"model '{model_name}' not cached and transcript.consent is 'never'"
+            )
+        auto = tc.consent == "auto" or os.environ.get("AUTOCLIP_ASSUME_YES") == "1"
+        if not auto and tc.consent == "ask":
+            if consent is not None:
+                answer = consent(
+                    "autoclip",
+                    f"Download Whisper model '{model_name}' (cached under {cache_dir or 'default cache dir'}) now?",
+                )
+                ok = bool(answer)
+            elif sys.stdin is not None and sys.stdin.isatty():
                 try:
-                    answer = input(
-                        f"Download Whisper model '{model_name}' (cached under {cache_dir or 'default cache dir'}) now? [y/N] "
-                    ).strip()
+                    ok = (
+                        input(f"Download Whisper model '{model_name}' (cached under {cache_dir or 'default cache dir'}) now? [y/N] ")
+                        .strip()
+                        .lower()
+                        .startswith("y")
+                    )
                 except (EOFError, OSError):
-                    answer = ""
+                    ok = False
             else:
-                answer = ""
-            if not answer.lower().startswith("y"):
+                ok = False
+            if not ok:
                 raise AutoclipError(
-                    f"model '{model_name}' not cached; run 'autoclip models pull {model_name}' or set AUTOCLIP_ASSUME_YES=1"
+                    f"model '{model_name}' not cached; run 'autoclip models pull {model_name}' or set "
+                    "transcript.consent: auto (or AUTOCLIP_ASSUME_YES=1)"
                 )
         _download_model(model_name, cache_dir)
     log.info("whisper model=%s device=%s%s cpu_threads=%d", model_name, device, " (GPU)" if device == "cuda" else "", threads)
@@ -305,6 +328,7 @@ def get_transcript(
     subtitle: Path | None = None,
     subtitle_manual: bool = False,
     name: str | None = None,
+    consent: ConsentProvider | None = None,
 ) -> bool:
     """Put the transcript of ``src`` into ``store`` (file, downloaded subtitles, disk cache or Whisper).
 
@@ -346,7 +370,7 @@ def get_transcript(
         if not segments:
             enhancer = SpeechEnhancer(tc.enhance, _model_dir(tc, work_dir)) if denoise else None
             try:
-                segments = transcribe(src, cfg, info, db, enhancer)
+                segments = transcribe(src, cfg, info, db, enhancer, consent=consent)
             except Exception as e:
                 if tc.mode == "whisper":
                     raise AutoclipError(f"transcription failed: {type(e).__name__}: {e}") from e
