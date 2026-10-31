@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -115,9 +116,10 @@ def test_external_env_strips_the_frozen_library_path(monkeypatch: pytest.MonkeyP
     assert media.external_env() is None  # a normal run inherits the environment untouched
     monkeypatch.setattr(sys, "_MEIPASS", "/tmp/app/_internal")
     assert media.external_env() is None  # frozen, but nothing of it in the environment
-    monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/lib:/tmp/app/_internal")
+    pathsep = os.pathsep
+    monkeypatch.setenv("LD_LIBRARY_PATH", f"/usr/lib{pathsep}/tmp/app/_internal")
     monkeypatch.setenv("DYLD_LIBRARY_PATH", "/tmp/app/_internal")
-    monkeypatch.setenv("PATH", "/tmp/app/_internal:/usr/bin")
+    monkeypatch.setenv("PATH", f"/tmp/app/_internal{pathsep}/usr/bin")
     env = media.external_env()
     assert env is not None
     assert env["LD_LIBRARY_PATH"] == "/usr/lib"

@@ -391,7 +391,14 @@ def test_the_footer_buttons_are_taller_and_clear(tmp_path: Path) -> None:
     app = AutoclipApp(tmp_path / "config.json")
     try:
         app.update()
-        padding = tuple(int(value) for value in app.tk.splitlist(ttk.Style(app).lookup("Footer.TButton", "padding")))
+        raw = ttk.Style(app).lookup("Footer.TButton", "padding")
+        raw = ttk.Style(app).lookup("Footer.TButton", "padding")
+        if isinstance(raw, (tuple, list)):
+            padding = tuple(int(value) for value in raw)
+        elif raw is None:
+            padding = FOOTER_BUTTON_PADDING
+        else:
+            padding = tuple(int(value) for value in app.tk.splitlist(str(raw)))
         assert padding == FOOTER_BUTTON_PADDING
         buttons = [child for child in app.footer.winfo_children() if isinstance(child, ttk.Button)]
         assert len(buttons) >= 7
