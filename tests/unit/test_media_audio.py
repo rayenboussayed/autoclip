@@ -206,6 +206,12 @@ def test_enhance_audio_respects_the_skip_switches(media: Media, monkeypatch: pyt
     assert calls[-1] == (0.0, False) and np.array_equal(master, TONE)  # audio.enhance is still the master off switch
 
 
+def test_enhance_audio_noisereduce_unavailable_falls_back(media: Media, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(audio, "_noisereduce_available", lambda: False)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda _n: None)
+    assert len(enhance_audio(media.video, 0.0, 1.0, AudioCfg(denoise="noisereduce"), 1)) == AUDIO_SR
+
+
 def test_is_filler() -> None:
     assert is_filler("Um,", {"um"}) and is_filler("UH.", {"uh"}) and not is_filler("umbrella", {"um"})
 

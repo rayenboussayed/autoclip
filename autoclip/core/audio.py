@@ -46,6 +46,22 @@ def frame_db(x: F32, win: float = 0.02) -> NDArray[np.float64]:
     return np.asarray(20 * np.log10(rms + 1e-9), dtype=np.float64)
 
 
+log = logging.getLogger("autoclip")
+
+_NOISEREDUCE_MISSING_WARNED = [False]
+
+
+def _noisereduce_available() -> bool:
+    """Whether the optional ``noisereduce`` package can actually be imported."""
+    if importlib.util.find_spec("noisereduce") is None:
+        return False
+    try:
+        import noisereduce  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
 @traced("enhance_audio")
 def enhance_audio(src: Path, start: float, dur: float, cfg: AudioCfg, threads: int, *, enhance: bool = True, denoise: bool = True) -> F32:
     """Window audio, high-passed, denoised, loudness-normalised (speech frames only) and soft-limited.
@@ -56,8 +72,12 @@ def enhance_audio(src: Path, start: float, dur: float, cfg: AudioCfg, threads: i
     """
     if not cfg.enhance or (not enhance and not denoise):
         return load_window_audio(src, start, dur)
-    use_nr = denoise and (cfg.denoise == "noisereduce" or (cfg.denoise == "auto" and importlib.util.find_spec("noisereduce") is not None))
-    fft = denoise and (cfg.denoise == "ffmpeg" or (cfg.denoise == "auto" and not use_nr))
+    have_nr = _noisereduce_available()
+    if cfg.denoise == "noisereduce" and denoise and not have_nr and not _NOISEREDUCE_MISSING_WARNED[0]:
+        _NOISEREDUCE_MISSING_WARNED[0] = True
+        log.warning("audio.denoise is set to 'noisereduce' but the package is unavailable; falling back to ffmpeg afftdn")
+    use_nr = denoise and have_nr and (cfg.denoise == "noisereduce" or (cfg.denoise == "auto" and have_nr))
+    fft = denoise and (cfg.denoise == "ffmpeg" or (cfg.denoise in ("auto", "noisereduce") and not use_nr))
     x: F32 = load_window_audio(src, start, dur, cfg.highpass_hz if enhance else 0, fft_denoise=fft)
     if use_nr and len(x) >= AUDIO_SR:  # clips under a second are too short to estimate noise from
         import noisereduce
