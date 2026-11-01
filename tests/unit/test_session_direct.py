@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 from typing import Any
 
@@ -17,10 +18,9 @@ def test_run_pipeline_success(media: Any, tmp_path: Path, monkeypatch: pytest.Mo
     cfg = dataclasses.asdict(
         make_cfg(media, tmp_path / "out", clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
     )
-    import json as _json
 
     path = tmp_path / "config.json"
-    path.write_text(_json.dumps(cfg), encoding="utf-8")
+    path.write_text(json.dumps(cfg), encoding="utf-8")
     code = run_pipeline(path, cancel=CancelToken(), on_line=lines.append)
     assert code == 0
     assert any("finished:" in line for line in lines)
@@ -49,6 +49,134 @@ def test_cancel_pipeline_handle() -> None:
     assert h.done is True
 
 
+def test_queue_handler_init() -> None:
+    import queue
+
+    from autoclip.app.session import _QueueHandler
+
+    handler = _QueueHandler(queue.Queue())
+    assert handler.queue is not None
+
+
+def test_resolve_log_file_enabled(tmp_path: Path) -> None:
+    from autoclip.app.session import _resolve_log_file
+    from autoclip.core.config import Config
+
+    cfg = Config(output_dir=str(tmp_path))
+    cfg.logging.enabled = True
+    # path without explicit file uses output_dir/logs
+    result = _resolve_log_file(cfg)
+    assert result is not None and "logs" in str(result)
+    cfg.logging.file = str(tmp_path / "custom.log")
+    result2 = _resolve_log_file(cfg)
+    assert result2 == Path(tmp_path / "custom.log")
+
+
+def test_run_pipeline_logging_enabled(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    install_stub_whisper(monkeypatch, media, {}, cuda=0)
+    lines: list[str] = []
+    cfg = dataclasses.asdict(
+        make_cfg(media, tmp_path / "out3", clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
+    )
+    cfg["logging"] = {"enabled": True, "level": "INFO", "console_level": "ERROR", "file": None}
+    path = tmp_path / "cfg3.json"
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    code = run_pipeline(path, cancel=CancelToken(), on_line=lines.append)
+    assert code == 0
+
+
+def test_run_pipeline_adapter_error(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    install_stub_whisper(monkeypatch, media, {}, cuda=0)
+    lines_called = {"n": 0}
+
+    def on_line(line: str) -> None:
+        lines_called["n"] += 1
+        if lines_called["n"] == 1:
+            raise RuntimeError("boom")
+
+    cfg = dataclasses.asdict(
+        make_cfg(media, tmp_path / "out4", clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
+    )
+    path = tmp_path / "cfg4.json"
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    code = run_pipeline(path, cancel=CancelToken(), on_line=on_line)
+    assert code in (0, 1)
+
+
+def test_run_pipeline_downloader_error(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core import errors as E
+
+    class BoomDownloader:
+        def __init__(self, cfg: Any) -> None:
+            raise E.AutoclipError("nope")
+
+    monkeypatch.setattr("autoclip.core.download.Downloader", BoomDownloader)
+    cfg = dataclasses.asdict(
+        make_cfg(media, tmp_path / "out5", clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
+    )
+    cfg["input"] = ["https://example.com/x.mp4"]
+    path = tmp_path / "cfg5.json"
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    lines: list[str] = []
+    code = run_pipeline(path, cancel=CancelToken(), on_line=lines.append)
+    assert code == 1
+
+
+def test_run_pipeline_downloader_config_error(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core import errors as E
+
+    class BoomDownloader:
+        def __init__(self, cfg: Any) -> None:
+            raise E.ConfigError("nope")
+
+    monkeypatch.setattr("autoclip.core.download.Downloader", BoomDownloader)
+    cfg = dataclasses.asdict(
+        make_cfg(media, tmp_path / "out6", clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
+    )
+    cfg["input"] = ["https://example.com/x.mp4"]
+    path = tmp_path / "cfg6.json"
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    lines: list[str] = []
+    code = run_pipeline(path, cancel=CancelToken(), on_line=lines.append)
+    assert code == 2
+
+
+def test_run_pipeline_runbatch_config_error(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    install_stub_whisper(monkeypatch, media, {}, cuda=0)
+    from autoclip.core import errors as E
+
+    def boom(*a: Any, **k: Any) -> None:
+        raise E.ConfigError("boom")
+
+    monkeypatch.setattr("autoclip.core.batch.run_batch", boom)
+    cfg = dataclasses.asdict(
+        make_cfg(media, tmp_path / "out7", clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
+    )
+    path = tmp_path / "cfg7.json"
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    lines: list[str] = []
+    code = run_pipeline(path, cancel=CancelToken(), on_line=lines.append)
+    assert code == 2
+
+
+def test_stop_pipeline_with_cancel() -> None:
+    import threading
+
+    from autoclip.app.session import PipelineHandle, stop_pipeline
+    from autoclip.core.events import CancelToken
+
+    handle = PipelineHandle(cancel=CancelToken(), thread=threading.Thread(target=lambda: None))
+    handle.thread.start()
+    handle.thread.join()
+    stop_pipeline(handle)
+
+
+def test_stop_pipeline_without_cancel() -> None:
+    from autoclip.app.session import stop_pipeline
+
+    stop_pipeline(object())
+
+
 def test_run_pipeline_empty_result(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
     lines: list[str] = []
@@ -60,9 +188,8 @@ def test_run_pipeline_empty_result(media: Any, tmp_path: Path, monkeypatch: pyte
             clips={"mode": "ranges", "kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10, **extra}},
         )
     )
-    import json as _json
 
     path = tmp_path / "cfg.json"
-    path.write_text(_json.dumps(cfg), encoding="utf-8")
+    path.write_text(json.dumps(cfg), encoding="utf-8")
     code = run_pipeline(path, cancel=CancelToken(), on_line=lines.append)
     assert code in (0, 1)

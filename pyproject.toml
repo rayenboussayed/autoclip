@@ -89,7 +89,7 @@ ignore_decorators = [
 [tool.deptry]
 optional_dependencies_dev_groups = ["dev"]
 extend_exclude = ["tools"]
-per_rule_ignores = { DEP001 = ["ctranslate2", "imageio_ffmpeg"], DEP003 = ["ctranslate2", "imageio_ffmpeg"], DEP002 = ["jinja2", "python-multipart", "aiofiles", "websockets", "tkinterdnd2"] }
+per_rule_ignores = { DEP001 = ["ctranslate2", "imageio_ffmpeg", "audioop"], DEP003 = ["ctranslate2", "imageio_ffmpeg", "audioop"], DEP002 = ["jinja2", "python-multipart", "aiofiles", "websockets", "tkinterdnd2", "audioop-lts"] }
 
 [tool.deptry.package_module_name_map]
 Pillow = "PIL"

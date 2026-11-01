@@ -116,7 +116,7 @@ def length_bonus(cands: Candidates, kind: KindCfg) -> F64:
     target = kind.target_seconds
     span = max(abs(target - kind.min_seconds), abs(kind.max_seconds - target), 1e-6)
     length = cands.end - cands.start
-    return cast(F64, LENGTH_BONUS * (1.0 - np.minimum(np.abs(length - target) / span, 1.0)))
+    return LENGTH_BONUS * (1.0 - np.minimum(np.abs(length - target) / span, 1.0))
 
 
 def zscore(v: F64) -> F64:

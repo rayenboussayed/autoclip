@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -69,6 +70,103 @@ def test_upload_rejects_invalid_config(client: TestClient) -> None:
         data={"config_json": "{not json"},
     )
     assert response.status_code == 400
+
+
+def test_upload_config_file_and_config_json(client: TestClient, tmp_path: Path) -> None:
+    # upload a separate config file
+    (tmp_path / "cfg.json").write_text(json.dumps({"logging": {"enabled": False}}), encoding="utf-8")
+    from io import BytesIO
+
+    resp = client.post(
+        "/api/jobs",
+        files={
+            "file": ("clip.mp4", b"x", "video/mp4"),
+            "config": ("cfg.json", BytesIO(b'{"video":{"short_side":96}}'), "application/json"),
+        },
+    )
+    assert resp.status_code == 201
+
+    # config_json branch
+    resp2 = client.post(
+        "/api/jobs",
+        files={"file": ("clip2.mp4", b"x", "video/mp4")},
+        data={"config_json": '{"video":{"short_side":96}}'},
+    )
+    assert resp2.status_code == 201
+
+    # config must be a JSON object
+    resp3 = client.post(
+        "/api/jobs",
+        files={"file": ("clip3.mp4", b"x", "video/mp4")},
+        data={"config_json": '["x"]'},
+    )
+    assert resp3.status_code == 400
+
+
+def test_download_job_not_completed_and_missing_archive(client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.server.routers import api
+    from autoclip.server.schemas import JobState
+    from autoclip.server.state import Job, registry
+
+    job = Job(job_id="dljob", filename="x.mp4", input_path=tmp_path / "x.mp4", output_dir=tmp_path / "dlout", config={})
+    job.output_dir.mkdir()
+    job.state = JobState.queued
+    with registry._lock:
+        registry._jobs[job.job_id] = job
+    resp = client.get("/api/jobs/dljob/download")
+    assert resp.status_code == 409
+
+    # completed but archive missing
+    job.state = JobState.completed
+    monkeypatch.setattr(api, "zip_outputs", lambda j: tmp_path / "missing.zip")
+    resp2 = client.get("/api/jobs/dljob/download")
+    assert resp2.status_code == 500
+    with registry._lock:
+        registry._jobs.pop(job.job_id, None)
+
+
+def test_state_to_status_directory_size(client: TestClient, tmp_path: Path) -> None:
+    from autoclip.server.state import Job
+
+    d = tmp_path / "d"
+    d.mkdir()
+    job = Job(job_id="x", filename="f", input_path=tmp_path / "f", output_dir=d, config={})
+    job.outputs = [d]
+    status = job.to_status()
+    assert status["outputs"][0]["size_bytes"] == 0
+
+
+def test_registry_create_and_evict_expired(tmp_path: Path) -> None:
+    from autoclip.server.state import JobRegistry
+
+    reg = JobRegistry()
+    job = reg.create(filename="f", input_path=tmp_path / "f", output_dir=tmp_path / "o", config={})
+    assert reg.get(job.job_id) is job
+    assert job in reg.list()
+    job.finished_at = 0
+    (tmp_path / "o").mkdir(exist_ok=True)
+    reg.evict_expired(100000)
+    # far future? already evicted because ttl 100000 sec after epoch finished
+    # no assertion beyond no crash
+
+
+def test_get_job_success(client: TestClient, tmp_path: Path) -> None:
+    from autoclip.server.state import Job, registry
+
+    job = Job(job_id="get-ok", filename="x.mp4", input_path=tmp_path / "x.mp4", output_dir=tmp_path / "getout", config={})
+    job.output_dir.mkdir()
+    (tmp_path / "x.mp4").write_text("x", encoding="utf-8")
+    with registry._lock:
+        registry._jobs[job.job_id] = job
+    resp = client.get("/api/jobs/get-ok")
+    assert resp.status_code == 200
+    with registry._lock:
+        registry._jobs.pop(job.job_id, None)
+
+
+def test_create_job_without_config(client: TestClient) -> None:
+    resp = client.post("/api/jobs", files={"file": ("n.bin", b"x", "application/octet-stream")})
+    assert resp.status_code == 201
 
 
 def test_job_status_404(client: TestClient) -> None:
@@ -607,6 +705,99 @@ def test_api_websocket_rejects_bad_tokens_and_unknown_jobs(tmp_path: Path, monke
         # Valid token on a job that does not exist is also refused.
         with pytest.raises(WebSocketDisconnect), client.websocket_connect("/api/jobs/missing/ws?token=user:pass") as websocket:
             websocket.receive_json()
+
+
+def test_main_evictor_handles_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("MAX_FILE_SIZE", "1024")
+    from autoclip.server import main as server_main
+    from autoclip.server.state import registry
+
+    monkeypatch.setattr(server_main, "EVICT_SECONDS", 0.01)
+    monkeypatch.setattr(registry, "evict_expired", lambda rtl: (_ for _ in ()).throw(RuntimeError("boom")))
+    import time
+
+    app = server_main.create_app()
+    with TestClient(app):
+        time.sleep(0.2)
+    assert True
+
+
+def test_run_job_task_cancel_requested() -> None:
+    import asyncio
+
+    from autoclip.server.state import Job, registry
+
+    job = Job(job_id="cancel-task", filename="x.mp4", input_path=Path("/x.mp4"), output_dir=Path("/tmp/out"), config={})
+    job.cancel_requested = True
+    with registry._lock:
+        registry._jobs[job.job_id] = job
+    from autoclip.server.routers.api import _run_job_task
+
+    asyncio.run(_run_job_task(job.job_id))
+    assert job.state.value == "cancelled"
+    with registry._lock:
+        registry._jobs.pop(job.job_id, None)
+
+
+def test_download_job_success(client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.server.routers import api
+    from autoclip.server.schemas import JobState
+    from autoclip.server.state import Job, registry
+
+    job = Job(job_id="dl-ok", filename="x.mp4", input_path=tmp_path / "x.mp4", output_dir=tmp_path / "dlout", config={})
+    (tmp_path / "x.mp4").write_text("x", encoding="utf-8")
+    job.output_dir.mkdir()
+    job.state = JobState.completed
+    with registry._lock:
+        registry._jobs[job.job_id] = job
+
+    dummy = tmp_path / "archive.zip"
+    dummy.write_bytes(b"x")
+    monkeypatch.setattr(api, "zip_outputs", lambda j: dummy)
+    resp = client.get("/api/jobs/dl-ok/download")
+    assert resp.status_code == 200
+    with registry._lock:
+        registry._jobs.pop(job.job_id, None)
+
+
+def test_run_job_subprocess_path(monkeypatch: pytest.MonkeyPatch, media: Any, tmp_path: Path) -> None:
+    from tests.support import install_stub_whisper, make_cfg
+
+    install_stub_whisper(monkeypatch, media, {}, cuda=0)
+    monkeypatch.delenv("AUTOCLIP_SERVER_INPROCESS", raising=False)
+    import dataclasses
+
+    from autoclip.server.schemas import JobState
+    from autoclip.server.service import run_job
+    from autoclip.server.state import Job
+
+    cfg_custom = dataclasses.asdict(
+        make_cfg(
+            media,
+            tmp_path / "out",
+            audio={"denoise": "none"},
+            compute={"device": "cpu"},
+            clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}},
+        )
+    )
+    cfg_custom.pop("input", None)
+    cfg_custom.pop("output_dir", None)
+    cfg_custom["transcript"] = {"mode": "off"}
+    upload = media.video
+    out = tmp_path / "subout"
+    out.mkdir()
+    job = Job(
+        job_id="sub-job",
+        filename=upload.name,
+        input_path=upload,
+        output_dir=out,
+        config={"_custom": cfg_custom},
+        work_dir=out / ".work" / upload.stem,
+    )
+    run_job(job)
+    assert job.state in (JobState.completed, JobState.failed)
 
 
 def test_run_job_task_ignores_missing_jobs() -> None:

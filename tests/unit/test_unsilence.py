@@ -1,20 +1,18 @@
 from __future__ import annotations
 
-import os
+from typing import Any
 
-import av
+import os
 from pathlib import Path
 
 import pytest
 
-from autoclip.core.config import Config
 from autoclip.core.hardware import cpu_encoder
 from autoclip.core.media import probe
 from autoclip.core.pipeline import process_video
 from autoclip.core.unsilence import _pydub_available, remove_silence
 
-from ..support import Media, make_cfg, write_config
-
+from ..support import Media, make_cfg
 
 pytest.importorskip("pydub")
 
@@ -72,7 +70,7 @@ def test_when_pydub_is_unavailable_source_is_copied(media: Media, tmp_path: Path
 def test_no_audio_track_source_is_copied(media: Media, tmp_path: Path) -> None:
     cfg = make_cfg(media, tmp_path, None)
     cfg.unsilence.enabled = True
-    destination = tmp_path / "long" / "silent" / f"unsilence_silent.mp4"
+    destination = tmp_path / "long" / "silent" / "unsilence_silent.mp4"
     destination.parent.mkdir(parents=True, exist_ok=True)
     returned = remove_silence(media.silent, cfg, destination)
     assert returned == destination
@@ -111,7 +109,7 @@ def test_impossible_source_raises(media: Media, tmp_path: Path) -> None:
     cfg.unsilence.enabled = True
     destination = tmp_path / "long" / media.video.stem / f"unsilence_{media.video.stem}.mp4"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with pytest.raises(Exception):
+    with pytest.raises((ValueError, OSError, RuntimeError)):
         remove_silence(tmp_path / "missing.mp4", cfg, destination)
 
 
@@ -120,7 +118,7 @@ def test_prepare_path_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     from autoclip.core.media import ffmpeg_exe
 
     ffmpeg_dir = str(Path(ffmpeg_exe()).parent)
-    monkeypatch.setenv("PATH", ffmpeg_dir, prepend=False)
+    monkeypatch.setenv("PATH", ffmpeg_dir)
     original = os.environ.get("PATH", "")
     os.environ["PATH"] = ffmpeg_dir
     unsilence._prepare_path()
@@ -132,9 +130,6 @@ def test_prepare_path_branches(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_pydub_import_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    import builtins
-
-    import importlib
 
     from autoclip.core import unsilence
 
@@ -142,22 +137,19 @@ def test_pydub_import_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     assert unsilence._pydub_available() is False
 
 
-
 def test_audioop_fallback_branch(monkeypatch: pytest.MonkeyPatch) -> None:
-    import builtins
+    import importlib
     import sys
     import types
 
     from autoclip.core import unsilence
-
-    import importlib
 
     importlib_original = importlib.import_module
     fake_audioop = types.ModuleType("audioop_lts")
     monkeypatch.delitem(sys.modules, "audioop", raising=False)
     monkeypatch.setitem(sys.modules, "audioop_lts", fake_audioop)
 
-    def fake_module(name):
+    def fake_module(name: str) -> Any:
         if name == "pydub":
             return importlib_original(name)
         if name == "audioop":
@@ -170,11 +162,12 @@ def test_audioop_fallback_branch(monkeypatch: pytest.MonkeyPatch) -> None:
     assert unsilence._pydub_available() is True
 
 
-
 def test_non_silent_interval_helpers(monkeypatch: pytest.MonkeyPatch, media: Media) -> None:
-    from autoclip.core import unsilence
-    from ..support import make_cfg
     from pydub import AudioSegment
+
+    from autoclip.core import unsilence
+
+    from ..support import make_cfg
 
     cfg = make_cfg(media, Path("."), None)
     cfg.unsilence.enabled = True
@@ -236,17 +229,17 @@ def test_moviepy_invalid_output_branch(media: Media, tmp_path: Path, monkeypatch
         duration = 10.0
         audio = types.SimpleNamespace(fps=22050.0)
 
-        def subclipped(self, s, e):
+        def subclipped(self: Any, s: float, e: float) -> Any:
             return self
 
-        def close(self):
+        def close(self) -> None:
             return None
 
     class FakeAssembled:
-        def write_videofile(self, *a, **k):
+        def write_videofile(self: Any, *a: Any, **k: Any) -> None:
             return None
 
-        def close(self):
+        def close(self) -> None:
             return None
 
     import moviepy
@@ -289,8 +282,8 @@ def test_exception_same_source_branch(media: Media, tmp_path: Path, monkeypatch:
 
 
 def test_audioop_lts_unavailable_branch(monkeypatch: pytest.MonkeyPatch) -> None:
-    import sys
     import importlib
+    import sys
 
     from autoclip.core import unsilence
 
@@ -298,7 +291,7 @@ def test_audioop_lts_unavailable_branch(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.delitem(sys.modules, "audioop", raising=False)
 
-    def fake(name):
+    def fake(name: str) -> Any:
         if name == "pydub":
             return importlib_original(name)
         if name == "audioop":
@@ -312,9 +305,11 @@ def test_audioop_lts_unavailable_branch(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_non_silent_merge_branch(media: Media, monkeypatch: pytest.MonkeyPatch) -> None:
-    from autoclip.core import unsilence
-    from ..support import make_cfg
     from pydub import AudioSegment
+
+    from autoclip.core import unsilence
+
+    from ..support import make_cfg
 
     cfg = make_cfg(media, Path("."), None)
     cfg.unsilence.enabled = True
@@ -327,7 +322,7 @@ def test_non_silent_merge_branch(media: Media, monkeypatch: pytest.MonkeyPatch) 
 def test_no_audio_copy_failure(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = make_cfg(media, tmp_path, None)
     cfg.unsilence.enabled = True
-    destination = tmp_path / "long" / "silent" / f"unsilence_silent.mp4"
+    destination = tmp_path / "long" / "silent" / "unsilence_silent.mp4"
     destination.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr("shutil.copyfile", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
     returned = remove_silence(media.silent, cfg, destination)

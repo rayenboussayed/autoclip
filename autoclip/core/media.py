@@ -101,15 +101,13 @@ def frame_energy_db(path: Path) -> F32:
     ``energy_track`` before this is called - see there, and the test suite).  Keeping this silent
     hid a broken ffmpeg build (bundled libssl under the AppImage) as a flat-zero energy track
     for the whole file instead of a loud failure."""
-    last_err: Exception | None = None
+    last_err: AutoclipError = AutoclipError(f"cannot analyse '{path.name}': ffmpeg failed")
     for _attempt in range(2):
         try:
             return _frame_energy_db(path)
         except AutoclipError as exc:
             last_err = exc
-    if last_err is not None:
-        raise last_err
-    raise AutoclipError(f"cannot analyse '{path.name}': ffmpeg failed")
+    raise last_err
 
 
 def _frame_energy_db(path: Path) -> F32:

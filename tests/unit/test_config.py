@@ -361,3 +361,16 @@ def test_platform_settings_may_override_nested_sections() -> None:
         },
     )
     assert cfg.download.platforms.settings["youtube"] == {"metadata": {"thumbnail": True}, "subtitles": {"enabled": True}}
+
+
+def test_default_transcript_model_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+    import types
+
+    from autoclip.core import config
+
+    fake = types.ModuleType("ctranslate2")
+    fake.get_cuda_device_count = lambda: 2  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ctranslate2", fake)
+    # direct function re-import via module reload? Config imported already; call function from module with patched sys
+    assert config._default_transcript_model() == "large-v3"

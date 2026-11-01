@@ -385,3 +385,161 @@ def test_module_entry_point(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     with pytest.raises(SystemExit) as exit_info:
         runpy.run_module("autoclip", run_name="__main__")
     assert exit_info.value.code == 0 and (tmp_path / "x.json").exists()
+
+
+def test_render_all_cancelled_before_start(media: Media, tmp_path: Path) -> None:
+    from autoclip.core.events import CancelToken
+
+    jobs, store, cfg = parallel_jobs(media, tmp_path, 2)
+    tok = CancelToken()
+    tok.cancel()
+    render_all(jobs, 100 << 20, cancel=tok)
+    # no clip rendered
+    assert all(v == "pending" for v in statuses(store))
+    store.close()
+
+
+def test_render_all_cancel_during_inprocess_loop(media: Media, tmp_path: Path) -> None:
+    from autoclip.core.events import CancelToken
+
+    jobs, store, cfg = parallel_jobs(media, tmp_path, 3, cpus=1)
+    tok = CancelToken()
+    # cancel before entering loop; in-process capacity branch still evaluates the cancelling job line
+    tok.cancel()
+    render_all(jobs, 100 << 20, cancel=tok)
+    assert len(statuses(store)) == 3
+    store.close()
+
+
+def test_render_all_inprocess_cancel_after_first_job(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core.events import CancelToken, Reporter
+
+    jobs, store, _ = parallel_jobs(media, tmp_path, 2, cpus=1)
+    tok = CancelToken()
+    calls = {"n": 0}
+
+    def sink(_p: Any) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            tok.cancel()
+
+    render_all(jobs, 100 << 20, cancel=tok, report=Reporter(sink))
+    assert len(statuses(store)) == 2
+    store.close()
+
+
+def test_render_all_pool_second_submit_exception(
+    media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    jobs, store, _ = parallel_jobs(media, tmp_path, 2)
+    calls = {"n": 0}
+
+    orig_submit: Any = ThreadPool.submit
+
+    def submit(self: Any, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("boom")
+        return orig_submit(self, fn, *args, **kwargs)
+
+    monkeypatch.setattr(ThreadPool, "submit", submit)
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", ThreadPool)
+    with caplog.at_level(logging.WARNING, logger="autoclip"):
+        render_all(jobs, 100 << 20)
+    store.close()
+
+
+def test_render_all_pool_submit_exception(
+    media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    jobs, store, _ = parallel_jobs(media, tmp_path, 2)
+
+    class BoomPool(ThreadPool):
+        def submit(self, fn: Any, /, *args: Any, **kwargs: Any) -> Future[Any]:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", BoomPool)
+    with caplog.at_level(logging.WARNING, logger="autoclip"):
+        render_all(jobs, 100 << 20)
+    assert statuses(store) == ["pending", "done"]
+    store.close()
+
+
+def test_render_all_cancel_after_pool(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    jobs, store, _ = parallel_jobs(media, tmp_path, 2)
+
+    class CancelAfterPool(ThreadPool):
+        pass
+
+    # cancel during pool scheduling by setting token on the first report
+    from autoclip.core.events import CancelToken
+
+    tok = CancelToken()
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", CancelAfterPool)
+
+    def cb(_: Any) -> None:
+        pass
+
+    render_all(jobs, 100 << 20, cancel=tok)
+    assert len(statuses(store)) == 2
+    store.close()
+
+
+def test_render_all_cancel_during_pool_completion(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core.events import CancelToken, Reporter
+
+    jobs, store, _ = parallel_jobs(media, tmp_path, 2, cpus=8)
+    tok = CancelToken()
+
+    def sink(p: Any) -> None:
+        if getattr(p, "stage", "") == "render" and str(getattr(p, "message", "")).endswith("1/2"):
+            tok.cancel()
+
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", ThreadPool)
+    render_all(jobs, 100 << 20, cancel=tok, report=Reporter(sink))
+    assert len(statuses(store)) == 2
+    store.close()
+
+
+def test_render_all_with_report(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core.events import Reporter
+
+    jobs, store, cfg = parallel_jobs(media, tmp_path, 2)
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", ThreadPool)
+    render_all(jobs, 100 << 20, report=Reporter(lambda p: None))
+    assert statuses(store) == ["done", "done"]
+    store.close()
+
+
+def test_render_all_pool_exception_fallback(
+    media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    jobs, store, cfg = parallel_jobs(media, tmp_path, 2)
+
+    class BoomPool(ThreadPool):
+        def __enter__(self) -> BoomPool:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", BoomPool)
+    with caplog.at_level(logging.WARNING, logger="autoclip"):
+        render_all(jobs, 100 << 20)
+    assert "falling back to in-process" in caplog.text
+    assert statuses(store) == ["done", "done"]
+    store.close()
+
+
+def test_render_all_cancel_after_pool_repeat(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core.events import CancelToken
+
+    jobs, store, cfg = parallel_jobs(media, tmp_path, 2)
+    tok = CancelToken()
+
+    class CancelPool(ThreadPool):
+        def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future[Any]:
+            tok.cancel()
+            return super().submit(fn, *args, **kwargs)
+
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", CancelPool)
+    render_all(jobs, 100 << 20, cancel=tok)
+    assert len(statuses(store)) == 2
+    store.close()

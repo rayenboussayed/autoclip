@@ -263,6 +263,24 @@ def test_ffmpeg_failure_is_loud(tmp_path: Path) -> None:
         load_window_audio(tmp_path / "missing.mp4", 0.0, 1.0)
 
 
+def test_decode_audio_timeout_then_success(media: Media, monkeypatch: pytest.MonkeyPatch) -> None:
+    __import__("autoclip.core.media", fromlist=["x"])
+    import subprocess
+
+    real_run = subprocess.run
+    counter = {"n": 0}
+
+    def fake_run(cmd: list[str], *a: Any, **k: Any) -> subprocess.CompletedProcess[bytes]:
+        counter["n"] += 1
+        if counter["n"] == 1:
+            raise subprocess.TimeoutExpired(cmd, 0.1)
+        return real_run(cmd, *a, **k)
+
+    monkeypatch.setattr("autoclip.core.media.subprocess.run", fake_run)
+    samples = decode_audio(media.video, 0.0, 1.0, 16000)
+    assert len(samples) == 16000
+
+
 def test_decode_audio_at_any_sample_rate(media: Media) -> None:
     whisper = decode_audio(media.video, 1.0, 2.0, 16000)
     assert whisper.dtype == np.float32 and len(whisper) == 32000 and np.abs(whisper).max() > 0.1

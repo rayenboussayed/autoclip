@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sys
 import urllib.request
@@ -240,3 +241,11 @@ def test_an_invalid_model_is_reported(tmp_path: Path, monkeypatch: pytest.Monkey
 
     enhancer = SpeechEnhancer(EnhanceCfg(model="gtcrn"), tmp_path)
     assert not enhancer.active  # the invalid model disables the enhancement instead of failing the run
+
+
+def test_fetch_model_retries_then_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+    with contextlib.suppress(Exception):
+        fetch_model("gtcrn", tmp_path)

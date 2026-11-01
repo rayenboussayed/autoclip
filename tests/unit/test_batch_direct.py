@@ -38,3 +38,10 @@ def test_run_batch_cancel(media: Any, tmp_path: Path, monkeypatch: pytest.Monkey
 
     with contextlib.suppress(Cancelled):
         run_batch(cfg, downloader=None, encoder=pick_encoder(cfg.video, allow_gpu=False), log_file=None, cancel=tok)
+
+
+def test_unique_name_first_candidate() -> None:
+    from autoclip.core.batch import _unique_name
+
+    used: set[str] = set()
+    assert _unique_name("foo", used) == "foo"

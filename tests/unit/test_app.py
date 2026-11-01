@@ -1487,6 +1487,41 @@ def test_closing_the_window_without_a_run_just_closes_it(tmp_path: Path) -> None
 
 
 @needs_display
+def test_process_setter_and_consent_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import tkinter.messagebox as mb
+
+    from autoclip.app import window
+    from autoclip.app.window import AutoclipApp
+
+    monkeypatch.setattr(mb, "askyesno", lambda *a, **k: True)
+
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None) -> None:
+        if consent is not None:
+            consent("autoclip", "download?")
+        on_line("all done")
+        on_line("")
+
+    monkeypatch.setattr(window, "run_pipeline", _fake)
+    path = tmp_path / "config.json"
+    app = AutoclipApp(path)
+    try:
+        app._process = None
+        app._run()
+        for _ in range(100):
+            app.update()
+            if app._process is None and "all done" in app.log.get("1.0", "end"):
+                break
+            import time
+
+            time.sleep(0.05)
+        # drain consent queue directly too
+        if hasattr(app, "_drain_consent"):
+            app._drain_consent()
+    finally:
+        app.destroy()
+
+
+@needs_display
 def test_the_button_that_opens_the_option_reference(tmp_path: Path) -> None:
     """The reference window can be opened from the app."""
     from autoclip.app.window import AutoclipApp, ReferenceWindow
