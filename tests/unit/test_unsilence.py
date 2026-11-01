@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from autoclip.core.errors import AutoclipError
 from autoclip.core.hardware import cpu_encoder
 from autoclip.core.media import probe
 from autoclip.core.pipeline import process_video
@@ -108,7 +109,7 @@ def test_impossible_source_raises(media: Media, tmp_path: Path) -> None:
     cfg.unsilence.enabled = True
     destination = tmp_path / "long" / media.video.stem / f"unsilence_{media.video.stem}.mp4"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with pytest.raises((ValueError, OSError, RuntimeError)):
+    with pytest.raises(AutoclipError):
         remove_silence(tmp_path / "missing.mp4", cfg, destination)
 
 
