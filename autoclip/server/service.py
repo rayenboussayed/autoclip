@@ -237,7 +237,13 @@ def zip_outputs(job: Job) -> Path:
     zip_path = settings.cache_dir / f"{job.job_id}.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(job.output_dir.rglob("*")):
-            relative = path.relative_to(job.output_dir)
+            try:
+                relative = path.relative_to(job.output_dir)
+            except ValueError:
+                continue
             if path.is_file() and ".work" not in relative.parts:
-                zf.write(path, arcname=str(relative))
+                try:
+                    zf.write(path, arcname=str(relative))
+                except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+                    log.warning("could not add %s to job %s zip: %s", path, job.job_id, exc)
     return zip_path

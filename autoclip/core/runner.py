@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import logging
 import multiprocessing
@@ -102,35 +103,47 @@ def render_all(
         return
     running: dict[Future[bool], RenderJob] = {}
     retry: list[RenderJob] = []
-    with ProcessPoolExecutor(max_workers=capacity, mp_context=multiprocessing.get_context("spawn")) as pool:
-        while (pending or running) and (cancel is None or not cancel.cancelled):
-            plan = RESOURCES.plan_workers(est_bytes, len(pending) + len(running), limit)
-            while pending and len(running) < plan.workers and (cancel is None or not cancel.cancelled):
-                job = replace(pending.popleft(), threads=plan.threads)
-                log.info(
-                    "submit clip %d (running=%d allowed=%d threads=%d | %s)",
-                    job.clip_id,
-                    len(running) + 1,
-                    plan.workers,
-                    job.threads,
-                    RESOURCES.brief(),
-                )
-                running[pool.submit(render_job, job)] = job
-            if not running:
-                break
-            done, _ = wait(running, return_when=FIRST_COMPLETED)
-            for future in done:
-                job = running.pop(future)
-                try:
-                    future.result()
-                except BrokenProcessPool:
-                    log.warning("worker for clip %d died (probably out of memory): retrying it alone", job.clip_id)
-                    retry.append(job)
-                finished += 1
-                if report is not None:
-                    report("render", finished / total, f"clip {finished}/{total}")
-            if retry and not running:
-                break
+    pool: ProcessPoolExecutor | None = None
+    try:
+        pool = ProcessPoolExecutor(max_workers=capacity, mp_context=multiprocessing.get_context("spawn"))
+        with pool:  # context exit waits for outstanding tasks
+            while (pending or running) and (cancel is None or not cancel.cancelled):
+                plan = RESOURCES.plan_workers(est_bytes, len(pending) + len(running), limit)
+                while pending and len(running) < plan.workers and (cancel is None or not cancel.cancelled):
+                    job = replace(pending.popleft(), threads=plan.threads)
+                    log.info(
+                        "submit clip %d (running=%d allowed=%d threads=%d | %s)",
+                        job.clip_id,
+                        len(running) + 1,
+                        plan.workers,
+                        job.threads,
+                        RESOURCES.brief(),
+                    )
+                    running[pool.submit(render_job, job)] = job
+                if not running:
+                    break
+                done, _ = wait(running, return_when=FIRST_COMPLETED)
+                for future in done:
+                    job = running.pop(future)
+                    try:
+                        future.result()
+                    except BrokenProcessPool:
+                        log.warning("worker for clip %d died (probably out of memory): retrying it alone", job.clip_id)
+                        retry.append(job)
+                    finished += 1
+                    if report is not None:
+                        report("render", finished / total, f"clip {finished}/{total}")
+                if retry and not running:
+                    break
+    except Exception as exc:
+        log.warning("render pool failed (%s); falling back to in-process rendering", exc)
+        for future in list(running):
+            future.cancel()
+        if pool is not None:
+            with contextlib.suppress(Exception):
+                pool.shutdown(wait=False, cancel_futures=True)
+        retry.extend(list(pending))
+        pending.clear()
     if cancel is not None and cancel.cancelled:
         for future in running:
             future.cancel()

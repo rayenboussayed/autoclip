@@ -101,12 +101,22 @@ def frame_energy_db(path: Path) -> F32:
     ``energy_track`` before this is called - see there, and the test suite).  Keeping this silent
     hid a broken ffmpeg build (bundled libssl under the AppImage) as a flat-zero energy track
     for the whole file instead of a loud failure."""
+    last_err: Exception | None = None
+    for _attempt in range(2):
+        try:
+            return _frame_energy_db(path)
+        except AutoclipError as exc:
+            last_err = exc
+    if last_err is not None:
+        raise last_err
+    raise AutoclipError(f"cannot analyse '{path.name}': ffmpeg failed")
+
+
+def _frame_energy_db(path: Path) -> F32:
     n = int(SR * FRAME)
     cmd = [ffmpeg_exe(), "-v", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", str(SR), "-f", "s16le", "-"]
     levels: list[F32] = []
     leftover = b""
-    # stderr goes to a tempfile (never a pipe) so a verbose error can never deadlock us while
-    # we are busy draining stdout, and memory cannot grow with the stream output.
     env = external_env()
     with tempfile.TemporaryFile() as serr:
         with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=serr, env=env) as proc:
@@ -127,18 +137,28 @@ def frame_energy_db(path: Path) -> F32:
 
 
 def decode_audio(src: Path, start: float, dur: float, sr: int, filters: Sequence[str] = ()) -> F32:
-    """Mono float32 samples of ``[start, start+dur]`` at ``sr`` Hz (zero padded if the file ends early)."""
-    cmd = [ffmpeg_exe(), "-v", "error", "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(src), "-vn", "-ac", "1", "-ar", str(sr)]
-    cmd += ["-af", ",".join(filters)] if filters else []
-    result = subprocess.run([*cmd, "-f", "f32le", "-"], check=False, capture_output=True, env=external_env())
-    if result.returncode != 0:
-        logging.getLogger("autoclip").error(
-            "ffmpeg decode failed (rc=%d): %s",
-            result.returncode,
-            (result.stderr or b"").decode("utf-8", "replace").strip()[-1000:],
-        )
-        raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
-    return np.pad(np.frombuffer(result.stdout, dtype=np.float32), (0, round(dur * sr)))[: round(dur * sr)]
+    """Mono float32 samples of ``[start, start+dur]`` at ``sr`` Hz (zero padded if the file ends early).
+
+    Fails hard only when ffmpeg cannot produce samples at all; transient timeouts get one retry
+    before we raise :class:`AutoclipError` (so callers only deal with the project error type).
+    """
+    cmd_base = [ffmpeg_exe(), "-v", "error", "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(src), "-vn", "-ac", "1", "-ar", str(sr)]
+    if filters:
+        cmd_base += ["-af", ",".join(filters)]
+    log = logging.getLogger("autoclip")
+    last_detail = ""
+    for attempt in range(2):
+        cmd = [*cmd_base, "-f", "f32le", "-"]
+        try:
+            result = subprocess.run(cmd, check=False, capture_output=True, env=external_env(), timeout=120)
+        except subprocess.TimeoutExpired as e:
+            log.error("ffmpeg decode timed out (attempt %d/2): %s", attempt + 1, e)
+            continue
+        if result.returncode == 0:
+            return np.pad(np.frombuffer(result.stdout, dtype=np.float32), (0, round(dur * sr)))[: round(dur * sr)]
+        last_detail = (result.stderr or b"").decode("utf-8", "replace").strip()[-1000:]
+        log.error("ffmpeg decode failed (rc=%d, attempt %d/2): %s", result.returncode, attempt + 1, last_detail)
+    raise AutoclipError(f"cannot decode audio of '{src.name}': {last_detail or 'ffmpeg failed'}")
 
 
 def snap_to_quiet(db: F32, t: float, radius: float, total: float) -> float:

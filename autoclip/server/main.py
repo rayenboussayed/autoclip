@@ -46,8 +46,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     async def evictor() -> None:
         while True:
             await asyncio.sleep(EVICT_SECONDS)
-            # Disk deletion must never block the event loop (or a websocket handshake behind it).
-            await asyncio.to_thread(registry.evict_expired, settings.job_ttl_seconds)
+            # A failing job folder must not kill the eviction loop.
+            try:
+                await asyncio.to_thread(registry.evict_expired, settings.job_ttl_seconds)
+            except Exception as exc:
+                import logging
+
+                logging.getLogger("autoclip.server").warning("evictor pass failed: %s", exc)
 
     task = asyncio.ensure_future(evictor())
     try:

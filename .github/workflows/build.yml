@@ -351,13 +351,23 @@ jobs:
           tar -czf "serve/${{ matrix.artifact }}.tar.gz" -C dist autoclip
           cp install.sh serve/
           (cd serve && sha256sum "${{ matrix.artifact }}.tar.gz" > SHA256SUMS)
+          # start server and wait loudly for readiness
           python -m http.server 8765 --bind 127.0.0.1 --directory serve >server.log 2>&1 &
           SERVER_PID=$!
-          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
-          for _ in $(seq 1 30); do
-            curl -fsS "http://127.0.0.1:8765/SHA256SUMS" >/dev/null 2>&1 && break
+          trap 'echo "=== server.log ==="; cat server.log 2>/dev/null || true; kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          ready=0
+          for _ in $(seq 1 60); do
+            if curl -fsS --retry 2 --retry-conn-refused "http://127.0.0.1:8765/SHA256SUMS" >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
             sleep 1
           done
+          if [ "$ready" != "1" ]; then
+            echo "asset server never came online:"
+            cat server.log 2>/dev/null || true
+            exit 1
+          fi
           AUTOCLIP_BASE_URL="http://127.0.0.1:8765" \
             AUTOCLIP_TARGET="${{ matrix.target }}" \
             AUTOCLIP_HOME="$PWD/installed" \
