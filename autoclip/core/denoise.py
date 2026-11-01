@@ -61,8 +61,16 @@ def fetch_model(model: str, model_dir: Path, timeout: float = 120.0) -> Path:
     model_dir.mkdir(parents=True, exist_ok=True)
     url = MODEL_URL.format(name=name)
     log.info("downloading speech enhancement model %s", name)
-    with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - fixed https url
-        data = response.read()
+    last_exc: Exception | None = None
+    for _attempt in range(3):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - fixed https url
+                data = response.read()
+            break
+        except Exception as exc:  # transient network problems are allowed to retry
+            last_exc = exc
+    else:
+        raise last_exc if last_exc is not None else OSError("download failed")
     partial = dest.with_suffix(".part")
     partial.write_bytes(data)
     partial.replace(dest)
