@@ -9,7 +9,7 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -116,7 +116,7 @@ def length_bonus(cands: Candidates, kind: KindCfg) -> F64:
     target = kind.target_seconds
     span = max(abs(target - kind.min_seconds), abs(kind.max_seconds - target), 1e-6)
     length = cands.end - cands.start
-    return LENGTH_BONUS * (1.0 - np.minimum(np.abs(length - target) / span, 1.0))
+    return cast(F64, LENGTH_BONUS * (1.0 - np.minimum(np.abs(length - target) / span, 1.0)))
 
 
 def zscore(v: F64) -> F64:

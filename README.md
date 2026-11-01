@@ -225,6 +225,20 @@ chunk in memory, so a 3-hour file no longer needs 3 hours of audio at once. Anal
 works in 60 s pieces, and selection stays **global**, so a clip is never cut at a chunk edge and a long clip may be
 longer than a chunk. Set `processing.chunk_threshold_minutes` to a positive number to transcribe short videos in one go.
 
+## Unsilencing media before processing (optional)
+
+```json
+"unsilence": {
+  "enabled": true
+}
+```
+
+When enabled, the media is copied to `<output>/long/<video>/unsilence_<video>.mp4` using
+pydub silence detection and a conservative MoviePy cut. Every later stage, including
+transcription, selection and rendering, then operates only on the audible stretches and uses the
+preserved high-quality intermediate. pydub needs FFmpeg to load the audio, and the feature fails
+softly to the original file when that dependency or the audio itself are unavailable.
+
 ## Clear speech for the transcriber (on by default)
 Before the audio is transcribed it is **enhanced**, so the ASR model hears clear words instead of room noise,
 keyboard clicks or hum. `transcript.enhance` is enabled by default:

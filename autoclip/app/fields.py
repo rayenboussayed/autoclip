@@ -1532,8 +1532,97 @@ LLM = Section(
     ),
 )
 
+
+UNSilence = Section(
+    "unsilence",
+    "Unsilence",
+    "Remove silent spans from the media before processing it",
+    (
+        _o(
+            "unsilence.enabled",
+            "Remove silent spans",
+            "bool",
+            "Run a pydub/MoviePy pass before transcription or clipping, cutting out silent audio spans and saving unsilence_<video>.mp4.",
+            "A clean source gives tighter candidates and faster processing by avoiding dead air.",
+            "Enable it for speech-heavy recordings with long pauses.",
+        ),
+        _o(
+            "unsilence.silence_threshold_db",
+            "Silence threshold (dBFS)",
+            "float",
+            "Audio below this level is considered silence during pydub detection.",
+            "Too high trims quiet speech, too low leaves silence behind.",
+            "Start around -40 and tune so only dead air is removed.",
+            visible_when="unsilence.enabled=true",
+            advanced=True,
+        ),
+        _o(
+            "unsilence.min_silence_ms",
+            "Shortest removable silence",
+            "int",
+            "Silences at least this long are removed.",
+            "Avoids cutting tiny breaths or brief punctuation pauses.",
+            "Use 300-700 ms for normal speech.",
+            visible_when="unsilence.enabled=true",
+            advanced=True,
+        ),
+        _o(
+            "unsilence.keep_silence_ms",
+            "Silence kept at each cut",
+            "int",
+            "Silence retained on each side of a non-silent span.",
+            "Keeps cuts sounding natural and avoids clipping word boundaries.",
+            "Leave around 100-200 ms.",
+            visible_when="unsilence.enabled=true",
+            advanced=True,
+        ),
+        _o(
+            "unsilence.quality_crf",
+            "Intermediate CRF",
+            "int",
+            "0 gives a visually lossless libx264 intermediate; larger values trade quality for speed.",
+            "This file is only a source for autoclip and will be rendered again.",
+            "Use 0 by default and raise it for very fast runs.",
+            visible_when="unsilence.enabled=true",
+            advanced=True,
+        ),
+        _o(
+            "unsilence.quality_preset",
+            "Intermediate preset",
+            "choice",
+            "FFmpeg preset for the unsilent video.",
+            "Preset controls speed versus size while quality stays constant.",
+            "Use slow normally and medium for large batches.",
+            choices=("medium", "slow", "slower", "veryslow"),
+            visible_when="unsilence.enabled=true",
+            advanced=True,
+        ),
+        _o(
+            "unsilence.audio_bitrate_kbps",
+            "Intermediate audio bitrate",
+            "int",
+            "Bitrate of the re-encoded audio.",
+            "Higher values reduce audio loss before transcoding.",
+            "Use 320 kbps when speech is already noisy.",
+            visible_when="unsilence.enabled=true",
+            advanced=True,
+        ),
+        _o(
+            "unsilence.min_segment_seconds",
+            "Shortest kept segment",
+            "float",
+            "Non-silent spans shorter than this are merged or dropped.",
+            "Very short pops should not become separate processing units.",
+            "Leave around 0.25 s unless the audio is heavily fragmented.",
+            visible_when="unsilence.enabled=true",
+            advanced=True,
+        ),
+    ),
+)
+
+
 #: Every section, in the order the app shows them.
-SECTIONS: tuple[Section, ...] = (VIDEOS, DOWNLOAD, CLIPS, TRANSCRIPT, VIDEO, CAPTIONS, AUDIO, SKIP, SPEED, LLM)
+SECTIONS: tuple[Section, ...] = (VIDEOS, DOWNLOAD, CLIPS, TRANSCRIPT, VIDEO, CAPTIONS, AUDIO, UNSilence, SKIP, SPEED, LLM)
 
 #: Every option, by its config path.
 OPTIONS: dict[str, Option] = {o.path: o for s in SECTIONS for o in s.options}

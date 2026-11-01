@@ -156,9 +156,10 @@ def decode_audio(src: Path, start: float, dur: float, sr: int, filters: Sequence
             continue
         if result.returncode == 0:
             return np.pad(np.frombuffer(result.stdout, dtype=np.float32), (0, round(dur * sr)))[: round(dur * sr)]
-        last_detail = (result.stderr or b"").decode("utf-8", "replace").strip()[-1000:]
-        log.error("ffmpeg decode failed (rc=%d, attempt %d/2): %s", result.returncode, attempt + 1, last_detail)
-    raise AutoclipError(f"cannot decode audio of '{src.name}': {last_detail or 'ffmpeg failed'}")
+        rc = result.returncode if "result" in locals() else -9
+        last_detail = (result.stderr or b"").decode("utf-8", "replace").strip()[-1000:] if "result" in locals() else ""
+        log.error("ffmpeg decode failed (rc=%d): %s", rc, last_detail)
+    raise subprocess.CalledProcessError(rc, cmd_base, output=b"", stderr=last_detail.encode() if last_detail else b"")
 
 
 def snap_to_quiet(db: F32, t: float, radius: float, total: float) -> float:

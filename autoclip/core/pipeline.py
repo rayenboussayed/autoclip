@@ -97,6 +97,20 @@ def process_video(
     """
     reporter = report if report is not None else Reporter(cancel=cancel)
     root, cc, stem = Path(cfg.output_dir), cfg.clips, name or src.stem
+    if cfg.unsilence.enabled:
+        out_dir = root / "long" / stem
+        out_dir.mkdir(parents=True, exist_ok=True)
+        destination = out_dir / f"unsilence_{stem}.mp4"
+        reporter("validate", 0.02, "cleaning silence with the configured preprocessor")
+        try:
+            from .unsilence import remove_silence
+
+            src = remove_silence(src, cfg, destination, reporter=reporter, cancel=cancel)
+            if src == destination:
+                subtitle = None  # the new timeline is no longer aligned with platform subtitles
+        except Exception as exc:
+            log.warning("preprocessing: cannot clean %s (%s); continuing with the original", stem, exc)
+            pass
     info = probe(src)
     reporter("validate", 0.2, f"probed {src.name}")
     log.info("input: %s (%.1fs) %dx%d @ %.2ffps, audio: %s", src.name, info.duration, info.width, info.height, info.fps, info.has_audio)

@@ -7,7 +7,7 @@ import sys
 import urllib.request
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -21,7 +21,10 @@ from autoclip.core.denoise import SpeechEnhancer, fetch_model
 def tone(seconds: float = 0.5, sr: int = 16000) -> NDArray[np.float32]:
     """A short noisy tone, standing in for speech."""
     t = np.arange(int(seconds * sr)) / sr
-    return (0.2 * np.sin(2 * np.pi * 440 * t) + 0.05 * np.random.default_rng(0).standard_normal(len(t))).astype(np.float32)
+    return cast(
+        NDArray[np.float32],
+        (0.2 * np.sin(2 * np.pi * 440 * t) + 0.05 * np.random.default_rng(0).standard_normal(len(t))).astype(np.float32),
+    )
 
 
 def speech_like(seconds: float = 4.0, sr: int = 16000) -> NDArray[np.float32]:

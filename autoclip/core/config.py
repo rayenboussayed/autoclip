@@ -276,6 +276,20 @@ class AudioCfg(Section):
 
 
 @dataclass(config=SCHEMA)
+class UnsilenceCfg(Section):
+    """Pre-preprocessing that removes silent spans before transcription and clipping."""
+
+    enabled: Bool = False
+    silence_threshold_db: Float = -40.0
+    min_silence_ms: Annotated[Int, Field(ge=0)] = 500
+    keep_silence_ms: Annotated[Int, Field(ge=0)] = 120
+    quality_crf: Annotated[Int, Field(ge=0, le=51)] = 0
+    quality_preset: Literal["medium", "slow", "slower", "veryslow"] = "slow"
+    audio_bitrate_kbps: Annotated[Int, Field(ge=32, le=512)] = 320
+    min_segment_seconds: Annotated[Float, Field(ge=0.05)] = 0.25
+
+
+@dataclass(config=SCHEMA)
 class SilenceCfg(Section):
     """Pause and filler-word removal."""
 
@@ -542,6 +556,7 @@ class Config(Section):
     title: TitleCfg = field(default_factory=TitleCfg)
     audio: AudioCfg = field(default_factory=AudioCfg)
     silence: SilenceCfg = field(default_factory=SilenceCfg)
+    unsilence: UnsilenceCfg = field(default_factory=UnsilenceCfg)
     skip: SkipCfg = field(default_factory=SkipCfg)
     processing: ProcessingCfg = field(default_factory=ProcessingCfg)
     resources: ResourcesCfg = field(default_factory=ResourcesCfg)
