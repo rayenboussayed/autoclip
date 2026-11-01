@@ -129,7 +129,10 @@ def process_video(
             name=stem,
             consent=consent,
         )
-        reporter("transcribe", 1.0, "transcript ready")
+        if needs_text(cfg):
+            reporter("transcribe", 1.0, "transcript ready" if have_text else "transcription skipped - selecting on audio only")
+        else:
+            reporter("transcribe", 1.0, "no transcript needed")
         jobs: list[RenderJob] = []
         needs = 0
         for kind in cc.kinds:

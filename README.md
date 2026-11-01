@@ -210,7 +210,11 @@ slower: `large-v3` needs roughly ten times the time of `small`, so pick a smalle
 An encoder is used only if ffmpeg can **actually encode a test clip with it on this machine** (ffmpeg builds list
 encoders such as `h264_nvenc` even on computers without that GPU); otherwise libx264 on the CPU is used and the log says so.
 * GPU workers are capped at 3 (consumer GPUs limit simultaneous encode sessions).
-* Transcription uses the GPU too when CUDA is available (`transcript.device: auto`).
+* Transcription uses the GPU too when CUDA is available (`transcript.device: auto`). A GPU that
+  fails mid-file (missing cuBLAS, out of memory, ...) is retried on the CPU for that chunk; if
+  the CPU also fails the step is skipped and logged ("transcription skipped (...): selecting on
+  audio only; captions and titles need a transcript") instead of aborting the run. Voice-activity
+  detection is retried without VAD when its model is unavailable.
 * Only the **encode** step is on the GPU: decoding and compositing (captions, blur, layout) stay on the CPU, so expect a
   speed-up in encoding, not a 10x end-to-end gain.
 

@@ -20,6 +20,8 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check . && ruff format --check .
       - run: mypy autoclip tests tools
+      - run: vulture
+      - run: deptry .
       # the desktop app tests need a display: a virtual one on Linux (macOS and Windows have one)
       - name: Install a virtual display
         if: runner.os == 'Linux'

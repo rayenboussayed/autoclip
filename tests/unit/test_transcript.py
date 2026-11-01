@@ -335,9 +335,112 @@ def test_whisper_failure_policy(
     monkeypatch.setitem(sys.modules, "faster_whisper", None)  # import fails like a missing install
     with caplog.at_level(logging.WARNING, logger="autoclip"):
         assert not get_transcript(media.video, cfg_for(media, tmp_path, mode="auto"), tmp_path, store, *info_db, need_text=True)
-    assert "transcription unavailable" in caplog.text
+    assert "transcription skipped" in caplog.text
     with pytest.raises(AutoclipError, match="transcription failed"):
         get_transcript(media.video, cfg_for(media, tmp_path, mode="whisper"), tmp_path, store, *info_db, need_text=True)
+
+
+def test_vad_failure_retries_without_vad(
+    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec, vad_fails=True)
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en", "multilingual": False})
+    with caplog.at_level(logging.WARNING, logger="autoclip"):
+        segs = transcribe(media.video, cfg, *info_db)
+    assert rec["calls"] == [("cpu", True), ("cpu", False)]
+    assert "retrying this chunk without VAD" in caplog.text
+    assert [s.text for s in segs] == SENTENCES
+
+
+def test_gpu_chunk_failure_retries_on_cpu(
+    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec, cuda=1, gpu_chunk_fails=True)
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en", "multilingual": False})
+    with caplog.at_level(logging.WARNING, logger="autoclip"):
+        segs = transcribe(media.video, cfg, *info_db)
+    assert rec["inits"][0][1] == "cuda" and rec["inits"][1][1] == "cpu"
+    assert "Whisper failed on the GPU for this chunk" in caplog.text
+    assert [s.text for s in segs] == SENTENCES
+
+
+def test_gpu_and_cpu_failure_raises_combined(
+    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
+) -> None:
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec, cuda=1, gpu_chunk_fails=True, cpu_fails=True)
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en", "multilingual": False})
+    with pytest.raises(AutoclipError, match="Whisper failed on every available device") as exc:
+        transcribe(media.video, cfg, *info_db)
+    assert "GPU:" in str(exc.value) and "CPU:" in str(exc.value)
+
+
+def test_initial_cuda_failure_with_cpu_load_failure_raises_combined(
+    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
+) -> None:
+    install_stub_whisper(monkeypatch, media, {}, cuda=1, cuda_fails=True, cpu_load_fails=True)
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en", "multilingual": False})
+    with pytest.raises(AutoclipError, match="Whisper failed on every available device") as exc:
+        transcribe(media.video, cfg, *info_db)
+    assert "GPU:" in str(exc.value) and "CPU:" in str(exc.value)
+
+
+def test_initial_cpu_load_failure_names_only_cpu(
+    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
+) -> None:
+    install_stub_whisper(monkeypatch, media, {}, cuda=0, cpu_load_fails=True)
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en", "multilingual": False})
+    with pytest.raises(AutoclipError, match="Whisper failed on every available device") as exc:
+        transcribe(media.video, cfg, *info_db)
+    assert "CPU:" in str(exc.value) and "GPU:" not in str(exc.value)
+
+
+def test_gpu_chunk_failure_with_cpu_load_failure_raises_combined(
+    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
+) -> None:
+    install_stub_whisper(monkeypatch, media, {}, cuda=1, gpu_chunk_fails=True, cpu_load_fails=True)
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en", "multilingual": False})
+    with pytest.raises(AutoclipError, match="Whisper failed on every available device") as exc:
+        transcribe(media.video, cfg, *info_db)
+    assert "GPU:" in str(exc.value) and "CPU:" in str(exc.value)
+
+
+def test_cpu_only_failure_names_only_cpu(
+    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
+) -> None:
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec, cuda=0, cpu_fails=True)
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en", "multilingual": False})
+    with pytest.raises(AutoclipError, match="Whisper failed on every available device") as exc:
+        transcribe(media.video, cfg, *info_db)
+    assert "CPU:" in str(exc.value) and "GPU:" not in str(exc.value)
+
+
+def test_whisper_combined_failure_skips_in_auto_mode(
+    media: Media,
+    tmp_path: Path,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    info_db: tuple[MediaInfo, F32],
+) -> None:
+    install_stub_whisper(monkeypatch, media, {}, cuda=1, gpu_chunk_fails=True, cpu_fails=True)
+    cfg = cfg_for(media, tmp_path, mode="auto", model="tiny")
+    with caplog.at_level(logging.WARNING, logger="autoclip"):
+        assert not get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True)
+    assert "transcription skipped" in caplog.text
+    assert "selecting on audio only" in caplog.text
+
+
+def test_whisper_combined_failure_raises_in_whisper_mode(
+    media: Media, tmp_path: Path, store: Store, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32]
+) -> None:
+    install_stub_whisper(monkeypatch, media, {}, cuda=1, gpu_chunk_fails=True, cpu_fails=True)
+    cfg = cfg_for(media, tmp_path, mode="whisper", model="tiny")
+    with pytest.raises(AutoclipError, match="Whisper failed on every available device"):
+        get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True)
 
 
 def test_cache_key_covers_the_source_file(media: Media, tmp_path: Path) -> None:

@@ -1144,7 +1144,7 @@ def test_stopping_a_pipeline_that_is_already_gone_terminates_it(monkeypatch: pyt
         def terminate(self) -> None:
             terminated.append(True)
 
-    def no_such_group(pid: int, sig: int) -> None:
+    def no_such_group(pid: int, _sig: int) -> None:
         raise ProcessLookupError(pid)
 
     monkeypatch.setattr(os, "kill", no_such_group)
@@ -1176,7 +1176,7 @@ def test_stopping_a_pipeline_that_is_gone_does_not_raise(monkeypatch: pytest.Mon
         def terminate(self) -> None:
             raise ProcessLookupError("already gone")
 
-    def no_such_group(pid: int, sig: int) -> None:
+    def no_such_group(pid: int, _sig: int) -> None:
         raise ProcessLookupError(pid)
 
     monkeypatch.setattr(os, "kill", no_such_group)

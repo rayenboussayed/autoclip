@@ -29,6 +29,20 @@ repos:
         types: [python]
         pass_filenames: false
         require_serial: true
+      - id: vulture
+        name: vulture (dead code)
+        entry: vulture
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
+      - id: deptry
+        name: deptry (dependency hygiene)
+        entry: deptry .
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
       - id: pytest
         name: pytest (the test suite)
         entry: pytest -x -q --no-cov

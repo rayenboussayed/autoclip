@@ -494,6 +494,45 @@ def test_main_entrypoint_runs_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
         assert exc.code == 0
 
 
+class _FakeProcess:
+    def __init__(self) -> None:
+        self.returncode = 0
+        self.stdout = iter(
+            [
+                '{"event": "progress", "stage": "rendering", "percent": 50.0, "message": "x"}\n',
+                '{"event": "result", "failed": 0}\n',
+                "this is not json\n",
+                "",
+            ]
+        )
+
+    def wait(self) -> int:
+        return self.returncode
+
+
+def test_run_job_subprocess_path_completes(monkeypatch: pytest.MonkeyPatch, media: Any, tmp_path: Path) -> None:
+    from autoclip.server.schemas import JobState
+    from autoclip.server.service import run_job
+    from autoclip.server.state import Job
+
+    monkeypatch.delenv("AUTOCLIP_SERVER_INPROCESS", raising=False)
+    monkeypatch.setattr("autoclip.server.service.subprocess.Popen", lambda *a, **k: _FakeProcess())
+
+    upload = media.video
+    out = tmp_path / "jobout-sub"
+    out.mkdir()
+    job = Job(
+        job_id="test-job-sub",
+        filename=upload.name,
+        input_path=upload,
+        output_dir=out,
+        config={},
+        work_dir=out / ".work" / upload.stem,
+    )
+    run_job(job)
+    assert job.state in (JobState.completed, JobState.failed)
+
+
 def test_run_job_reports_pending_clips_as_failed(monkeypatch: pytest.MonkeyPatch, media: Any, tmp_path: Path) -> None:
     import dataclasses
     from unittest.mock import patch

@@ -33,7 +33,7 @@ async def create_job(
     file: UploadFile = File(...),  # noqa: B008
     config_json: str | None = Form(default=None),
     config: UploadFile | None = File(default=None),  # noqa: B008
-    user: str = Depends(require_auth),
+    _user: str = Depends(require_auth),
 ) -> JobCreated:
     settings = get_settings()
     data = await file.read()
@@ -107,7 +107,7 @@ async def _run_job_task(job_id: str) -> None:
 
 
 @router.get("/jobs/{job_id}", response_model=JobStatus)
-async def get_job(job_id: str, user: str = Depends(require_auth)) -> JobStatus:
+async def get_job(job_id: str, _user: str = Depends(require_auth)) -> JobStatus:
     job = registry.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
@@ -126,7 +126,7 @@ async def get_job(job_id: str, user: str = Depends(require_auth)) -> JobStatus:
 
 
 @router.get("/jobs/{job_id}/download")
-async def download_job(job_id: str, user: str = Depends(require_auth)) -> FileResponse:
+async def download_job(job_id: str, _user: str = Depends(require_auth)) -> FileResponse:
     job = registry.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
@@ -180,7 +180,7 @@ async def job_websocket(websocket: WebSocket, job_id: str) -> None:
 
 
 @router.delete("/jobs/{job_id}")
-async def delete_job(job_id: str, user: str = Depends(require_auth)) -> JSONResponse:
+async def delete_job(job_id: str, _user: str = Depends(require_auth)) -> JSONResponse:
     job = registry.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")

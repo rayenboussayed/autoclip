@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
@@ -206,6 +207,29 @@ def _warmup_model(model: Any) -> None:
         pass
 
 
+def _vad_failure(exc: Exception) -> bool:
+    """Whether ``exc`` is a failure of faster-whisper's voice-activity detection (VAD) step."""
+    text = str(exc).lower()
+    return "vad" in text or "silero" in text or "onnxruntime" in text or "onnx" in text
+
+
+def _device_label(dev: str) -> str:
+    return "GPU" if dev == "cuda" else dev.upper() if dev == "cpu" else dev
+
+
+def _device_failure(attempts: list[tuple[str, Exception]]) -> str:
+    """A compact description of every device that was tried and why it failed."""
+    last: dict[str, Exception] = {}
+    for dev, exc in attempts:
+        last[dev] = exc
+    parts: list[str] = []
+    for dev in ("cuda", "cpu"):
+        if dev in last:
+            exc = last[dev]
+            parts.append(f"{_device_label(dev)}: {type(exc).__name__}: {exc}")
+    return "; ".join(parts)
+
+
 @traced("transcribe")
 def transcribe(
     src: Path,
@@ -267,6 +291,8 @@ def transcribe(
                 )
         _download_model(model_name, cache_dir)
 
+    attempts: list[tuple[str, Exception]] = []
+
     def load(dev: str) -> Any:
         return WhisperModel(
             model_name,
@@ -284,42 +310,78 @@ def transcribe(
             _warmup_model(model)
         except Exception as e:  # a broken CUDA runtime must degrade to the CPU, not fail the run
             log.warning("the CUDA runtime cannot run Whisper (%s): using the CPU", e)
+            attempts.append(("cuda", e))
             device = "cpu"
-            model = load(device)
+            try:
+                model = load(device)
+            except Exception as ce:
+                attempts.append(("cpu", ce))
+                raise AutoclipError(f"Whisper failed on every available device ({_device_failure(attempts)})") from ce
     else:
-        model = load(device)
+        try:
+            model = load(device)
+        except Exception as e:
+            attempts.append(("cpu", e))
+            raise AutoclipError(f"Whisper failed on every available device ({_device_failure(attempts)})") from e
     log.info("whisper model=%s device=%s%s cpu_threads=%d", model_name, device, " (GPU)" if device == "cuda" else "", threads)
     segmented = info.duration >= proc.chunk_threshold_minutes * 60
     bounds = chunk_bounds(info.duration, db, proc.chunk_minutes * 60) if segmented else [(0.0, info.duration)]
     language, raw, t0 = tc.language, [], time.perf_counter()
+    # `vad_filter` is applied eagerly by faster-whisper; a missing/broken VAD model (or a provider that
+    # rejects it) must not abort the run - retry the same chunk with VAD disabled.
+    vad = True
     for k, (start, end) in enumerate(bounds, 1):
-        audio: F32 = decode_audio(src, start, end - start, WHISPER_SR)
-        if enhancer is not None and enhancer.active:
-            audio = enhancer(audio)
-        options: dict[str, Any] = {"multilingual": True} if tc.multilingual else {}
-        stream, found = model.transcribe(
-            audio,
-            vad_filter=True,
-            word_timestamps=tc.word_timestamps,
-            language=language,
-            condition_on_previous_text=False,
-            beam_size=tc.beam_size,
-            **options,
-        )
-        for seg in stream:
-            words = [{"start": start + w.start, "end": start + w.end, "word": w.word} for w in seg.words or []]
-            raw.append({"start": start + seg.start, "end": start + seg.end, "text": seg.text, "words": words})
-        language = language or found.language  # detect once, then reuse for the remaining chunks
-        del audio
-        log.info(
-            "  transcribed chunk %d/%d (%.0f-%.0fs): %d segments so far, %.0fs elapsed",
-            k,
-            len(bounds),
-            start,
-            end,
-            len(raw),
-            time.perf_counter() - t0,
-        )
+        while True:
+            audio: F32 = decode_audio(src, start, end - start, WHISPER_SR)
+            if enhancer is not None and enhancer.active:
+                audio = enhancer(audio)
+            options: dict[str, Any] = {"multilingual": True} if tc.multilingual else {}
+            try:
+                stream, found = model.transcribe(
+                    audio,
+                    vad_filter=vad,
+                    word_timestamps=tc.word_timestamps,
+                    language=language,
+                    condition_on_previous_text=False,
+                    beam_size=tc.beam_size,
+                    **options,
+                )
+                chunk_rows: list[dict[str, Any]] = []
+                for seg in stream:
+                    words = [{"start": start + w.start, "end": start + w.end, "word": w.word} for w in seg.words or []]
+                    chunk_rows.append({"start": start + seg.start, "end": start + seg.end, "text": seg.text, "words": words})
+                raw.extend(chunk_rows)
+                language = language or found.language  # detect once, then reuse for the remaining chunks
+                del audio
+                log.info(
+                    "  transcribed chunk %d/%d (%.0f-%.0fs): %d segments so far, %.0fs elapsed",
+                    k,
+                    len(bounds),
+                    start,
+                    end,
+                    len(raw),
+                    time.perf_counter() - t0,
+                )
+                break
+            except Exception as e:
+                with contextlib.suppress(Exception):  # pragma: no cover - best effort
+                    del audio
+                if vad and _vad_failure(e):
+                    log.warning("VAD failed on %s (%s); retrying this chunk without VAD", _device_label(device), e)
+                    vad = False
+                    continue
+                if device == "cuda":
+                    log.warning("Whisper failed on the GPU for this chunk (%s); retrying on the CPU", e)
+                    attempts.append(("cuda", e))
+                    device = "cpu"
+                    try:
+                        model = load(device)
+                    except Exception as ce:
+                        attempts.append(("cpu", ce))
+                        raise AutoclipError(f"Whisper failed on every available device ({_device_failure(attempts)})") from ce
+                    continue
+                attempts.append(("cpu", e))
+                raise AutoclipError(f"Whisper failed on every available device ({_device_failure(attempts)})") from e
     log.info(
         "  language %s, %d segments in %.1fs (%s)",
         language,
@@ -401,9 +463,10 @@ def get_transcript(
             try:
                 segments = transcribe(src, cfg, info, db, enhancer, consent=consent)
             except Exception as e:
+                detail = str(e) if isinstance(e, AutoclipError) else f"{type(e).__name__}: {e}"
                 if tc.mode == "whisper":
-                    raise AutoclipError(f"transcription failed: {type(e).__name__}: {e}") from e
-                log.warning("transcription unavailable (%s: %s); continuing without text", type(e).__name__, e)
+                    raise AutoclipError(f"transcription failed: {detail}") from e
+                log.warning("transcription skipped (%s): selecting on audio only; captions and titles need a transcript", detail)
                 return False
             cache_file.write_text(
                 json.dumps({"meta": key, "segments": [_plain(s) for s in segments]}, ensure_ascii=False), encoding="utf-8"

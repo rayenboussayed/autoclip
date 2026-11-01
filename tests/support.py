@@ -125,6 +125,10 @@ def install_stub_whisper(
     full_samples: int = FIXTURE_SAMPLES,
     download_model: Callable[..., Any] | None = None,
     cuda_fails: bool = False,
+    vad_fails: bool = False,
+    gpu_chunk_fails: bool = False,
+    cpu_fails: bool = False,
+    cpu_load_fails: bool = False,
 ) -> None:
     """A stand-in for faster-whisper / ctranslate2 with the real call signatures (the model host is offline in CI).
 
@@ -135,13 +139,27 @@ def install_stub_whisper(
 
     class WhisperModel:
         def __init__(self, name: str, device: str, compute_type: str, cpu_threads: int, **kwargs: Any) -> None:
+            if cpu_load_fails and device == "cpu":
+                raise RuntimeError("cpu backend broken on load")
             record["init"] = (name, device, compute_type, cpu_threads)
+            record.setdefault("inits", []).append((name, device, compute_type, cpu_threads))
             self.device = device
 
         def transcribe(self, audio: Any, **options: Any) -> tuple[Any, Any]:
+            record.setdefault("calls", []).append((self.device, bool(options.get("vad_filter", True))))
+            record["options"] = options
             if cuda_fails and self.device == "cuda":
                 raise RuntimeError("CUDA driver/runtime mismatch")
-            record["options"] = options
+            if vad_fails and bool(options.get("vad_filter", False)):
+                raise RuntimeError("Load model silero_vad_v6.onnx failed: ONNX NO_SUCHFILE")
+            if cpu_fails and self.device == "cpu":
+                raise RuntimeError("cpu backend broken")
+            if gpu_chunk_fails and self.device == "cuda" and "language" in options:
+                # the 1 s warm-up passes no language; only real chunks trigger the retry
+                calls = record.setdefault("gpu_chunk_calls", 0) + 1
+                record["gpu_chunk_calls"] = calls
+                if calls == 1:
+                    raise RuntimeError("CUDA out of memory mid-file")
             # The 1 s CUDA warm-up passes no language; a real chunk call always does.
             if isinstance(audio, np.ndarray) and len(audio) < full_samples - 16000 and "language" in options:  # a chunk
                 record.setdefault("chunks", []).append((len(audio), options["language"]))

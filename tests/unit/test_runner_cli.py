@@ -130,6 +130,7 @@ class ThreadPool(ThreadPoolExecutor):
 
     def __init__(self, max_workers: int, mp_context: Any = None) -> None:
         super().__init__(max_workers=max_workers)
+        del mp_context
 
 
 def parallel_jobs(media: Media, tmp_path: Path, n: int, cpus: int = 2, **kw: Any) -> tuple[list[RenderJob], Store, Config]:

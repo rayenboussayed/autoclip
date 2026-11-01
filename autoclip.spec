@@ -90,7 +90,7 @@ hiddenimports = (
     + collect_submodules("yt_dlp_ejs")
 )
 #: The ffmpeg binary of imageio-ffmpeg, the EJS solver scripts of yt-dlp and the server pages.
-datas = collect_data_files("imageio_ffmpeg") + collect_data_files("yt_dlp_ejs")
+datas = collect_data_files("imageio_ffmpeg") + collect_data_files("yt_dlp_ejs") + collect_data_files("faster_whisper")
 # The HTTP server is optional, but a release build sets AUTOCLIP_REQUIRE_SERVER=1 so a bundle that
 # cannot serve /view/ fails the build instead of shipping silently.
 try:

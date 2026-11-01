@@ -475,6 +475,7 @@ def test_empty_removes_files_and_directories_but_survives_a_lock(tmp_path: Path,
     locked.write_text("x", encoding="utf-8")
 
     def refuse(self: Path, missing_ok: bool = False) -> None:
+        del missing_ok
         raise OSError("in use")
 
     monkeypatch.setattr(Path, "unlink", refuse)

@@ -16,12 +16,12 @@ router = APIRouter(prefix="/view", tags=["view"])
 
 
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request, user: str = Depends(require_auth)) -> HTMLResponse:
+async def index(request: Request, _user: str = Depends(require_auth)) -> HTMLResponse:
     return templates.TemplateResponse(request, "index.html", {"request": request, "title": "autoclip"})
 
 
 @router.get("/jobs/{job_id}", response_class=HTMLResponse)
-async def job_page(request: Request, job_id: str, user: str = Depends(require_auth)) -> HTMLResponse:
+async def job_page(request: Request, job_id: str, _user: str = Depends(require_auth)) -> HTMLResponse:
     job = registry.get(job_id)
     if job is None:
         return templates.TemplateResponse(request, "404.html", {"request": request, "job_id": job_id}, status_code=404)

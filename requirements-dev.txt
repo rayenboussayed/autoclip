@@ -3,6 +3,8 @@ pytest>=8
 pytest-cov>=5
 mypy>=1.8
 ruff>=0.5
+vulture>=2.14
+deptry>=0.20
 # the server extra is optional at runtime, but its tests are part of the suite (and coverage)
 fastapi>=0.115
 uvicorn[standard]>=0.30

@@ -41,6 +41,8 @@ sudo snapcraft --destructive-mode               # the snap (Linux) from that bui
 pre-commit install                              # ruff, mypy and the test suite on every commit
 ruff check . && ruff format --check .          # lint + format (line length 140)
 mypy autoclip tests tools                       # strict typing, tests and tools included
+vulture                                        # dead code (80%+ confidence; uses [tool.vulture])
+deptry .                                      # dependency hygiene (uses [tool.deptry])
 pytest                                         # offline unit suite; FAILS if branch coverage < 95%
 pytest tests/unit/test_moments.py -k scene --no-cov   # a focused run (always add --no-cov for partial runs)
 AUTOCLIP_NETWORK_TESTS=1 pytest -m "network and not e2e" --no-cov   # the real-YouTube downloader checks
@@ -48,8 +50,8 @@ AUTOCLIP_E2E_TESTS=1 pytest tests/e2e -m e2e --no-cov               # CLI/server
 AUTOCLIP_E2E_TESTS=1 AUTOCLIP_E2E_LEVEL=3 pytest tests/e2e -m e2e --no-cov   # 18-minute ladder level (cache is reused)
 ```
 
-**Definition of done** (all four must pass before you finish): `ruff check .`, `ruff format --check .`,
-`mypy autoclip tests tools`, `pytest`. Coverage is currently 100%; the gate is 95% and must never be lowered.
+**Definition of done** (all five must pass before you finish): `ruff check .`, `ruff format --check .`,
+`mypy autoclip tests tools`, `vulture`, `deptry .`, `pytest`. Coverage is currently 100%; the gate is 95% and must never be lowered.
 A full `pytest` takes about one minute (real ffmpeg encodes, real worker processes).
 
 **Release:** bump `version` in `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml` (they must match -
