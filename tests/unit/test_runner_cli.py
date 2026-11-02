@@ -134,7 +134,7 @@ class ThreadPool(ThreadPoolExecutor):
 
 
 def parallel_jobs(media: Media, tmp_path: Path, n: int, cpus: int = 2, **kw: Any) -> tuple[list[RenderJob], Store, Config]:
-    jobs, store, cfg = make_jobs(media, tmp_path, n=n, resources={"cpus": cpus, "max_workers": cpus}, **kw)
+    jobs, store, cfg = make_jobs(media, tmp_path, n=n, resources={"cpus": cpus, "max_workers": cpus, "mode": "parallel"}, **kw)
     RESOURCES.configure(cfg)
     return jobs, store, cfg
 
@@ -199,7 +199,7 @@ def test_render_all_retries_a_killed_worker_alone(
 
 def test_render_all_with_real_spawned_workers(media: Media, tmp_path: Path) -> None:
     log_file = tmp_path / "pool.log"
-    jobs, store, cfg = make_jobs(media, tmp_path, n=2, log_file=log_file, resources={"cpus": 2, "max_workers": 2})
+    jobs, store, cfg = make_jobs(media, tmp_path, n=2, log_file=log_file, resources={"cpus": 2, "max_workers": 2, "mode": "parallel"})
     RESOURCES.configure(cfg)
     render_all(jobs, 100 << 20)
     assert statuses(store) == ["done", "done"]
@@ -357,7 +357,7 @@ def test_main_config_errors_and_init(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert main(["--init-full", str(full)]) == 0
     data = json.loads(full.read_text(encoding="utf-8"))
     assert data["resources"]["memory_fraction"] == 0.75 and data["clips"]["long"]["aspect"] == "16:9" and data["video"]["gpu"] == "auto"
-    assert data["processing"] == {"chunk_threshold_minutes": 0, "chunk_minutes": 5}
+    assert data["processing"] == {"chunk_threshold_minutes": 0, "chunk_minutes": 5, "mode": "sequential"}
     # The default model is resolved for the machine: large-v3 with CUDA, small on the CPU.
     assert data["transcript"]["model"] in {"small", "large-v3"} and data["transcript"]["enhance"]["enabled"] is True
 

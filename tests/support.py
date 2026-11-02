@@ -89,6 +89,7 @@ def make_cfg(media: Media, out: Path, source: Path | None = None, **sections: di
         "video": {"short_side": 144, "preset": "ultrafast", "thumbnail": False, "gpu": "off"},
         "logging": {"enabled": False, "console_level": "ERROR"},
         "resources": {"max_workers": 1},
+        "unsilence": {"enabled": False},
     }
     cfg = parse(Config, merge(data, sections))
     cfg.input = [str(source or media.video)]
@@ -225,6 +226,7 @@ BASE_CONFIG: dict[str, Any] = {
     "audio": {"denoise": "none"},
     "logging": {"console_level": "ERROR"},
     "resources": {"max_workers": 1},
+    "unsilence": {"enabled": False},
 }
 
 

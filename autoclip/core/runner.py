@@ -87,8 +87,13 @@ def render_all(
     finished = 0
     pending = deque(jobs)
     limit = HW_MAX_WORKERS if jobs[0].encoder.hardware else 1 << 30  # GPUs allow only a few encode sessions
+    cfg0 = jobs[0].cfg
+    sequential = not (
+        str(getattr(getattr(cfg0, "processing", None), "mode", "sequential")).lower() == "parallel"
+        or str(getattr(getattr(cfg0, "resources", None), "mode", "sequential")).lower() == "parallel"
+    )
     plan = RESOURCES.plan_workers(est_bytes, len(jobs), limit)
-    capacity = min(RESOURCES.cpu_budget(), RESOURCES.res.max_workers or RESOURCES.cpu_budget(), len(jobs), limit)
+    capacity = 1 if sequential else min(RESOURCES.cpu_budget(), RESOURCES.res.max_workers or RESOURCES.cpu_budget(), len(jobs), limit)
     log.info("parallel plan: up to %d worker(s) x %d thread(s) for %d clip(s)", plan.workers, plan.threads, len(jobs))
     if cancel is not None and cancel.cancelled:
         return

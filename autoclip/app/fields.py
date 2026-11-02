@@ -1372,6 +1372,15 @@ SPEED = Section(
             "Five minutes is a good balance; raise it on a machine with plenty of memory.",
         ),
         _o(
+            "processing.mode",
+            "Clip processing",
+            "choice",
+            "Whether clips render one after another or in parallel: `sequential` is in order, `parallel` uses an adaptive pool.",
+            "Parallel rendering finishes sooner on a multi-core machine; sequential keeps memory use flat.",
+            "Leave it at `sequential` on small machines, use `parallel` when speed matters.",
+            choices=("sequential", "parallel"),
+        ),
+        _o(
             "resources.cpus",
             "CPU cores to use",
             "int",
@@ -1394,6 +1403,15 @@ SPEED = Section(
             "How many clips are rendered at the same time; 0 means as many as the memory allows.",
             "More workers finish sooner but need more memory at the same time.",
             "0 is right for most machines; 1 renders one clip after the other.",
+        ),
+        _o(
+            "resources.mode",
+            "Render mode",
+            "choice",
+            "Whether clips render one after another or in parallel: `sequential` is in order, `parallel` uses an adaptive pool.",
+            "Parallel rendering finishes sooner on a multi-core machine; sequential keeps memory use flat.",
+            "Leave it at `sequential` on small machines, use `parallel` when speed matters.",
+            choices=("sequential", "parallel"),
         ),
         _o(
             "resources.memory_fraction",

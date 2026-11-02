@@ -279,7 +279,7 @@ class AudioCfg(Section):
 class UnsilenceCfg(Section):
     """Pre-preprocessing that removes silent spans before transcription and clipping."""
 
-    enabled: Bool = False
+    enabled: Bool = True
     silence_threshold_db: Float = -40.0
     min_silence_ms: Annotated[Int, Field(ge=0)] = 500
     keep_silence_ms: Annotated[Int, Field(ge=0)] = 120
@@ -307,6 +307,7 @@ class ProcessingCfg(Section):
 
     chunk_threshold_minutes: Annotated[Float, Field(ge=0)] = 0  # 0 = always transcribe in chunks; N = only videos longer than N minutes
     chunk_minutes: Annotated[Float, Field(gt=0)] = 5  # chunk length; boundaries snap to the quietest moment nearby
+    mode: Literal["sequential", "parallel"] = "sequential"  # how the render jobs are run
 
 
 @dataclass(config=SCHEMA)
@@ -316,6 +317,7 @@ class ResourcesCfg(Section):
     cpus: Int = 0  # 0 = auto-detect (affinity + container quota)
     max_cpu_percent: Float = 100  # share of the cores the script may use
     max_workers: Int = 0  # 0 = as many parallel renders as cores and RAM allow; 1 = sequential
+    mode: Literal["sequential", "parallel"] = "sequential"  # sequential = one clip at a time, parallel = adaptive pool
     memory_fraction: Float = 0.75  # max share of the *currently free* RAM the script may claim
     memory_reserve_mb: Int = 512  # RAM always left to the OS and other programs
 
@@ -540,12 +542,17 @@ class DownloadCfg(Section):
         return self
 
 
+def _default_output_dir() -> str:
+    """The output folder when none is given: the operating system's Videos folder."""
+    return str(Path.home() / "Videos" / "clips")
+
+
 @dataclass(config=SCHEMA)
 class Config(Section):
     """The whole configuration file."""
 
     input: list[str] = field(default_factory=lambda: ["input.mp4"])  # files, glob patterns or http(s) URLs
-    output_dir: str = "clips"  # one sub-folder per video is created inside
+    output_dir: str = field(default_factory=_default_output_dir)  # one sub-folder per video is created inside
     compute: ComputeCfg = field(default_factory=ComputeCfg)
     download: DownloadCfg = field(default_factory=DownloadCfg)
     clips: ClipsCfg = field(default_factory=ClipsCfg)

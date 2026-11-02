@@ -192,6 +192,7 @@ def test_run_job_processes_a_small_video(monkeypatch: pytest.MonkeyPatch, media:
             tmp_path / "out",
             audio={"denoise": "none"},
             compute={"device": "cpu"},
+            unsilence={"enabled": False},
             clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}},
             video={"thumbnail": True},
         )
@@ -779,6 +780,7 @@ def test_run_job_subprocess_path(monkeypatch: pytest.MonkeyPatch, media: Any, tm
             tmp_path / "out",
             audio={"denoise": "none"},
             compute={"device": "cpu"},
+            unsilence={"enabled": False},
             clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}},
         )
     )
