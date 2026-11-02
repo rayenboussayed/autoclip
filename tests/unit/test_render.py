@@ -71,11 +71,11 @@ def test_encode_sets_the_audio_bitrate_and_mp4_only_flags(tmp_path: Path) -> Non
     mp4 = Fake()
     encode(mp4, tmp_path / "hevc.mp4", 30, hevc, 2, VideoCfg())
     assert mp4.kwargs["audio_bitrate"] == "192k"
-    assert mp4.kwargs["ffmpeg_params"] == ["-cq", "18", "-tag:v", "hvc1", "-movflags", "+faststart"]
+    assert mp4.kwargs["ffmpeg_params"] == ["-pix_fmt", "yuv420p", "-cq", "18", "-tag:v", "hvc1", "-movflags", "+faststart"]
     assert mp4.kwargs["path"].endswith("hevc.part.mp4"), "the temporary file keeps the muxer extension"
     mkv = Fake()
     encode(mkv, tmp_path / "hevc.mkv", 30, hevc, 2, VideoCfg(container="mkv", audio_bitrate_kbps=256))
-    assert mkv.kwargs["ffmpeg_params"] == ["-cq", "18"]
+    assert mkv.kwargs["ffmpeg_params"] == ["-pix_fmt", "yuv420p", "-cq", "18"]
     assert mkv.kwargs["path"].endswith("hevc.part.mkv")
     assert mkv.kwargs["audio_bitrate"] == "256k"
     plain = Fake()
@@ -237,6 +237,20 @@ def test_render_with_a_gpu_style_encoder_definition(media: Media, tmp_path: Path
     cpu, _, _ = render(media, tmp_path / "b", moment(0, 5), encoder=cpu_encoder(VideoCfg(preset="ultrafast", crf=18)))
     assert probe(low).duration == pytest.approx(probe(cpu).duration, abs=0.3)
     assert low.stat().st_size < cpu.stat().st_size  # the placeholder preset was overridden and the custom arguments reached ffmpeg
+
+
+def test_render_hevc_with_captions_writes_yuv420p(media: Media, tmp_path: Path) -> None:
+    """libx265 main rejects the i444 stream an RGBA composite would otherwise produce (regression)."""
+    import av
+
+    encoder = cpu_encoder(VideoCfg(codec="h265", preset="ultrafast", crf=30))
+    dst, size, lines = render(media, tmp_path, moment(0, 5), encoder=encoder)
+    assert lines and probe(dst).duration > 0 and size == (144, 256)
+    with av.open(str(dst)) as container:
+        stream = container.streams.video[0]
+        pixel_format = stream.codec_context.format
+        assert stream.codec_context.name == "hevc"
+        assert pixel_format is not None and pixel_format.name == "yuv420p"
 
 
 # ---- skip.* gates --------------------------------------------------------------------------------

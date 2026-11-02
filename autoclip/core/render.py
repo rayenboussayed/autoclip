@@ -128,7 +128,10 @@ def encode(comp: Any, dst: Path, fps: float, encoder: Encoder, threads: int, vid
     # Write to a ``.part`` sibling (keeping the container extension so ffmpeg infers the muxer) and
     # rename on success so a killed job leaves no half-written clip.
     target = dst.with_name(f"{dst.stem}.part{dst.suffix}")
-    params = list(encoder.params)
+    # MoviePy's ``write_videofile`` ignores its ``pixel_format`` argument, so a mask-bearing
+    # CompositeVideoClip would otherwise reach libx265 as raw ``rgba`` (i444). Forcing the
+    # output format here is what keeps HEVC encoders from rejecting the input.
+    params = ["-pix_fmt", "yuv420p", *encoder.params]
     if mp4 and _is_hevc(encoder.name):
         params += ["-tag:v", "hvc1"]  # QuickTime/Safari only play HEVC in MP4 with this tag
     if mp4:
@@ -220,6 +223,9 @@ def render_clip(vclip: Any, job: RenderJob, store: Store, cache: Cache) -> tuple
             sound = sound.with_effects([afx.AudioFadeIn(cfg.audio.fade_seconds), afx.AudioFadeOut(cfg.audio.fade_seconds)])
         comp = comp.with_audio(sound)
     fps = min(cfg.video.fps or vclip.fps, vclip.fps)
+    # Flattening here drops the per-overlay alpha from the frames MoviePy sends to ffmpeg,
+    # so the encoder never sees an rgba/i444 stream (libx265 main profile rejects i444).
+    comp = comp.without_mask()
     encode(comp, dst, float(fps), job.encoder, threads, cfg.video)
     if cfg.video.thumbnail and not cfg.skip.thumbnail:
         cover_t = min(max(0.5, cfg.title.seconds / 2 if title_on else 1.0), max(0.0, fg.duration - 0.1))

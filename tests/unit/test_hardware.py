@@ -145,3 +145,15 @@ def test_off_never_probes_and_explicit_choice_warns_when_unusable(
     with caplog.at_level(logging.WARNING, logger="autoclip"):
         pick_encoder(VideoCfg(gpu="auto"), "Linux")  # nothing works on "auto": silently the CPU (not a warning)
     assert caplog.text == ""
+
+
+def test_cpu_fallback_log_names_the_selected_encoder(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """The log must not say libx264 when ``video.codec: "h265"`` actually selected libx265."""
+    fake_probe(monkeypatch, set())
+    with caplog.at_level(logging.INFO, logger="autoclip"):
+        assert pick_encoder(VideoCfg(codec="h265", gpu="auto"), "Linux").name == "libx265"
+    assert "no usable GPU video encoder: using libx265 on the CPU" in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="autoclip"):
+        assert pick_encoder(VideoCfg(codec="h265"), "Linux", allow_gpu=False).name == "libx265"
+    assert "compute.device is 'cpu': using libx265 on the CPU" in caplog.text

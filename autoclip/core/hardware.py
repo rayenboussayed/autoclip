@@ -120,13 +120,13 @@ def works(encoder: Encoder) -> bool:
 
 
 def pick_encoder(cfg: VideoCfg, system: str | None = None, allow_gpu: bool = True) -> Encoder:
-    """The encoder to use: the first working GPU encoder (``video.gpu``), otherwise libx264 on the CPU.
+    """The encoder to use: the first working GPU encoder (``video.gpu``), otherwise the CPU's libx264/libx265.
 
     ``allow_gpu`` is false when ``compute.device`` is ``"cpu"``: then the GPU is not touched at all.
     """
     cpu = cpu_encoder(cfg)
     if not allow_gpu:
-        log.info("compute.device is 'cpu': using libx264 on the CPU")
+        log.info("compute.device is 'cpu': using %s on the CPU", cpu.name)
         return cpu
     if cfg.gpu == "off":
         return cpu
@@ -139,5 +139,5 @@ def pick_encoder(cfg: VideoCfg, system: str | None = None, allow_gpu: bool = Tru
         log.debug("GPU encoder %s is not usable on this machine", candidate.name)
     if cfg.gpu != "auto":
         log.warning("video.gpu = '%s' is not usable on this machine: falling back to the CPU encoder", cfg.gpu)
-    log.info("no usable GPU video encoder: using libx264 on the CPU")
+    log.info("no usable GPU video encoder: using %s on the CPU", cpu.name)
     return cpu

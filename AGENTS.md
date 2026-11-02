@@ -587,7 +587,13 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     at normal speed. `formats._protocol_rank` therefore prefers a direct HTTP(S) format at equal quality and fps.
     Related: `audio_language: null` must follow `info["language"]`, not the highest-bitrate track - otherwise a Malay
     dub wins over the original English audio.
-31. **A frozen Windows launch hides its console, it does not detach it.** The binary is a console program because
+31. **MoviePy ignores its `pixel_format` argument.** `write_videofile` derives the pixel format from the clip (an RGBA
+    composite stays RGBA) and only appends its own `-pix_fmt` for libx264/libvpx/h264_nvenc, so libx265 received i444
+    and its `main` profile rejected it (`main profile not compatible with i444 input chroma subsampling`). `render.encode`
+    therefore puts `-pix_fmt yuv420p` *before* the encoder parameters, and `render_clip` flattens the composite with
+    `without_mask()`. Keep both: the forced format is what makes HEVC work, the flattening drops needless alpha work.
+    `tests/unit/test_render.py::test_render_hevc_with_captions_writes_yuv420p` is the real-encode regression test.
+32. **A frozen Windows launch hides its console, it does not detach it.** The binary is a console program because
     the command line needs stdout, so a double-click opens a console before the app appears. `app.console.hide_console`
     only calls `ShowWindow(SW_HIDE)`, and only when `GetConsoleProcessList` returns 1 (this process is the sole user;
     a terminal launch also lists the shell). Detaching (`FreeConsole`) would close the handles the workers write to and
