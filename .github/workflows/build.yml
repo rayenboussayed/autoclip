@@ -360,7 +360,7 @@ jobs:
           trap 'echo "=== server.log ==="; cat server.log 2>/dev/null || true; kill "$SERVER_PID" 2>/dev/null || true' EXIT
           ready=0
           for _ in $(seq 1 60); do
-            if curl -fsS --retry 2 --retry-conn-refused "http://127.0.0.1:8765/SHA256SUMS" >/dev/null 2>&1; then
+            if curl -fsS --retry 2 --retry-connrefused "http://127.0.0.1:8765/SHA256SUMS" >/dev/null 2>&1; then
               ready=1
               break
             fi
