@@ -347,12 +347,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p serve
+          # artifact uploads do not guarantee the executable bit
+          chmod +x dist/autoclip/autoclip
           # install.sh extracts autoclip/ into its app folder
           tar -czf "serve/${{ matrix.artifact }}.tar.gz" -C dist autoclip
           cp install.sh serve/
           (cd serve && sha256sum "${{ matrix.artifact }}.tar.gz" > SHA256SUMS)
           # start server and wait loudly for readiness
-          python -m http.server 8765 --bind 127.0.0.1 --directory serve >server.log 2>&1 &
+          # (ubuntu-latest images provide python3, not necessarily a `python` alias)
+          python3 -m http.server 8765 --bind 127.0.0.1 --directory serve >server.log 2>&1 &
           SERVER_PID=$!
           trap 'echo "=== server.log ==="; cat server.log 2>/dev/null || true; kill "$SERVER_PID" 2>/dev/null || true' EXIT
           ready=0
@@ -360,6 +363,10 @@ jobs:
             if curl -fsS --retry 2 --retry-conn-refused "http://127.0.0.1:8765/SHA256SUMS" >/dev/null 2>&1; then
               ready=1
               break
+            fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "the local asset server exited before answering"
+              exit 1
             fi
             sleep 1
           done

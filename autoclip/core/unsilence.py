@@ -10,20 +10,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .config import Config
 from .errors import AutoclipError
 from .log import LOG as log
 from .log import traced
-from .media import ffmpeg_exe, probe
-
-
-def _prepare_path() -> None:
-    dirname = str(Path(ffmpeg_exe()).parent)
-    current = os.environ.get("PATH", "")
-    parts = current.split(os.pathsep)
-    if dirname in parts:
-        return
-    os.environ["PATH"] = dirname + os.pathsep + current if current else dirname
+from .media import SR, decode_audio, probe
 
 
 def _pydub_available() -> bool:
@@ -100,15 +93,19 @@ def remove_silence(
         return dst
     temporary = dst.with_suffix(".tmp.mp4")
     try:
-        _prepare_path()
         from moviepy import VideoFileClip, concatenate_videoclips
         from pydub import AudioSegment
 
+        # Decode through our own ffmpeg wrapper: pydub's AudioSegment.from_file calls ffprobe,
+        # which the bundled imageio-ffmpeg does not ship (so unsilence silently fell back on
+        # machines without a system ffmpeg).
         try:
-            audio = AudioSegment.from_file(str(src))
+            samples = decode_audio(src, 0.0, info.duration, SR)
         except Exception as exc:
             log.warning("unsilence: cannot read audio of %s: %s", src.name, exc)
             return src
+        pcm = (np.clip(samples, -1.0, 1.0) * 32767.0).astype(np.int16)
+        audio = AudioSegment(data=pcm.tobytes(), sample_width=2, frame_rate=SR, channels=1)
         intervals = _non_silent_intervals(cfg, audio)
         if not intervals:
             log.info("unsilence: no removable silence found in %s", src.name)

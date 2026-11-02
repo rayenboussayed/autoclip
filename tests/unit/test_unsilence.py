@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +32,28 @@ def test_remove_silence_creates_cleaner_video(media: Media, tmp_path: Path) -> N
     assert returned == destination
     assert destination.is_file() and destination.stat().st_size > 0
     assert probe(destination).duration <= probe(media.video).duration + 1e-6
+
+
+def test_remove_silence_does_not_need_system_ffprobe(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bundled imageio-ffmpeg ships no ffprobe; unsilence must not depend on one (regression)."""
+    _skip_without_audioop()
+    from autoclip.core.media import ffmpeg_exe
+
+    cfg = make_cfg(media, tmp_path, None)
+    cfg.unsilence.enabled = True
+    cfg.unsilence.quality_preset = "medium"
+    destination = tmp_path / "long" / media.video.stem / f"unsilence_{media.video.stem}.mp4"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+    ffmpeg_exe.cache_clear()
+    try:
+        returned = remove_silence(media.video, cfg, destination)
+    finally:
+        ffmpeg_exe.cache_clear()
+    assert returned == destination
+    assert destination.is_file() and destination.stat().st_size > 0
 
 
 def test_disabled_by_default_returns_original(media: Media, tmp_path: Path) -> None:
@@ -77,15 +98,13 @@ def test_no_audio_track_source_is_copied(media: Media, tmp_path: Path) -> None:
     assert destination.is_file()
 
 
-def test_audiosegment_read_failure_falls_back(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_audio_decode_failure_falls_back(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _skip_without_audioop()
-    from pydub import AudioSegment
-
     cfg = make_cfg(media, tmp_path, None)
     cfg.unsilence.enabled = True
     destination = tmp_path / "long" / media.video.stem / f"unsilence_{media.video.stem}.mp4"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(AudioSegment, "from_file", staticmethod(lambda *a, **k: (_ for _ in ()).throw(RuntimeError("bad"))))
+    monkeypatch.setattr("autoclip.core.unsilence.decode_audio", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("bad")))
 
     returned = remove_silence(media.video, cfg, destination)
     assert returned is media.video
@@ -111,22 +130,6 @@ def test_impossible_source_raises(media: Media, tmp_path: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with pytest.raises(AutoclipError):
         remove_silence(tmp_path / "missing.mp4", cfg, destination)
-
-
-def test_prepare_path_branches(monkeypatch: pytest.MonkeyPatch) -> None:
-    from autoclip.core import unsilence
-    from autoclip.core.media import ffmpeg_exe
-
-    ffmpeg_dir = str(Path(ffmpeg_exe()).parent)
-    monkeypatch.setenv("PATH", ffmpeg_dir)
-    original = os.environ.get("PATH", "")
-    os.environ["PATH"] = ffmpeg_dir
-    unsilence._prepare_path()
-    assert True
-    os.environ["PATH"] = "/not/here"
-    unsilence._prepare_path()
-    assert ffmpeg_dir in os.environ["PATH"]
-    os.environ["PATH"] = original
 
 
 def test_pydub_import_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:

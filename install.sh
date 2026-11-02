@@ -49,6 +49,8 @@ mkdir -p "$HOME_DIR" "$BIN_DIR"
 rm -rf "$HOME_DIR/app.new" && mkdir "$HOME_DIR/app.new"
 tar -xzf "$tmp/$asset" -C "$HOME_DIR/app.new"
 rm -rf "$HOME_DIR/app" && mv "$HOME_DIR/app.new/autoclip" "$HOME_DIR/app" && rmdir "$HOME_DIR/app.new"
+# archives do not always keep the executable bit
+chmod +x "$HOME_DIR/app/autoclip"
 ln -sf "$HOME_DIR/app/autoclip" "$BIN_DIR/autoclip"
 if [ "$(uname -s)" = Darwin ]; then xattr -dr com.apple.quarantine "$HOME_DIR/app" 2>/dev/null || true; fi
 

@@ -79,6 +79,7 @@ autoclip/
     store.py        SQLite Store (WAL), MemoryLRU, Cache (RAM LRU in front of SQLite kv), is_boundary
     media.py        ffmpeg discovery, probe (PyAV), energy track, decode_audio, scene cuts, snapping, trim_video
     audio.py        enhance_audio (denoise/loudness/limiter), compute_keep (pauses/fillers), Timeline, build_audio
+    unsilence.py    remove_silence: pydub silence detection + MoviePy re-encode (audio decoded by media.decode_audio)
     transcript.py   parse srt/json, downloaded subtitles, faster-whisper (chunked), disk cache, get_transcript
     denoise.py      speech enhancement before transcription: SpeechEnhancer (sherpa-onnx ONNX | noisereduce)
     moments.py      candidates, vectorised features, per-scene scoring, pick(), LLM re-rank, select_moments
@@ -556,8 +557,11 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     miss yt-dlp's failures or swallow autoclip's own. Never `except DownloadError` around a yt-dlp call.
 23. **The bundled imageio-ffmpeg has no ffprobe.** `download.time_range` is handed to yt-dlp only when a *real*
     `ffmpeg` **and** `ffprobe` are on `PATH` (`Downloader._range_supported`); otherwise the whole video is downloaded
-    and `media.trim_video` cuts it locally (the SRT is shifted and clipped too). yt-dlp needs both binaries to cut a
-    range itself, so a "range" that looks supported is not: verify the duration after the download.
+    and `media.trim_video` cuts it locally (the SRT is shifted and clipped too). Unsilence therefore decodes audio with
+    `media.decode_audio`, never `pydub.AudioSegment.from_file` (which calls `ffprobe` and silently fell back to the
+    original on every machine without a system ffmpeg, including CI and the frozen builds). yt-dlp needs
+    both binaries to cut a range itself, so a "range" that looks supported is not: verify the duration
+    after the download.
 24. **The format id is part of the originals cache prefix** (`<safe title> [<id>] [<format id>]`). Changing `quality`,
     `fps`, `codec`, `container` or a `time_range` therefore downloads a new file instead of reusing one that no longer
     matches the request. The price is that the cache is only checked *after* extraction - the format id can only come
