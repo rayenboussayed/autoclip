@@ -148,7 +148,9 @@ class ThreadPool(ThreadPoolExecutor):
 
 
 def parallel_jobs(media: Media, tmp_path: Path, n: int, cpus: int = 2, **kw: Any) -> tuple[list[RenderJob], Store, Config]:
-    jobs, store, cfg = make_jobs(media, tmp_path, n=n, processing={"mode": "parallel"}, resources={"cpus": cpus, "max_workers": cpus}, **kw)
+    jobs, store, cfg = make_jobs(
+        media, tmp_path, n=n, processing={"mode": "parallel"}, resources={"cpus": cpus, "max_workers": cpus, "max_cpu_percent": 100}, **kw
+    )
     RESOURCES.configure(cfg)
     return jobs, store, cfg
 
@@ -214,7 +216,12 @@ def test_render_all_retries_a_killed_worker_alone(
 def test_render_all_with_real_spawned_workers(media: Media, tmp_path: Path) -> None:
     log_file = tmp_path / "pool.log"
     jobs, store, cfg = make_jobs(
-        media, tmp_path, n=2, log_file=log_file, resources={"cpus": 2, "max_workers": 2}, processing={"mode": "parallel"}
+        media,
+        tmp_path,
+        n=2,
+        log_file=log_file,
+        resources={"cpus": 2, "max_workers": 2, "max_cpu_percent": 100},
+        processing={"mode": "parallel"},
     )
     RESOURCES.configure(cfg)
     render_all(jobs, 100 << 20)

@@ -81,7 +81,7 @@ def test_cpu_detection(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def make_monitor(monkeypatch: pytest.MonkeyPatch, free_mb: int, total_mb: int = 16000, **resources_cfg: object) -> ResourceMonitor:
     mon = ResourceMonitor()
-    mon.configure(cfg_with(resources={"cpus": 8, **resources_cfg}))
+    mon.configure(cfg_with(resources={"cpus": 8, "max_cpu_percent": 100, **resources_cfg}))
     monkeypatch.setattr(mon, "snapshot", lambda: Snapshot(10.0, total_mb * MB, free_mb * MB, 100 * MB))
     return mon
 
