@@ -315,8 +315,9 @@ class ResourcesCfg(Section):
     """Adaptive CPU / RAM balancing (re-evaluated before and after every operation)."""
 
     cpus: Int = 0  # 0 = auto-detect (affinity + container quota)
-    max_cpu_percent: Float = 100  # share of the cores the script may use
-    max_workers: Int = 0  # ignored unless mode below is "parallel": 0 = as many parallel renders as cores and RAM allow; 1 = sequential
+    max_cpu_percent: Float = 50  # default half of available cores
+    max_workers: Int = 0  # ignored unless parallel: 0 = as many as cores/RAM allow; 1 = sequential
+    encoding_threads: Int = 4  # CPU threads per encode; 0 = use encoding cap
     memory_fraction: Float = 0.75  # max share of the *currently free* RAM the script may claim
     memory_reserve_mb: Int = 512  # RAM always left to the OS and other programs
 

@@ -1405,6 +1405,15 @@ SPEED = Section(
             "0 is right for most machines; 1 renders one clip after the other.",
         ),
         _o(
+            "resources.encoding_threads",
+            "Encode threads",
+            "int",
+            "CPU threads given to a single render; more can be faster, but multiplies memory per clip.",
+            "Bounds the extract suffix (OOM-safety).",
+            "4 on big machines; 2 on small or when encodes get heavy (libx265).",
+            advanced=True,
+        ),
+        _o(
             "resources.memory_fraction",
             "Share of the free memory",
             "float",

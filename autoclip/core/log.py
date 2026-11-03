@@ -35,6 +35,11 @@ class _SharedFileHandler(logging.FileHandler):
             return
         with _lock_writes(stream):
             super().emit(record)
+            stream.flush()  # crash (e.g. OOM kill) must not lose buffered lines
+            if os.environ.get("AUTOCLIP_LOG_FSYNC") == "1":
+                fd = stream.fileno()
+                with contextlib.suppress(OSError):
+                    os.fsync(fd)
 
 
 class _Msvcrt(Protocol):
@@ -117,6 +122,26 @@ def speed_text(media_seconds: float, wall_seconds: float) -> str:
     if media_seconds <= 0 or wall_seconds <= 0:
         return "n/a"
     return f"{media_seconds / wall_seconds:.2f}x realtime"
+
+
+def logger_decorator(callback: Callable[P, R]) -> Callable[P, R]:
+    """Wrap a function so its start/end and elapsed time are written to the ``autoclip`` log.
+
+    Substitutes the user-supplied ``print`` form with :func:`LOG.debug` so the traces end up in
+    ``.log`` instead of stdout, and stay quiet at the configured console level. Use it sparingly:
+    every wrapped call pays an extra clock read, string format and I/O, which would worsen OOM.
+    """
+
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        callback_name: str = getattr(callback, "__name__", "<unknown>")
+        LOG.debug("[START] %s", callback_name)
+        start_time = time.perf_counter()
+        result: R = callback(*args, **kwargs)
+        elapsed_time = time.perf_counter() - start_time
+        LOG.debug("[END] %s - Elapsed time: %.6f seconds", callback_name, elapsed_time)
+        return result
+
+    return functools.wraps(callback)(wrapper)
 
 
 def traced(label: str | None = None, level: int = logging.INFO) -> Callable[[Callable[P, R]], Callable[P, R]]:

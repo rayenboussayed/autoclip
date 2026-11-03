@@ -20,7 +20,7 @@ import numpy as np
 from .config import Config, ProcessingCfg, TranscriptCfg
 from .denoise import SpeechEnhancer
 from .errors import AutoclipError
-from .log import speed_text, traced
+from .log import logger_decorator, speed_text, traced
 from .media import F32, decode_audio, snap_to_quiet
 from .models import MediaInfo, Segment, Word
 from .resources import MB, RESOURCES
@@ -408,6 +408,7 @@ def _cache_key(src: Path, cfg: TranscriptCfg, proc: ProcessingCfg, *, denoise: b
 
 
 @traced("get_transcript")
+@logger_decorator
 def get_transcript(
     src: Path,
     cfg: Config,

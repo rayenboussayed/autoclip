@@ -127,6 +127,11 @@ class ResourceMonitor:
         """Cores the script may use (all of them by default)."""
         return max(1, round(self.cpus * self.res.max_cpu_percent / 100))
 
+    def encoding_thread_budget(self) -> int:
+        """Threads to use for a single encode (always capped - # threads == # jobs * threads summed)."""
+        requested = self.res.encoding_threads or 4
+        return max(1, min(requested or 4, 4, self.cpu_budget()))  # cap at 4 threads per worker to avoid runaway memory
+
     def usable_memory(self) -> int:
         """Bytes the script may still claim right now, keeping the configured reserve free."""
         free = self.snapshot().mem_available - self.res.memory_reserve_mb * MB

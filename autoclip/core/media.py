@@ -17,7 +17,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .errors import AutoclipError
-from .log import traced
+from .log import logger_decorator, traced
 from .models import MediaInfo
 
 F32 = NDArray[np.float32]
@@ -79,6 +79,8 @@ def external_env() -> dict[str, str] | None:
     return env if changed else None
 
 
+@logger_decorator
+@logger_decorator
 @traced("probe", logging.DEBUG)
 def probe(path: Path) -> MediaInfo:
     """Duration, audio presence, frame size and rate (via PyAV - no ``ffprobe`` needed)."""
@@ -110,6 +112,7 @@ def frame_energy_db(path: Path) -> F32:
     raise last_err
 
 
+@logger_decorator
 def _frame_energy_db(path: Path) -> F32:
     n = int(SR * FRAME)
     cmd = [ffmpeg_exe(), "-v", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", str(SR), "-f", "s16le", "-"]
@@ -134,6 +137,7 @@ def _frame_energy_db(path: Path) -> F32:
     return np.concatenate(levels) if levels else np.zeros(1, dtype=np.float32)
 
 
+@logger_decorator
 def decode_audio(src: Path, start: float, dur: float, sr: int, filters: Sequence[str] = ()) -> F32:
     """Mono float32 samples of ``[start, start+dur]`` at ``sr`` Hz (zero padded if the file ends early).
 
@@ -174,6 +178,7 @@ def snap_to_cut(t: float, cuts: Sequence[float], radius: float) -> float:
     return min(near, key=lambda c: abs(c - t)) if near else t
 
 
+@logger_decorator
 @traced("trim_video")
 def trim_video(src: Path, dst: Path, start: float, end: float) -> Path:
     """Cut ``[start, end]`` out of ``src`` into ``dst`` by re-encoding the video (accurate cuts).

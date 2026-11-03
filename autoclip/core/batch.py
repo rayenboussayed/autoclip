@@ -19,6 +19,7 @@ from .config import Config, is_url
 from .download import Downloader
 from .errors import AutoclipError, ConfigError
 from .events import CancelToken, Reporter
+from .log import logger_decorator
 from .models import Encoder
 from .pipeline import process_video
 from .resources import MB, RESOURCES
@@ -50,6 +51,7 @@ def _unique_name(candidate: str, used: set[str]) -> str:
     return f"{candidate} ({n})"
 
 
+@logger_decorator
 def run_batch(
     cfg: Config,
     *,

@@ -21,6 +21,7 @@ from pathlib import Path
 from .config import Config, KindCfg, parse_hms
 from .errors import AutoclipError
 from .events import CancelToken, Reporter
+from .log import logger_decorator
 from .media import external_env, ffmpeg_exe, probe
 from .models import Encoder, MediaInfo, Moment, RenderJob
 from .moments import energy_track, make_title, select_moments
@@ -75,6 +76,7 @@ def needs_text(cfg: Config) -> bool:
     return cfg.clips.mode == "highlights" or (cfg.captions.enabled and not cfg.skip.caption) or (cfg.title.enabled and not cfg.skip.title)
 
 
+@logger_decorator
 def process_video(
     src: Path,
     cfg: Config,

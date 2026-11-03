@@ -15,7 +15,7 @@ from dataclasses import replace
 
 from .events import CancelToken, Reporter
 from .hardware import HW_MAX_WORKERS
-from .log import setup_logging, traced
+from .log import logger_decorator, setup_logging, traced
 from .models import RenderJob
 from .render import render_clip
 from .resources import RESOURCES
@@ -24,12 +24,16 @@ from .store import Cache, Store
 log = logging.getLogger("autoclip")
 
 
+@logger_decorator
 def render_job(job: RenderJob) -> bool:
     """Render one clip and record the outcome in SQLite. Never raises (a failed clip must not stop the batch)."""
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
     if os.getpid() != job.parent_pid:  # fresh interpreter: rebuild logging and the resource monitor
         setup_logging(job.log_file, job.cfg.logging.level, None)
         RESOURCES.configure(job.cfg)
     t0 = time.perf_counter()
+    threads = min(job.threads or RESOURCES.encoding_thread_budget(), RESOURCES.encoding_thread_budget())
+    job = replace(job, threads=threads)
     store = Store(job.db_path)
     cache = Cache(store, RESOURCES)
     vclip = None
@@ -37,7 +41,7 @@ def render_job(job: RenderJob) -> bool:
     try:
         from moviepy import VideoFileClip
 
-        log.info("[%d] rendering %s (%.1f-%.1fs, %d threads)", job.clip_id, job.dst.name, m.start, m.end, job.threads)
+        log.info("[%d] rendering %s (%.1f-%.1fs, %d threads)", job.clip_id, job.dst.name, m.start, m.end, threads)
         vclip = VideoFileClip(str(job.src), audio=False)
         size, lines = render_clip(vclip, job, store, cache)
         if lines:
@@ -101,7 +105,7 @@ def render_all(
         for job in jobs:
             if cancel is not None and cancel.cancelled:
                 break
-            render_job(replace(job, threads=RESOURCES.cpu_budget()))
+            render_job(replace(job, threads=RESOURCES.encoding_thread_budget()))
             finished += 1
             if report is not None:
                 report("render", finished / total, f"clip {finished}/{total}")
@@ -115,7 +119,7 @@ def render_all(
             while (pending or running) and (cancel is None or not cancel.cancelled):
                 plan = RESOURCES.plan_workers(est_bytes, len(pending) + len(running), limit)
                 while pending and len(running) < plan.workers and (cancel is None or not cancel.cancelled):
-                    job = replace(pending.popleft(), threads=plan.threads)
+                    job = replace(pending.popleft(), threads=min(plan.threads, RESOURCES.encoding_thread_budget()))
                     log.info(
                         "submit clip %d (running=%d allowed=%d threads=%d | %s)",
                         job.clip_id,
@@ -157,7 +161,7 @@ def render_all(
         gc.collect()
         if cancel is not None and cancel.cancelled:
             break
-        render_job(replace(job, threads=RESOURCES.cpu_budget()))
+        render_job(replace(job, threads=RESOURCES.encoding_thread_budget()))
         finished += 1
         if report is not None:
             report("render", finished / total, f"clip {finished}/{total}")
