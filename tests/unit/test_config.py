@@ -374,3 +374,10 @@ def test_default_transcript_model_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "ctranslate2", fake)
     # direct function re-import via module reload? Config imported already; call function from module with patched sys
     assert config._default_transcript_model() == "large-v3"
+
+
+def test_default_config_is_default_sequential() -> None:
+    cfg = parse(Config, {})
+    assert cfg.processing.mode == "sequential"
+    assert cfg.unsilence.enabled is True
+    assert Path(cfg.output_dir) == Path.home() / "Videos" / "clips"

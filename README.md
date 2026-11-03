@@ -181,7 +181,7 @@ config asks for something else.
 | --- | --- | --- |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | where uvicorn listens |
 | `MAX_FILE_SIZE` | `1073741824` (1 GiB) | larger uploads get HTTP 413 |
-| `MAX_CONCURRENT_JOBS` | `2` | renders running at once (the rest wait in the queue) |
+| `MAX_CONCURRENT_JOBS` | `1` | renders running at once (the rest wait in the queue) |
 | `OUTPUT_DIR` / `CACHE_DIR` | `.server/outputs` / `.server/cache` | jobs, work folders and ZIPs |
 | `JOB_TTL_SECONDS` | `3600` | expired jobs are evicted in the background |
 | `AUTH_USERNAME` / `AUTH_PASSWORD` | empty | HTTP Basic auth **only when both are set**; otherwise the API is public |

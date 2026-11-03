@@ -303,11 +303,11 @@ class SilenceCfg(Section):
 
 @dataclass(config=SCHEMA)
 class ProcessingCfg(Section):
-    """Keeping memory flat on very long videos."""
+    """Chunking of long audio and how clips render."""
 
     chunk_threshold_minutes: Annotated[Float, Field(ge=0)] = 0  # 0 = always transcribe in chunks; N = only videos longer than N minutes
     chunk_minutes: Annotated[Float, Field(gt=0)] = 5  # chunk length; boundaries snap to the quietest moment nearby
-    mode: Literal["sequential", "parallel"] = "sequential"  # how the render jobs are run
+    mode: Literal["sequential", "parallel"] = "sequential"  # sequential = one clip at a time; parallel = adaptive pool
 
 
 @dataclass(config=SCHEMA)
@@ -316,8 +316,7 @@ class ResourcesCfg(Section):
 
     cpus: Int = 0  # 0 = auto-detect (affinity + container quota)
     max_cpu_percent: Float = 100  # share of the cores the script may use
-    max_workers: Int = 0  # 0 = as many parallel renders as cores and RAM allow; 1 = sequential
-    mode: Literal["sequential", "parallel"] = "sequential"  # sequential = one clip at a time, parallel = adaptive pool
+    max_workers: Int = 0  # ignored unless mode below is "parallel": 0 = as many parallel renders as cores and RAM allow; 1 = sequential
     memory_fraction: Float = 0.75  # max share of the *currently free* RAM the script may claim
     memory_reserve_mb: Int = 512  # RAM always left to the OS and other programs
 

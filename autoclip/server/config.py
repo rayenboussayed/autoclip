@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     host: str = Field(default="0.0.0.0", validation_alias="HOST")  # noqa: S104
     port: int = Field(default=8000, validation_alias="PORT")
     max_file_size: int = Field(default=1024 * 1024 * 1024, validation_alias="MAX_FILE_SIZE")  # 1 GiB
-    max_concurrent_jobs: int = Field(default=2, validation_alias="MAX_CONCURRENT_JOBS")
+    max_concurrent_jobs: int = Field(default=1, validation_alias="MAX_CONCURRENT_JOBS")
     auth_username: str = Field(default="", validation_alias="AUTH_USERNAME")
     auth_password: str = Field(default="", validation_alias="AUTH_PASSWORD")
     output_dir: Path = Field(default=BASE_DIR / ".server" / "outputs", validation_alias="OUTPUT_DIR")

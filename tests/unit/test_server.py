@@ -988,3 +988,12 @@ def test_delete_job_without_existing_input(tmp_path: Path, monkeypatch: pytest.M
         assert response.status_code == 200
     with registry._lock:
         registry._jobs.pop(job.job_id, None)
+
+
+def test_default_max_concurrent_jobs_is_one() -> None:
+    import os
+
+    os.environ.pop("MAX_CONCURRENT_JOBS", None)
+    server_config.get_settings.cache_clear()
+    assert server_config.get_settings().max_concurrent_jobs == 1
+    server_config.get_settings.cache_clear()

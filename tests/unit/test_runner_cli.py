@@ -125,6 +125,20 @@ def test_render_all_sequential_and_empty(media: Media, tmp_path: Path) -> None:
     store.close()
 
 
+def test_render_all_is_sequential_by_default(
+    media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Null ProcessPoolExecutor: the pool must never be constructed while the default mode is sequential.
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", lambda *a, **k: (_ for _ in ()).throw(AssertionError("pool used")))
+    jobs, store, cfg = make_jobs(media, tmp_path, n=2)
+    RESOURCES.configure(cfg)
+    with caplog.at_level(logging.INFO, logger="autoclip"):
+        render_all(jobs, 100 << 20)
+    assert statuses(store) == ["done", "done"]
+    assert "sequential: rendering 2 clip(s) one at a time" in caplog.text
+    assert "submit clip" not in caplog.text
+
+
 class ThreadPool(ThreadPoolExecutor):
     """Stands in for ProcessPoolExecutor so the scheduling logic runs (and is measured) in-process."""
 
@@ -134,7 +148,7 @@ class ThreadPool(ThreadPoolExecutor):
 
 
 def parallel_jobs(media: Media, tmp_path: Path, n: int, cpus: int = 2, **kw: Any) -> tuple[list[RenderJob], Store, Config]:
-    jobs, store, cfg = make_jobs(media, tmp_path, n=n, resources={"cpus": cpus, "max_workers": cpus, "mode": "parallel"}, **kw)
+    jobs, store, cfg = make_jobs(media, tmp_path, n=n, processing={"mode": "parallel"}, resources={"cpus": cpus, "max_workers": cpus}, **kw)
     RESOURCES.configure(cfg)
     return jobs, store, cfg
 
@@ -199,7 +213,9 @@ def test_render_all_retries_a_killed_worker_alone(
 
 def test_render_all_with_real_spawned_workers(media: Media, tmp_path: Path) -> None:
     log_file = tmp_path / "pool.log"
-    jobs, store, cfg = make_jobs(media, tmp_path, n=2, log_file=log_file, resources={"cpus": 2, "max_workers": 2, "mode": "parallel"})
+    jobs, store, cfg = make_jobs(
+        media, tmp_path, n=2, log_file=log_file, resources={"cpus": 2, "max_workers": 2}, processing={"mode": "parallel"}
+    )
     RESOURCES.configure(cfg)
     render_all(jobs, 100 << 20)
     assert statuses(store) == ["done", "done"]
@@ -271,6 +287,31 @@ def test_main_one_broken_video_does_not_stop_the_batch(media: Media, tmp_path: P
     broken.write_text("this is not a video")
     assert main([str(write_config(tmp_path, media, input=[str(broken), str(media.video)]))]) == 1
     assert len(clips_json(tmp_path, "short", "talk")) == 1
+
+
+def test_run_batch_processes_inputs_one_at_a_time(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core import batch
+
+    active = {"n": 0, "max": 0}
+
+    def fake(path: Path, cfg: Config, log_file: Path | None, encoder: Encoder, **kw: Any) -> tuple[int, int]:
+        active["n"] += 1
+        active["max"] = max(active["max"], active["n"])
+        import time as _t
+
+        _t.sleep(0.02)
+        active["n"] -= 1
+        return 1, 0
+
+    monkeypatch.setattr(batch, "process_video", fake)
+    cfg = make_cfg(media, tmp_path / "out", processing={"mode": "sequential"})
+    cfg.input = [str(media.video), str(media.video)]
+    RESOURCES.configure(cfg)
+    from autoclip.core.batch import run_batch
+
+    result = run_batch(cfg, downloader=None, encoder=Encoder("libx264", False, "ultrafast", ()), log_file=None)
+    assert active["max"] == 1
+    assert result.clips_done == 2 and result.clips_failed == 0
 
 
 def test_main_reports_clips_that_failed_to_render(media: Media, tmp_path: Path) -> None:
