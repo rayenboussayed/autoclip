@@ -12,7 +12,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .config import AudioCfg, SilenceCfg
-from .log import traced
+from .log import logger_decorator, traced
 from .media import AUDIO_SR, decode_audio
 from .models import Word
 
@@ -63,6 +63,7 @@ def _noisereduce_available() -> bool:
 
 
 @traced("enhance_audio")
+@logger_decorator
 def enhance_audio(src: Path, start: float, dur: float, cfg: AudioCfg, threads: int, *, enhance: bool = True, denoise: bool = True) -> F32:
     """Window audio, high-passed, denoised, loudness-normalised (speech frames only) and soft-limited.
 

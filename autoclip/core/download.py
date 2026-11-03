@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 from .config import Config, DownloadCfg, JsRuntimeCfg, parse, parse_hms
 from .errors import AutoclipError, DownloadError
 from .formats import Choice, choose
-from .log import traced
+from .log import logger_decorator, traced
 from .media import bundled_ffmpeg_exe, external_env, ffmpeg_exe, probe, trim_video
 from .models import Downloaded
 from .platforms import (
@@ -585,6 +585,7 @@ class Downloader:
     # ---------------------------------------------------------------- download
 
     @traced("download")
+    @logger_decorator
     def download(self, url: str) -> list[Downloaded]:
         """Download one URL (or every entry of its playlist) into the original cache.
 

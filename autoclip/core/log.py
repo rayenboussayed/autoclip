@@ -12,7 +12,7 @@ import sys
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import ParamSpec, Protocol, TypeVar, cast
+from typing import Any, ParamSpec, Protocol, TypeVar, cast
 
 from .resources import RESOURCES
 
@@ -85,6 +85,52 @@ def _lock_writes(stream: io.TextIOBase) -> Iterator[None]:
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
 
 
+class _StdoutTee(io.TextIOBase):
+    """Capture ``print`` output so it lands in the ``.log`` file while staying visible on the console.
+
+    ``setup_logging`` installs this as ``sys.stdout`` whenever a log file is configured. Each complete
+    line is emitted back to the ``autoclip`` logger (which the file handler persists), and the original
+    (un-redirected) stdout is written to as well. The emit call goes through the file handler only, so
+    neither this tee nor the logger recurses.
+    """
+
+    def __init__(self, mirror: Any, logger: logging.Logger) -> None:
+        self._mirror = mirror
+        self._logger = logger
+        self._buffer = ""
+
+    def write(self, s: object) -> int:
+        text = s if isinstance(s, str) else str(s)
+        self._buffer += text
+        if self._mirror is not None:
+            try:
+                self._mirror.write(text)
+                self._mirror.flush()
+            except (OSError, ValueError):
+                pass
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            if line != "":
+                self._logger.info(line)
+        return len(text)
+
+    def flush(self) -> None:
+        if self._buffer:
+            self._logger.info(self._buffer)
+            self._buffer = ""
+        if self._mirror is not None:
+            with contextlib.suppress(OSError, ValueError):
+                self._mirror.flush()
+
+    def isatty(self) -> bool:
+        if self._mirror is None:
+            return False
+        try:
+            return bool(self._mirror.isatty())
+        except (OSError, ValueError, AttributeError):
+            return False
+
+
 def setup_logging(log_file: Path | None, file_level: str, console_level: str | None) -> None:
     """(Re)configure the ``autoclip`` logger.
 
@@ -98,6 +144,7 @@ def setup_logging(log_file: Path | None, file_level: str, console_level: str | N
     for handler in list(LOG.handlers):
         LOG.removeHandler(handler)
         handler.close()
+    orig_stdout = sys.stdout
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         fh = _SharedFileHandler(log_file, encoding="utf-8")
@@ -107,12 +154,15 @@ def setup_logging(log_file: Path | None, file_level: str, console_level: str | N
         )
         LOG.addHandler(fh)
     if console_level is not None:
-        if isinstance(sys.stdout, io.TextIOWrapper):  # legacy Windows code pages must not crash on titles
-            sys.stdout.reconfigure(errors="replace")
-        sh = logging.StreamHandler(sys.stdout)
+        if isinstance(orig_stdout, io.TextIOWrapper):  # legacy Windows code pages must not crash on titles
+            orig_stdout.reconfigure(errors="replace")
+        sh = logging.StreamHandler(orig_stdout)
         sh.setLevel(console_level)
         sh.setFormatter(logging.Formatter("%(asctime)s | %(message)s", "%H:%M:%S"))
         LOG.addHandler(sh)
+    if log_file is not None:
+        tee = _StdoutTee(None, LOG)
+        sys.stdout = tee
     if not LOG.handlers:
         LOG.addHandler(logging.NullHandler())
 
@@ -125,20 +175,21 @@ def speed_text(media_seconds: float, wall_seconds: float) -> str:
 
 
 def logger_decorator(callback: Callable[P, R]) -> Callable[P, R]:
-    """Wrap a function so its start/end and elapsed time are written to the ``autoclip`` log.
+    """Wrap a function so its start/end and elapsed time are printed (and captured into ``.log``).
 
-    Substitutes the user-supplied ``print`` form with :func:`LOG.debug` so the traces end up in
-    ``.log`` instead of stdout, and stay quiet at the configured console level. Use it sparingly:
-    every wrapped call pays an extra clock read, string format and I/O, which would worsen OOM.
+    Uses the user-supplied ``print`` form. The prints land in the ``.log`` file because
+    :func:`setup_logging` redirects ``sys.stdout`` through a tee whenever a log file is configured, so
+    console and file stay in sync. Use it sparingly: every wrapped call pays an extra clock read, string
+    format and I/O, which would worsen OOM.
     """
 
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         callback_name: str = getattr(callback, "__name__", "<unknown>")
-        LOG.debug("[START] %s", callback_name)
+        print(f"[START] {callback_name}")
         start_time = time.perf_counter()
         result: R = callback(*args, **kwargs)
         elapsed_time = time.perf_counter() - start_time
-        LOG.debug("[END] %s - Elapsed time: %.6f seconds", callback_name, elapsed_time)
+        print(f"[END] {callback_name} - Elapsed time: {elapsed_time:.6f} seconds")
         return result
 
     return functools.wraps(callback)(wrapper)
