@@ -15,7 +15,7 @@ from .audio import Timeline, build_audio, compute_keep, enhance_audio
 from .captions import Y_CENTER, build_captions, render_text_image, safe_top
 from .config import VideoCfg
 from .fonts import find_font
-from .log import logger_decorator, speed_text, traced
+from .log import safe_path_text, speed_text, traced
 from .media import AUDIO_SR
 from .models import Encoder, RenderJob, Span, Word
 from .store import Cache, Store
@@ -158,10 +158,10 @@ def encode(comp: Any, dst: Path, fps: float, encoder: Encoder, threads: int, vid
     )
     if target.exists():
         target.replace(dst)
+        log.info("encoded output: %s", safe_path_text(dst))
 
 
 @traced("render_clip")
-@logger_decorator
 def render_clip(vclip: Any, job: RenderJob, store: Store, cache: Cache) -> tuple[tuple[int, int], list[Span]]:
     """Render one clip: enhance audio, cut pauses/fillers, lay out, caption, fade, encode, cover image.
 

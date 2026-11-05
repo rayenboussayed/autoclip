@@ -316,9 +316,9 @@ class ResourcesCfg(Section):
 
     cpus: Int = 0  # 0 = auto-detect (affinity + container quota)
     max_cpu_percent: Float = 50  # default half of available cores
-    max_workers: Int = 0  # ignored unless parallel: 0 = as many as cores/RAM allow; 1 = sequential
+    max_workers: Int = 0  # parallel pool cap: 0 = as many as cores/RAM allow (sequential mode ignores this)
     encoding_threads: Int = 4  # CPU threads per encode; 0 = use encoding cap
-    memory_fraction: Float = 0.75  # max share of the *currently free* RAM the script may claim
+    memory_fraction: Float = 0.5  # default half of the *currently free* RAM the script may claim
     memory_reserve_mb: Int = 512  # RAM always left to the OS and other programs
 
 
@@ -513,6 +513,7 @@ class DownloadCfg(Section):
     subtitles: SubtitlesCfg = field(default_factory=SubtitlesCfg)
     playlist: Literal["single", "all"] = "single"  # single = the one video; all = every entry, up to max_videos
     max_videos: Annotated[Int, Field(ge=1)] = 50
+    cache: Bool = True  # reuse the cached originals of an identical URL/settings without any network call
     time_range: Range | None = None  # "MM:SS-MM:SS" / "HH:MM:SS-HH:MM:SS"
     cookies: CookiesCfg = field(default_factory=CookiesCfg)
     network: NetworkCfg = field(default_factory=NetworkCfg)
@@ -658,7 +659,7 @@ def load_config(path: str | Path) -> Config:
     cfg = parse(Config, raw)
     base = p.resolve().parent
     cfg.input = expand_inputs(cfg.input, base)
-    cfg.output_dir = _abs(base, cfg.output_dir)
+    cfg.output_dir = _abs(Path.cwd(), cfg.output_dir)  # independent of where the config file lives
     if cfg.logging.file:
         cfg.logging.file = _abs(base, cfg.logging.file)
     if cfg.transcript.file:

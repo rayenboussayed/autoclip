@@ -106,7 +106,7 @@ def test_render_job_in_a_fresh_worker_rebuilds_logging_and_monitor(media: Media,
     log_file = tmp_path / "worker.log"
     (job,), store, _ = make_jobs(media, tmp_path, n=1, log_file=log_file, parent_pid=-1)  # pid differs: behaves like a spawned worker
     assert render_job(job) and store.clips()[0]["status"] == "done"
-    assert "rendering c1.mp4" in log_file.read_text(encoding="utf-8")
+    assert "rendering " in log_file.read_text(encoding="utf-8") and "c1.mp4" in log_file.read_text(encoding="utf-8")
     store.close()
 
 
@@ -227,8 +227,10 @@ def test_render_all_with_real_spawned_workers(media: Media, tmp_path: Path) -> N
     render_all(jobs, 100 << 20)
     assert statuses(store) == ["done", "done"]
     text = log_file.read_text(encoding="utf-8")
-    pids = {line.split("pid=")[1].split()[0] for line in text.splitlines() if "rendering c" in line}
-    assert "rendering c1.mp4" in text and "rendering c2.mp4" in text, f"the spawned workers left the log incomplete:\n{text}"
+    pids = {
+        line.split("pid=")[1].split()[0] for line in text.splitlines() if "rendering" in line and ("c1.mp4" in line or "c2.mp4" in line)
+    }
+    assert "c1.mp4" in text and "c2.mp4" in text and "rendering" in text, f"the spawned workers left the log incomplete:\n{text}"
     assert str(os.getpid()) not in pids and len(pids) >= 1  # rendered by spawned workers, not by this process
     store.close()
 
@@ -404,7 +406,7 @@ def test_main_config_errors_and_init(tmp_path: Path, capsys: pytest.CaptureFixtu
     full = tmp_path / "full.json"
     assert main(["--init-full", str(full)]) == 0
     data = json.loads(full.read_text(encoding="utf-8"))
-    assert data["resources"]["memory_fraction"] == 0.75 and data["clips"]["long"]["aspect"] == "16:9" and data["video"]["gpu"] == "auto"
+    assert data["resources"]["memory_fraction"] == 0.5 and data["clips"]["long"]["aspect"] == "16:9" and data["video"]["gpu"] == "auto"
     assert data["processing"] == {"chunk_threshold_minutes": 0, "chunk_minutes": 5, "mode": "sequential"}
     # The default model is resolved for the machine: large-v3 with CUDA, small on the CPU.
     assert data["transcript"]["model"] in {"small", "large-v3"} and data["transcript"]["enhance"]["enabled"] is True

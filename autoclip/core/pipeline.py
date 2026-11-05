@@ -21,7 +21,7 @@ from pathlib import Path
 from .config import Config, KindCfg, parse_hms
 from .errors import AutoclipError
 from .events import CancelToken, Reporter
-from .log import logger_decorator
+from .log import health_check, safe_path_text, traced
 from .media import external_env, ffmpeg_exe, probe
 from .models import Encoder, MediaInfo, Moment, RenderJob
 from .moments import energy_track, make_title, select_moments
@@ -76,7 +76,7 @@ def needs_text(cfg: Config) -> bool:
     return cfg.clips.mode == "highlights" or (cfg.captions.enabled and not cfg.skip.caption) or (cfg.title.enabled and not cfg.skip.title)
 
 
-@logger_decorator
+@traced
 def process_video(
     src: Path,
     cfg: Config,
@@ -99,6 +99,7 @@ def process_video(
     """
     reporter = report if report is not None else Reporter(cancel=cancel)
     root, cc, stem = Path(cfg.output_dir), cfg.clips, name or src.stem
+    log.info("system health before preprocess/unsilence: %s", health_check("unsilence"))
     if cfg.unsilence.enabled:
         out_dir = root / "long" / stem
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -115,7 +116,17 @@ def process_video(
             pass
     info = probe(src)
     reporter("validate", 0.2, f"probed {src.name}")
-    log.info("input: %s (%.1fs) %dx%d @ %.2ffps, audio: %s", src.name, info.duration, info.width, info.height, info.fps, info.has_audio)
+    log.info("system health before input: %s", health_check("input"))
+    log.info(
+        "input metadata: path=%s | size=%d | duration=%.2fs | %dx%d @ %.2ffps | audio=%s",
+        safe_path_text(src),
+        src.stat().st_size if src.exists() else 0,
+        info.duration,
+        info.width,
+        info.height,
+        info.fps,
+        info.has_audio,
+    )
     if cc.mode == "split":
         out = root / "long" / stem
         out.mkdir(parents=True, exist_ok=True)
@@ -132,6 +143,7 @@ def process_video(
         db = energy_track(src, info, cache)
         if cancel is not None:
             cancel.check()
+        log.info("system health before transcript: %s", health_check("transcript"))
         have_text = get_transcript(
             src,
             cfg,
@@ -183,18 +195,61 @@ def process_video(
         if not jobs:
             raise AutoclipError("no clips found for any requested kind (is the video shorter than the length ranges?)")
         reporter("select", 1.0, f"{len(jobs)} clips planned")
+        log.info("system health before render: %s", health_check("render"))
         reporter("render", 0.0, f"0/{len(jobs)} clips rendered")
         render_all(jobs, needs, report=reporter, cancel=cancel)
         reporter("render", 1.0, f"{len(jobs)}/{len(jobs)} clips rendered")
         rows = store.clips()
+        log.info(
+            "output base: %s | clips=%d (failed=%d)",
+            safe_path_text(root),
+            sum(r["status"] == "done" for r in rows),
+            sum(r["status"] != "done" for r in rows),
+        )
     finally:
         cache.close()
         store.close()
-    keys = ("file", "scene", "start", "end", "title", "text", "score", "llm_score", "width", "height", "trimmed", "wall")
-    for kind in dict.fromkeys(r["kind"] for r in rows):
-        done = [r for r in rows if r["kind"] == kind and r["status"] == "done"]
-        summary = [{k: round(r[k], 2) if isinstance(r[k], float) else r[k] for k in keys} for r in done]
-        (root / kind / stem / "clips.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    for clip_kind in dict.fromkeys(r["kind"] for r in rows):
+        done = [r for r in rows if r["kind"] == clip_kind and r["status"] == "done"]
+        summary = [
+            {
+                "file": r["file"],
+                "scene": r["scene"],
+                "start": round(r["start"], 2),
+                "end": round(r["end"], 2),
+                "title": r["title"],
+                "text": r["text"],
+                "score": round(r["score"], 2) if isinstance(r["score"], (int, float)) and not isinstance(r["score"], bool) else r["score"],
+                "llm_score": round(r["llm_score"], 2)
+                if isinstance(r["llm_score"], (int, float)) and not isinstance(r["llm_score"], bool)
+                else r["llm_score"],
+                "width": r["width"],
+                "height": r["height"],
+                "trimmed": round(r["trimmed"], 2),
+                "wall": round(r["wall"], 2),
+            }
+            for r in done
+        ]
+        (root / clip_kind / stem / "clips.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+        log.info("output folder: %s", safe_path_text(root / clip_kind / stem))
+        for r in rows:
+            if r["kind"] != clip_kind:
+                continue
+            sidecar_stem = r["file"].rpartition(".")[0]
+            log.info(
+                "output: %s | %s/%s | %dx%d | %.2fs trimmed=%.2f wall=%.1fs srt=%s thumb=%s.jpg",
+                safe_path_text(root / clip_kind / stem / r["file"]),
+                clip_kind,
+                r["scene"],
+                int(r["width"]),
+                int(r["height"]),
+                float(r["end"] - r["start"]),
+                float(r["trimmed"] or 0.0),
+                float(r["wall"] or 0.0),
+                safe_path_text(root / clip_kind / stem / (sidecar_stem + ".srt")),
+                sidecar_stem,
+            )
+
     for r in rows:
         if r["status"] != "done":
             log.warning("%s clip %s #%d failed: %s", r["kind"], r["scene"], r["n"], r["error"] or "did not finish")

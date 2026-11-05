@@ -1,5 +1,8 @@
 # Upgrading from 2.x to 3.0
 
+> Current documentation target: 3.0.11. See `../CHANGELOG.md` for the full release history, and
+> `logging.md` for the logging architecture shipped with 3.0.11.
+
 - Python floor is now 3.11 (`requires-python = ">=3.11"`). Python 3.10 is no longer supported.
 - The default transcription model is `large-v3` on a CUDA GPU, `small` otherwise. Set
   `transcript.model` explicitly if you relied on the old `large-v3` default everywhere.

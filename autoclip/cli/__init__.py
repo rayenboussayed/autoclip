@@ -24,7 +24,7 @@ from ..core.download import Downloader, format_report_text
 from ..core.errors import AutoclipError, ConfigError
 from ..core.events import Progress, Reporter
 from ..core.hardware import pick_encoder
-from ..core.log import setup_logging
+from ..core.log import redact_url, safe_path_text, setup_logging, system_profile
 from ..core.resources import MB, RESOURCES
 
 log = logging.getLogger("autoclip")
@@ -215,16 +215,23 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
     RESOURCES.configure(cfg)
     snap = RESOURCES.snapshot()
     has_urls = any(is_url(item) for item in cfg.input)
+    input_labels = [redact_url(item) if is_url(item) else safe_path_text(Path(item)) for item in cfg.input]
     log.info(
-        "autoclip start | python %s on %s | cpus=%d ram=%.0fMB free=%.0fMB | %d input(s) | log: %s",
+        "autoclip start | %s | inputs=%d",
+        system_profile(output_dir=Path(cfg.output_dir), log_path=(Path(log_file) if log_file else None), cache_roots=(cfg.output_dir,)),
+        len(cfg.input),
+    )
+    log.info(
+        "autoclip envelope | python=%s platform=%s | cpus=%d ram=%.0fMB free=%.0fMB | %d input(s) | %s",
         platform.python_version(),
         platform.system(),
         RESOURCES.cpus,
         snap.mem_total / MB,
         snap.mem_available / MB,
         len(cfg.input),
-        log_file,
+        ", ".join(input_labels),
     )
+    log.info("log file: %s", log_file)
     downloader: Downloader | None = None
     if has_urls:
         try:

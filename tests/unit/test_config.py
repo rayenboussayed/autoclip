@@ -170,7 +170,7 @@ def test_expand_inputs_errors(tmp_path: Path) -> None:
         expand_inputs(["x/same.mp4", "y/same.mp4"], tmp_path)
 
 
-def test_load_config_resolves_everything_relative_to_the_file(tmp_path: Path) -> None:
+def test_load_config_resolves_paths_relative_to_the_file_but_output_dir_is_cwd(tmp_path: Path) -> None:
     touch(tmp_path, "vids/one.mp4", "vids/two.mp4", "bg.png", "lex.json")
     cfg = load_config(
         write(
@@ -186,8 +186,8 @@ def test_load_config_resolves_everything_relative_to_the_file(tmp_path: Path) ->
         )
     )
     assert [Path(p).name for p in cfg.input] == ["one.mp4", "two.mp4"]
+    assert Path(cfg.output_dir).is_absolute() and Path(cfg.output_dir).is_relative_to(Path.cwd())
     for value in (
-        cfg.output_dir,
         cfg.logging.file,
         cfg.transcript.file,
         cfg.clips.lexicon_file,

@@ -50,7 +50,25 @@ is exactly what `python -m autoclip config.json` would run.
   .work/{video}/   autoclip.db (recreated empty on every start) and the transcript cache
   .work/downloads/ originals downloaded from URLs (reused by later runs; or download.original_dir)
 ```
-A kind that is not requested (or finds nothing) gets no folder. Several videos share the same `short/` and `long/` folders.
+A kind that is not requested (or finds nothing) gets no folder. Several videos share the same `short/` and `long/` folders. A *relative* `output_dir` is resolved against the current working
+directory - not against the config file - so the output folder is independent of where your config lives. An absolute `output_dir`
+(or the default `~/Videos/clips`) is used as-is.
+
+## Models and caches
+
+Nothing is downloaded twice on purpose:
+
+* **Whisper models** live in the normal HuggingFace cache (`transcript.model_dir` only changes where; `models pull` fills it).
+  The first run may ask to download one (`transcript.consent`).
+* **The speech enhancement model (sherpa ONNX)** is kept in `~/.cache/autoclip/models` (on Linux; the platform's cache folder
+  everywhere else) and is shared by every output folder, so changing the output location no longer re-downloads it.
+* **Transcripts** are cached per video in `{output_dir}/.work/{video}/{video}.transcript.json` and reused while input, model,
+  language and settings agree; a stale cache is re-transcribed.
+* **Downloaded originals** plus a small `autoclip-cache.json` in the originals folder make a second identical run (same URL
+  and settings) succeed **without a single network call** - the originals are reused. Set `download.cache: false` to force a re-pull.
+  Image-provenance? No - just file reuse.
+* **Caption sprites** are pre-rendered once per word and cached compressed (RAM LRU over SQLite), so re-runs are instant.
+
 
 ## Short and long clips, scene types
 
@@ -318,7 +336,12 @@ avoid transcription entirely when no text is needed.
   parallel renders as both allow (spare cores become encoder threads), shrinks the cache and worker count under memory
   pressure, and retries a worker the OS killed. A smaller Whisper model is chosen if the requested one will not fit in free RAM.
 * One SQLite database (WAL) per video, recreated empty at every start. Only the transcript JSON is kept between runs.
-* The log has START/END of every operation with wall time, RSS, free RAM, CPU and throughput; workers log into the same file.
+* Every production function is wrapped with `traced`: callers get `[START]` / `[END]` output, `START` /
+  `END` / `FAIL` log records with machine state, and post-operation memory rebalancing. nested calls are
+  not double-logged, keeping the file usable instead of exploding it.
+* `os.fsync()` is called after every `.log` record (after Python-level flush), so completed log lines
+  are on disk before the caller regains control. See [`docs/logging.md`](docs/logging.md) for design,
+  safety, and failure semantics.
 
 ## Standalone binaries
 
@@ -413,6 +436,11 @@ Downloading only happens for http(s) URLs in `input`; the platform policy is che
 no `exec`/`netrc_cmd`-style option: cookies come from a browser store or a Netscape `cookies.txt`, never from a
 command. Metadata files (`.info.json`, thumbnail, description) are written next to the original in
 `.work/downloads/`, not into the clip folders.
+
+## Changelog
+
+See [`CHANGELOG.md`](CHANGELOG.md) for release-by-release notes (from 2.1.0 to
+the current release). The current code is version `3.0.11`.
 
 ## Development
 ```bash

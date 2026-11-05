@@ -26,6 +26,7 @@ from typing import Any
 from ..core.config import Config, is_url, load_config, parse
 from ..core.errors import AutoclipError, ConfigError
 from ..core.events import CancelToken
+from ..core.transcript import ConsentProvider
 from .fields import JSON_PATHS
 
 #: The folder of the project (the parent of the package), used to run the pipeline from a source checkout.
@@ -174,7 +175,7 @@ def _resolve_log_file(cfg: Config) -> Path | None:
     return Path(cfg.output_dir) / "logs" / f"autoclip_{datetime.now():%Y%m%d_%H%M%S}.log"
 
 
-def run_pipeline(config_path: Path, *, cancel: CancelToken, on_line: Callable[[str], None], consent: Any = None) -> int:
+def run_pipeline(config_path: Path, *, cancel: CancelToken, on_line: Callable[[str], None], consent: ConsentProvider | None = None) -> int:
     """Run one config file entirely in-process (no CLI subprocess).
 
     Reports every log line through ``on_line`` and returns the exit code (0 ok, 1 failed, 2 bad config).
@@ -219,7 +220,9 @@ def run_pipeline(config_path: Path, *, cancel: CancelToken, on_line: Callable[[s
     _RESOURCES.configure(cfg)
     snap = _RESOURCES.snapshot()
     from ..core.log import LOG as log
+    from ..core.log import health_check as _health
 
+    log.info("system health before run_pipeline: %s", _health("app_run"))
     log.info(
         "autoclip start | python %s on %s | cpus=%d ram=%.0fMB free=%.0fMB | %d input(s) | log: %s",
         platform.python_version() if platform else "unknown",
@@ -229,6 +232,18 @@ def run_pipeline(config_path: Path, *, cancel: CancelToken, on_line: Callable[[s
         snap.mem_available / _R_MB,
         len(cfg.input),
         log_file,
+    )
+
+    from ..core.log import LOG as _profile_log
+    from ..core.log import system_profile as _sys_profile
+
+    _profile_log.info(
+        "system profile: %s",
+        _sys_profile(
+            output_dir=Path(cfg.output_dir),
+            log_path=log_file,
+            cache_roots=(Path(cfg.output_dir), Path(cfg.output_dir) / ".work" / "downloads"),
+        ),
     )
 
     from ..core.download import Downloader
@@ -280,7 +295,7 @@ def run_pipeline(config_path: Path, *, cancel: CancelToken, on_line: Callable[[s
         return 1
 
 
-def _cleanup_handlers(logger: Any, handlers: tuple[logging.Handler, ...]) -> None:
+def _cleanup_handlers(logger: logging.Logger, handlers: tuple[logging.Handler, ...]) -> None:
     import contextlib
 
     for h in handlers:
@@ -295,7 +310,7 @@ def cancel_pipeline(handle: PipelineHandle) -> None:
     handle.done = True
 
 
-def start_pipeline(config_path: Path, consent: Any = None) -> PipelineHandle:
+def start_pipeline(config_path: Path, consent: ConsentProvider | None = None) -> PipelineHandle:
     """Compatibility shim: spawn a handle whose worker runs ``run_pipeline`` in-process."""
     from ..core.events import CancelToken
 
@@ -320,7 +335,7 @@ def start_pipeline(config_path: Path, consent: Any = None) -> PipelineHandle:
     return handle
 
 
-def stop_pipeline(process: Any) -> None:
+def stop_pipeline(process: PipelineHandle) -> None:
     if hasattr(process, "cancel"):
         cancel_pipeline(process)
 

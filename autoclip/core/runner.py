@@ -15,7 +15,7 @@ from dataclasses import replace
 
 from .events import CancelToken, Reporter
 from .hardware import HW_MAX_WORKERS
-from .log import logger_decorator, setup_logging, traced
+from .log import safe_path_text, setup_logging, traced
 from .models import RenderJob
 from .render import render_clip
 from .resources import RESOURCES
@@ -24,7 +24,7 @@ from .store import Cache, Store
 log = logging.getLogger("autoclip")
 
 
-@logger_decorator
+@traced
 def render_job(job: RenderJob) -> bool:
     """Render one clip and record the outcome in SQLite. Never raises (a failed clip must not stop the batch)."""
     os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -41,7 +41,7 @@ def render_job(job: RenderJob) -> bool:
     try:
         from moviepy import VideoFileClip
 
-        log.info("[%d] rendering %s (%.1f-%.1fs, %d threads)", job.clip_id, job.dst.name, m.start, m.end, threads)
+        log.info("[%d] rendering %s (%.1f-%.1fs, %d threads)", job.clip_id, safe_path_text(job.dst), m.start, m.end, threads)
         vclip = VideoFileClip(str(job.src), audio=False)
         size, lines = render_clip(vclip, job, store, cache)
         if lines:
@@ -49,7 +49,16 @@ def render_job(job: RenderJob) -> bool:
             job.dst.with_suffix(".srt").write_text("\n".join(blocks), encoding="utf-8")
         wall = time.perf_counter() - t0
         store.finish_clip(job.clip_id, ok=True, file=job.dst.name, size=size, trimmed=m.trimmed, wall=wall)
-        log.info("[%d] done in %.1fs: %.1fs -> %.1fs after trimming", job.clip_id, wall, m.end - m.start, m.trimmed)
+        log.info(
+            "[%d] done in %.1fs: %.1fs -> %.1fs after trimming (output=%s; sidecars=%s,%s)",
+            job.clip_id,
+            wall,
+            m.end - m.start,
+            job.moment.trimmed,
+            safe_path_text(job.dst),
+            safe_path_text(job.dst.with_suffix(".srt")),
+            safe_path_text(job.dst.with_suffix(".jpg")),
+        )
         return True
     except Exception as e:
         log.exception("[%d] render failed", job.clip_id)

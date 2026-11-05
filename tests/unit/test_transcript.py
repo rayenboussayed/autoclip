@@ -14,7 +14,7 @@ import pytest
 
 from autoclip.core import hardware, transcript
 from autoclip.core.config import Config, EnhanceCfg, ProcessingCfg, TranscriptCfg, parse
-from autoclip.core.denoise import SpeechEnhancer
+from autoclip.core.denoise import SpeechEnhancer, default_models_dir
 from autoclip.core.errors import AutoclipError
 from autoclip.core.hardware import pick_encoder
 from autoclip.core.media import F32, decode_audio, frame_energy_db, probe
@@ -538,11 +538,23 @@ def test_skip_denoise_builds_no_speech_enhancer(
     assert built == [] and "init" in rec
 
 
-def test_the_enhancement_model_lives_beside_the_work_directory(tmp_path: Path) -> None:
-    work = tmp_path / ".work" / "video"
-    assert transcript._model_dir(TranscriptCfg(), work) == tmp_path / ".work" / "models"
-    configured = transcript._model_dir(TranscriptCfg(enhance=EnhanceCfg(model_dir=str(tmp_path / "m"))), work)
+def test_the_enhancement_model_lives_in_the_shared_cache(tmp_path: Path) -> None:
+    assert transcript._model_dir(TranscriptCfg()) == default_models_dir()
+    configured = transcript._model_dir(TranscriptCfg(enhance=EnhanceCfg(model_dir=str(tmp_path / "m"))))
     assert configured == tmp_path / "m"
+
+
+def test_default_models_dir_is_per_os(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import pathlib
+
+    assert default_models_dir("linux", {"XDG_CACHE_HOME": str(tmp_path)}, tmp_path) == tmp_path / "autoclip" / "models"
+    assert default_models_dir("darwin", {}, tmp_path) == tmp_path / "Library" / "Caches" / "autoclip" / "models"
+    assert (
+        default_models_dir("win32", {"LOCALAPPDATA": str(tmp_path / "win")}, tmp_path)
+        == pathlib.Path(tmp_path / "win") / "autoclip" / "models"
+    )
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    assert default_models_dir("linux", {}, tmp_path) == tmp_path / ".cache" / "autoclip" / "models"
 
 
 def test_transcription_uses_the_enhanced_audio(

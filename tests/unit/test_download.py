@@ -932,7 +932,8 @@ def test_download_saves_the_media_in_the_cache(media: Media, dl_factory: Any, ca
     item = result[0]
     expected = dl.root / "Nice [v1] [137].mp4"
     assert item.path == expected and expected.is_file()
-    assert "downloaded Nice [v1] (youtube)" in [record.getMessage() for record in caplog.records]
+    caplog_messages = [record.getMessage() for record in caplog.records]
+    assert any("downloaded Nice [v1]" in msg and "youtube" in msg for msg in caplog_messages)
 
     assert len(fake.extraction_calls) == 1
     assert fake.extraction_calls[0].params["extract_flat"] == "in_playlist"
@@ -943,10 +944,11 @@ def test_download_saves_the_media_in_the_cache(media: Media, dl_factory: Any, ca
     assert params["outtmpl"]["default"] == "Nice [v1] [137].%(ext)s"
     assert fake.calls[1][0] == "process_ie_result" and fake.calls[1][1].download is True
     assert not fake.sidecar_calls
-    assert [path.name for path in dl.root.iterdir()] == ["Nice [v1] [137].mp4"]
+    assert [path.name for path in dl.root.iterdir() if path.name != "autoclip-cache.json"] == ["Nice [v1] [137].mp4"]
 
 
 def test_download_reuses_the_cached_original_without_a_media_pass(media: Media, dl_factory: Any) -> None:
+    """After the first download, an identical URL/settings combination is fully off-cached, without yt-dlp."""
     dl = dl_factory(download={"metadata": {"info_json": False}})
     full = info(video_format("137", 1920, 1080), title="Nice", video_id="v1")
     dl._YoutubeDL = flow_fake(media, full)
@@ -956,8 +958,31 @@ def test_download_reuses_the_cached_original_without_a_media_pass(media: Media, 
     dl._YoutubeDL = second
     again = dl.download(URL)[0]
     assert again.path == saved.path and again.name == saved.name
-    assert len(second.extraction_calls) == 1
-    assert not second.media_calls and not second.sidecar_calls
+    # Zero network: neither extraction nor media calls happen on a cache hit.
+    assert not second.extraction_calls and not second.media_calls and not second.sidecar_calls
+
+    # Deleting the cached media file makes the cache unusable, so it re-downloads.
+    saved.path.unlink()
+    cert = flow_fake(media, full)
+    dl._YoutubeDL = cert
+    cert_result = dl.download(URL)
+    assert cert_result and cert.extraction_calls
+
+    # A different quality setting misses the cache and goes back to yt-dlp.
+    dl = dl_factory(download={"metadata": {"info_json": False}, "quality": 720})
+    new_full = info(video_format("247", 1280, 720), title="Nice", video_id="v1")
+    third = flow_fake(media, new_full)
+    dl._YoutubeDL = third
+    third_result = dl.download(URL)
+    assert third_result and len(third.extraction_calls) == 1
+
+    # A corrupt cache falls back to a fresh extraction.
+    file = dl.root / "autoclip-cache.json"
+    file.write_text("{ not json ::", encoding="utf-8")
+    dl4 = dl_factory(download={"metadata": {"info_json": False}})
+    dl4._YoutubeDL = flow_fake(media, full)
+    dl4.download(URL)
+    assert dl4._YoutubeDL.extraction_calls, "corrupt cache should trigger a network extraction"
 
 
 def test_a_cache_hit_fetches_only_the_missing_sidecars(media: Media, dl_factory: Any) -> None:

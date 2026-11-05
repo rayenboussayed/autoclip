@@ -15,8 +15,9 @@ enhancement for every chunk that is already clean enough.
 from __future__ import annotations
 
 import logging
+import sys
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +31,27 @@ log = logging.getLogger("autoclip")
 
 #: The sample rate the denoisers and faster-whisper work with.
 SR = 16000
+
+
+def default_models_dir(system: str | None = None, env: Mapping[str, str] | None = None, home: Path | None = None) -> Path:
+    """The shared per-user cache for the speech enhancement model (used when ``enhance.model_dir`` is not set).
+
+    Keeps the ONNX denoiser once per machine instead of once per output folder, so changing the
+    output location does not re-download it.  ``system``/``home`` make the per-OS layout testable.
+    """
+    import os
+
+    system = system or sys.platform
+    env = dict(os.environ if env is None else env)
+    home = home or Path.home()
+    if system == "darwin":
+        base = home / "Library" / "Caches"
+    elif system == "win32":
+        base = Path(env.get("LOCALAPPDATA") or (home / "AppData" / "Local"))
+    else:
+        base = Path(env.get("XDG_CACHE_HOME") or (home / ".cache"))
+    return base / "autoclip" / "models"
+
 
 #: The ONNX denoisers of the sherpa-onnx release: config name -> release file name.
 SHERPA_MODELS: dict[str, str] = {

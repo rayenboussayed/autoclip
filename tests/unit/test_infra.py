@@ -381,6 +381,15 @@ def test_two_tier_cache(tmp_path: Path) -> None:
     store.close()
 
 
+def test_logging_file_syncs_to_disk(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    synced: list[int] = []
+    monkeypatch.setattr(os, "fsync", synced.append)
+    log_file = tmp_path / "logs" / "sync.log"
+    setup_logging(log_file, "INFO", None)
+    LOG.info("sync-test")
+    assert synced, "the file handler must fsync before returning"
+
+
 def test_logging_with_a_non_standard_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
     import io
     import sys
@@ -390,3 +399,33 @@ def test_logging_with_a_non_standard_stdout(monkeypatch: pytest.MonkeyPatch) -> 
     setup_logging(None, "INFO", "INFO")
     LOG.info("hello")
     assert "hello" in stream.getvalue()
+
+
+def test_log_redaction_helpers() -> None:
+    from urllib.parse import urlsplit
+
+    from autoclip.core.log import redact_url, safe_path_text, system_profile
+
+    token = "1234567890abcdefghijklmnopqrstuvwxyz"
+    base = f"https://example.com/watch?v=abcd&token={token}#frag"
+    redacted = redact_url(base)
+    parsed = urlsplit(redacted)
+    assert "frag" not in redacted
+    assert f"token={token}" not in redacted
+    assert parsed.scheme == "https" and parsed.netloc == "example.com"
+    assert "token=%3Credacted%3E" in redacted or "token=<redacted>" in redacted
+    assert "v=abcd" in redacted
+
+    unrelated = redact_url("https://example.com/foo/bar?sig=hidden&k=v")
+    assert "hidden" not in unrelated
+    assert "sig=%3Credacted%3E" in unrelated or "sig=<redacted>" in unrelated
+
+    home = Path.home()
+    text = safe_path_text(home / "foo" / "bar.mp4")
+    assert text.startswith("~/")
+    assert str(home) not in text
+
+    summary = system_profile(output_dir=Path("/tmp/foo"), log_path=Path("/tmp/foo/x.log"))
+    assert "ram_total=" in summary and "os=" in summary and "cpus=" in summary
+    assert "password" not in summary.lower()
+    assert "/home/" not in summary or summary.lower().startswith("os=")

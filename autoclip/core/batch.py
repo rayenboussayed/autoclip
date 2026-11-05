@@ -19,7 +19,7 @@ from .config import Config, is_url
 from .download import Downloader
 from .errors import AutoclipError, ConfigError
 from .events import CancelToken, Reporter
-from .log import logger_decorator
+from .log import health_check, traced
 from .models import Encoder
 from .pipeline import process_video
 from .resources import MB, RESOURCES
@@ -51,7 +51,7 @@ def _unique_name(candidate: str, used: set[str]) -> str:
     return f"{candidate} ({n})"
 
 
-@logger_decorator
+@traced
 def run_batch(
     cfg: Config,
     *,
@@ -79,6 +79,7 @@ def run_batch(
         scoped("validate", 0.0, f"input {i}/{len(inputs)}")
         label = item if is_url(item) else Path(item).name
         log.info("=== input %d/%d: %s ===", i, len(inputs), label)
+        log.info("system health before input %d/%d: %s", i, len(inputs), health_check(f"input {i}/{len(inputs)}"))
         if is_url(item):
             sources: list[tuple[Path, str | None, Path | None, bool]] = []
             if downloader is None:

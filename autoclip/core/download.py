@@ -9,6 +9,8 @@ files never imports it and never makes a network call.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import logging
 import re
 import shutil
@@ -25,7 +27,7 @@ from urllib.parse import urlsplit
 from .config import Config, DownloadCfg, JsRuntimeCfg, parse, parse_hms
 from .errors import AutoclipError, DownloadError
 from .formats import Choice, choose
-from .log import logger_decorator, traced
+from .log import health_check, safe_path_text, traced
 from .media import bundled_ffmpeg_exe, external_env, ffmpeg_exe, probe, trim_video
 from .models import Downloaded
 from .platforms import (
@@ -488,6 +490,7 @@ class Downloader:
         self._runtime_classes = supported_js_runtimes.value
         self._dfxp2srt = dfxp2srt
         self._download_range_func = download_range_func
+
         self._ytdl_error = YoutubeDLError
         self._logger = _YdlLogger()
         self._settings_cache: dict[str, DownloadCfg] = {}
@@ -509,6 +512,85 @@ class Downloader:
         # download the whole file and trim it locally with media.trim_video instead.
         frozen = bool(getattr(sys, "frozen", False))
         self._range_supported = not frozen and bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+
+    # -------------------------------- zero-network cache (shared across runs) -----------------
+    def _cache_key(self, family: str, url: str, settings: DownloadCfg) -> str:
+        """Fingerprint of ``url`` + the settings that decide what is downloaded (paths/policy excluded)."""
+        effective = asdict(settings)
+        for drop in ("original_dir", "platforms", "js_runtime", "cookies"):
+            effective.pop(drop, None)
+        blob = json.dumps({"url": url, "settings": effective}, sort_keys=True, default=str)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+    def _cache_file(self) -> Path:
+        return self.root / "autoclip-cache.json"
+
+    def _cache_load(self, family: str, url: str, settings: DownloadCfg) -> list[Downloaded] | None:
+        """The cached originals for this URL/settings, or ``None`` when nothing can be reused."""
+        try:
+            raw = self._cache_file().read_text(encoding="utf-8")
+            data = json.loads(raw)
+            entries = data.get(self._cache_key(family, url, settings)) if isinstance(data, dict) else None
+        except (OSError, json.JSONDecodeError):
+            return None  # a missing or unreadable cache never stops a download
+        if not isinstance(entries, list) or not entries:
+            return None
+        resolved = self.root.resolve()
+        out: list[Downloaded] = []
+        for entry in entries:
+            try:
+                path = (self.root / str(entry["path"])).resolve()
+                subtitle = (self.root / str(entry["subtitle"])).resolve() if entry.get("subtitle") else None
+            except (TypeError, KeyError):
+                return None
+            if not path.is_relative_to(resolved) or not path.is_file():
+                return None
+            if subtitle is not None and (not subtitle.is_relative_to(resolved) or not subtitle.is_file()):
+                return None
+            prefix = path.stem
+            meta = settings.metadata
+            if meta.info_json and not (self.root / f"{prefix}.info.json").is_file():
+                return None
+            if meta.description and not (self.root / f"{prefix}.description").is_file():
+                return None
+            out.append(
+                Downloaded(
+                    path=path,
+                    name=str(entry.get("name") or path.stem),
+                    platform=family,
+                    subtitle=subtitle,
+                    subtitle_manual=bool(entry.get("subtitle_manual")),
+                )
+            )
+        return out
+
+    def _cache_store(self, family: str, url: str, settings: DownloadCfg, results: list[Downloaded]) -> None:
+        """Remember the media files this URL/settings produced, so a later run needs no network."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        key = self._cache_key(family, url, settings)
+        file = self._cache_file()
+        try:
+            data = json.loads(file.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        data[key] = [
+            {
+                "path": str(item.path.relative_to(self.root)),
+                "name": item.name,
+                "platform": item.platform,
+                "subtitle": str(item.subtitle.relative_to(self.root)) if item.subtitle else None,
+                "subtitle_manual": item.subtitle_manual,
+            }
+            for item in results
+        ]
+        tmp = file.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(file)
+        except OSError as exc:  # a cache that cannot be written is not fatal
+            log.warning("cannot write the download cache %s: %s", file, exc)
 
     # ------------------------------------------------------------------ policy
 
@@ -585,7 +667,6 @@ class Downloader:
     # ---------------------------------------------------------------- download
 
     @traced("download")
-    @logger_decorator
     def download(self, url: str) -> list[Downloaded]:
         """Download one URL (or every entry of its playlist) into the original cache.
 
@@ -596,7 +677,13 @@ class Downloader:
             DownloadError: if the platform is blocked, yt-dlp fails, or nothing could be saved.
         """
         family = self._require(url)
+        log.info("system health before download: %s", health_check("download"))
         settings = self._settings(family)
+        if settings.cache:
+            cached = self._cache_load(family, url, settings)
+            if cached is not None:
+                log.info("reusing %d cached original(s) for %s (no network needed)", len(cached), url)
+                return cached
         entries = self._entries(url, settings, limit=None)
         if not entries:
             raise DownloadError(f"{url} has no downloadable entries")
@@ -612,6 +699,8 @@ class Downloader:
                 log.warning("skipping a playlist entry of %s: %s", url, e)
         if not results:
             raise DownloadError(f"nothing could be downloaded from {url}")
+        if settings.cache:
+            self._cache_store(family, url, settings, results)
         return results
 
     def _require(self, url: str) -> str:
@@ -648,7 +737,14 @@ class Downloader:
             finally:
                 shutil.rmtree(temporary, ignore_errors=True)
         subtitle, manual = self._subtitle_for(directory, prefix, settings)
-        log.info("downloaded %s (%s)", name, family)
+        log.info(
+            "downloaded %s | path=%s | sidecar=%s | platform=%s | subtitle=%s",
+            name,
+            safe_path_text(media),
+            f"{prefix}.info.json" if settings.metadata.info_json else "-",
+            family,
+            safe_path_text(subtitle) if subtitle else "-",
+        )
         return [Downloaded(path=media, name=name, platform=family, subtitle=subtitle, subtitle_manual=manual)]
 
     def _prepare(

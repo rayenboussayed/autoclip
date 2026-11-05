@@ -85,6 +85,25 @@ def test_run_pipeline_logging_enabled(media: Any, tmp_path: Path, monkeypatch: p
     assert code == 0
 
 
+def test_app_lines_and_log_file_are_in_sync(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One run: every decorator print must appear in the app pane AND in the .log file (same records)."""
+    install_stub_whisper(monkeypatch, media, {}, cuda=0)
+    lines: list[str] = []
+    cfg = dataclasses.asdict(
+        make_cfg(media, tmp_path / "out-sync", clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 1, "max_seconds": 10}})
+    )
+    cfg["logging"] = {"enabled": True, "level": "INFO", "console_level": "WARNING", "file": str(tmp_path / "run-sync.log")}
+    path = tmp_path / "cfg-sync.json"
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    code = run_pipeline(path, cancel=CancelToken(), on_line=lines.append)
+    assert code == 0
+    log_text = (tmp_path / "run-sync.log").read_text(encoding="utf-8")
+    pane_proc = [line for line in lines if "[START] process_video" in line]
+    assert pane_proc, lines
+    assert "[START] process_video" in log_text
+    assert any("[START] run_batch" in line for line in lines) and "[START] run_batch" in log_text
+
+
 def test_run_pipeline_adapter_error(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
     lines_called = {"n": 0}
@@ -172,9 +191,15 @@ def test_stop_pipeline_with_cancel() -> None:
 
 
 def test_stop_pipeline_without_cancel() -> None:
-    from autoclip.app.session import stop_pipeline
+    import threading
 
-    stop_pipeline(object())
+    from autoclip.app.session import PipelineHandle, stop_pipeline
+    from autoclip.core.events import CancelToken
+
+    handle = PipelineHandle(cancel=CancelToken(), thread=threading.Thread(target=lambda: None))
+    handle.thread.start()
+    stop_pipeline(handle)
+    assert handle.done is True
 
 
 def test_run_pipeline_empty_result(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

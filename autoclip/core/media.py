@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -17,7 +18,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .errors import AutoclipError
-from .log import logger_decorator, traced
+from .log import traced
 from .models import MediaInfo
 
 F32 = NDArray[np.float32]
@@ -79,8 +80,6 @@ def external_env() -> dict[str, str] | None:
     return env if changed else None
 
 
-@logger_decorator
-@logger_decorator
 @traced("probe", logging.DEBUG)
 def probe(path: Path) -> MediaInfo:
     """Duration, audio presence, frame size and rate (via PyAV - no ``ffprobe`` needed)."""
@@ -112,7 +111,6 @@ def frame_energy_db(path: Path) -> F32:
     raise last_err
 
 
-@logger_decorator
 def _frame_energy_db(path: Path) -> F32:
     n = int(SR * FRAME)
     cmd = [ffmpeg_exe(), "-v", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", str(SR), "-f", "s16le", "-"]
@@ -137,31 +135,47 @@ def _frame_energy_db(path: Path) -> F32:
     return np.concatenate(levels) if levels else np.zeros(1, dtype=np.float32)
 
 
-@logger_decorator
 def decode_audio(src: Path, start: float, dur: float, sr: int, filters: Sequence[str] = ()) -> F32:
     """Mono float32 samples of ``[start, start+dur]`` at ``sr`` Hz (zero padded if the file ends early).
 
-    Fails hard only when ffmpeg cannot produce samples at all; transient timeouts get one retry
-    before we raise :class:`AutoclipError` (so callers only deal with the project error type).
+    FFmpeg is streamed (never ``capture_output=True``): the sample blocks are read in ~1-minute pieces,
+    so a several-hour file does not sit in one giant ``bytes`` object. Fails hard only when ffmpeg cannot
+    produce samples at all; transient timeouts get one retry before we raise :class:`AutoclipError`.
     """
     cmd_base = [ffmpeg_exe(), "-v", "error", "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(src), "-vn", "-ac", "1", "-ar", str(sr)]
     if filters:
         cmd_base += ["-af", ",".join(filters)]
     log = logging.getLogger("autoclip")
     last_detail = ""
+    total = round(dur * sr)
+    block = 4 * sr * 60  # one minute of f32le samples per read
+    deadline = time.monotonic() + max(300.0, dur * 2.0 + 60.0)
     for attempt in range(2):
         cmd = [*cmd_base, "-f", "f32le", "-"]
+        rc = None
         try:
-            result = subprocess.run(cmd, check=False, capture_output=True, env=external_env(), timeout=120)
-        except subprocess.TimeoutExpired as e:
-            log.error("ffmpeg decode timed out (attempt %d/2): %s", attempt + 1, e)
-            continue
-        if result.returncode == 0:
-            return np.pad(np.frombuffer(result.stdout, dtype=np.float32), (0, round(dur * sr)))[: round(dur * sr)]
-        rc = result.returncode if "result" in locals() else -9
-        last_detail = (result.stderr or b"").decode("utf-8", "replace").strip()[-1000:] if "result" in locals() else ""
-        log.error("ffmpeg decode failed (rc=%d): %s", rc, last_detail)
-    raise subprocess.CalledProcessError(rc, cmd_base, output=b"", stderr=last_detail.encode() if last_detail else b"")
+            with tempfile.TemporaryFile() as serr:
+                with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=serr, env=external_env()) as proc:
+                    assert proc.stdout is not None
+                    chunks: list[bytes] = []
+                    while (raw := proc.stdout.read(block)) != b"":
+                        if time.monotonic() > deadline:
+                            proc.kill()
+                            proc.wait()
+                            raise OSError("ffmpeg decode exceeded its time budget")
+                        chunks.append(raw)
+                    rc = proc.wait()
+                    if rc == 0:
+                        payload = np.frombuffer(b"".join(chunks), dtype=np.float32)
+                        return np.pad(payload, (0, total))[:total]
+                serr.seek(0)
+                last_detail = serr.read().decode("utf-8", "replace").strip()[-1000:]
+        except OSError as e:
+            last_detail = f"{e}"
+            log.error("ffmpeg decode could not start (attempt %d/2): %s", attempt + 1, e)
+        else:
+            log.error("ffmpeg decode failed (rc=%s): %s", rc, last_detail)
+    raise subprocess.CalledProcessError(1 if last_detail else -9, cmd_base, output=b"", stderr=last_detail.encode())
 
 
 def snap_to_quiet(db: F32, t: float, radius: float, total: float) -> float:
@@ -178,7 +192,6 @@ def snap_to_cut(t: float, cuts: Sequence[float], radius: float) -> float:
     return min(near, key=lambda c: abs(c - t)) if near else t
 
 
-@logger_decorator
 @traced("trim_video")
 def trim_video(src: Path, dst: Path, start: float, end: float) -> Path:
     """Cut ``[start, end]`` out of ``src`` into ``dst`` by re-encoding the video (accurate cuts).

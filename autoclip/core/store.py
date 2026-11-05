@@ -14,13 +14,38 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TypedDict, TypeVar, cast
 
 import numpy as np
 from numpy.typing import NDArray
 
 from .models import Moment, Segment, Word
 from .resources import MB, ResourceMonitor
+
+_DType = TypeVar("_DType", bound=np.generic)
+
+
+class ClipRow(TypedDict):
+    """One row of the ``clips`` table (typed so call sites need no ``Any`` or casts)."""
+
+    id: int
+    kind: str
+    scene: str
+    n: int
+    start: float
+    end: float
+    score: float | None
+    llm_score: float | None
+    title: str
+    text: str
+    status: str
+    file: str
+    width: int
+    height: int
+    trimmed: float
+    wall: float
+    error: str | None
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS segments(id INTEGER PRIMARY KEY, start REAL, end REAL, text TEXT,
@@ -139,10 +164,10 @@ class Store:
             ("done" if ok else "failed", file, size[0], size[1], trimmed, wall, error, clip_id),
         )
 
-    def clips(self, kind: str | None = None) -> list[dict[str, Any]]:
-        """Clip rows (optionally of one kind) in creation order, as dicts."""
+    def clips(self, kind: str | None = None) -> list[ClipRow]:
+        """Clip rows (optionally of one kind) in creation order."""
         where, args = ("WHERE kind=?", (kind,)) if kind else ("", ())
-        return [dict(r) for r in self.conn.execute(f"SELECT * FROM clips {where} ORDER BY id", args)]  # noqa: S608
+        return [cast(ClipRow, dict(r)) for r in self.conn.execute(f"SELECT * FROM clips {where} ORDER BY id", args)]  # noqa: S608
 
     # -- cache blobs ----------------------------------------------------------------------------
     def kv_get(self, key: str) -> bytes | None:
@@ -199,7 +224,8 @@ class MemoryLRU:
         if len(value) <= self.budget:
             self._items[key] = value
             self.size += len(value)
-        self.resize(self.budget)
+        if self.size > self.budget:
+            self.resize(self.budget)
 
     def resize(self, budget: int) -> None:
         """Set a new budget, evicting immediately if it shrank."""
@@ -226,10 +252,11 @@ class Cache:
 
     def trim(self) -> None:
         """Re-balance: resize the RAM tier to the current budget and cap the blob space in SQLite."""
-        self.mem.resize(self.monitor.cache_budget())
+        budget = self.monitor.cache_budget()
+        self.mem.resize(budget)
         self.store.kv_evict(self.monitor.storage.cache_disk_mb * MB)
 
-    def memoize_array(self, key: str, producer: Callable[[], NDArray[Any]]) -> NDArray[Any]:
+    def memoize_array(self, key: str, producer: Callable[[], NDArray[_DType]]) -> NDArray[_DType]:
         """The cached array for ``key``, computing (and caching, zlib-compressed) it with ``producer`` on a miss."""
         blob = self.mem.get(key)
         if blob is None:
@@ -240,5 +267,4 @@ class Cache:
             blob = zlib.compress(buf.getvalue(), 1)
             self.store.kv_put(key, blob)
         self.mem.put(key, blob)
-        arr: NDArray[Any] = np.load(io.BytesIO(zlib.decompress(blob)), allow_pickle=False)
-        return arr
+        return cast(NDArray[_DType], np.load(io.BytesIO(zlib.decompress(blob)), allow_pickle=False))

@@ -5,20 +5,33 @@ from __future__ import annotations
 import contextlib
 import functools
 import importlib
+import inspect
 import io
 import logging
 import os
 import sys
+import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Any, ParamSpec, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, ParamSpec, Protocol, TypeVar, cast, overload
 
-from .resources import RESOURCES
+if TYPE_CHECKING:
+    from .resources import ResourceMonitor
 
 P = ParamSpec("P")
 R = TypeVar("R")
 LOG = logging.getLogger("autoclip")
+_TRACE_DEPTH = threading.local()
+
+
+def _resources() -> ResourceMonitor | None:
+    """Try to import the shared resource monitor without breaking bootstrap imports."""
+    try:
+        from .resources import RESOURCES
+    except ImportError:
+        return None
+    return RESOURCES
 
 
 class _SharedFileHandler(logging.FileHandler):
@@ -35,11 +48,10 @@ class _SharedFileHandler(logging.FileHandler):
             return
         with _lock_writes(stream):
             super().emit(record)
-            stream.flush()  # crash (e.g. OOM kill) must not lose buffered lines
-            if os.environ.get("AUTOCLIP_LOG_FSYNC") == "1":
-                fd = stream.fileno()
-                with contextlib.suppress(OSError):
-                    os.fsync(fd)
+            stream.flush()
+            fd = stream.fileno()  # no buffering in user space: the bytes are on disk before the caller gets back
+            with contextlib.suppress(OSError):
+                os.fsync(fd)
 
 
 class _Msvcrt(Protocol):
@@ -94,13 +106,13 @@ class _StdoutTee(io.TextIOBase):
     neither this tee nor the logger recurses.
     """
 
-    def __init__(self, mirror: Any, logger: logging.Logger) -> None:
+    def __init__(self, mirror: io.TextIOBase | None, logger: logging.Logger) -> None:
         self._mirror = mirror
         self._logger = logger
         self._buffer = ""
 
-    def write(self, s: object) -> int:
-        text = s if isinstance(s, str) else str(s)
+    def write(self, s: str) -> int:
+        text = s
         self._buffer += text
         if self._mirror is not None:
             try:
@@ -174,54 +186,191 @@ def speed_text(media_seconds: float, wall_seconds: float) -> str:
     return f"{media_seconds / wall_seconds:.2f}x realtime"
 
 
-def logger_decorator(callback: Callable[P, R]) -> Callable[P, R]:
-    """Wrap a function so its start/end and elapsed time are printed (and captured into ``.log``).
+@overload
+def traced(fn: Callable[P, R], /) -> Callable[P, R]: ...
 
-    Uses the user-supplied ``print`` form. The prints land in the ``.log`` file because
-    :func:`setup_logging` redirects ``sys.stdout`` through a tee whenever a log file is configured, so
-    console and file stay in sync. Use it sparingly: every wrapped call pays an extra clock read, string
-    format and I/O, which would worsen OOM.
+
+@overload
+def traced(label: str | None = None, /, level: int = logging.INFO) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
+
+
+def traced(
+    label_or_fn: Callable[P, R] | str | None = None, /, level: int = logging.INFO
+) -> Callable[[Callable[P, R]], Callable[P, R]] | Callable[P, R]:
+    """Universal operation decorator: stdout spec lines, structured log lines and resource balancing.
+
+    Use ``@traced`` directly or ``@traced("label", level)``. Keeps the user-supplied ``[START] name``
+    / ``[END] name - Elapsed time: ...`` print form (captured into ``.log`` by :func:`setup_logging`),
+    adds ``START/END`` machine state and a ``FAIL`` line, and rebalances CPU/RAM after the call.
     """
 
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        callback_name: str = getattr(callback, "__name__", "<unknown>")
-        print(f"[START] {callback_name}")
-        start_time = time.perf_counter()
-        result: R = callback(*args, **kwargs)
-        elapsed_time = time.perf_counter() - start_time
-        print(f"[END] {callback_name} - Elapsed time: {elapsed_time:.6f} seconds")
-        return result
-
-    return functools.wraps(callback)(wrapper)
-
-
-def traced(label: str | None = None, level: int = logging.INFO) -> Callable[[Callable[P, R]], Callable[P, R]]:
-    """Decorator: log ``START`` / ``END`` (or ``FAIL``) with wall time and machine state.
-
-    After the operation the resource monitor rebalances (re-sizes caches, collects garbage under memory
-    pressure) so RAM is free for the next step.
-
-    Args:
-        label: Operation name in the log (default: the function's qualified name).
-        level: Level of the START/END lines (FAIL is always ERROR).
-    """
-
-    def decorate(fn: Callable[P, R]) -> Callable[P, R]:
+    def wrap(fn: Callable[P, R], label: str | None) -> Callable[P, R]:
         op = label or fn.__qualname__
+        callback_name = getattr(fn, "__name__", "<unknown>")
+
+        if inspect.iscoroutinefunction(fn):
+
+            @functools.wraps(fn)
+            async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+                _TRACE_DEPTH.depth = getattr(_TRACE_DEPTH, "depth", 0) + 1
+                t0 = time.perf_counter()
+                print(f"[START] {callback_name}")
+                LOG.log(level, "START %s | %s", op, health_check(op))
+                try:
+                    result = await fn(*args, **kwargs)
+                except BaseException as exc:
+                    elapsed = time.perf_counter() - t0
+                    LOG.error("FAIL  %s | %.3fs | %s: %s", op, elapsed, type(exc).__name__, exc)
+                    _TRACE_DEPTH.depth -= 1
+                    raise
+                elapsed = time.perf_counter() - t0
+                print(f"[END] {callback_name} - Elapsed time: {elapsed:.6f} seconds")
+                monitor = _resources()
+                if monitor is None:
+                    LOG.log(level, "END   %s | %.3fs | bootstrap", op, elapsed)
+                else:
+                    LOG.log(level, "END   %s | %.3fs | %s", op, elapsed, monitor.brief())
+                    monitor.after_operation(op)
+                _TRACE_DEPTH.depth -= 1
+                return cast(R, result)
+
+            return cast(Callable[P, R], async_wrapper)
 
         @functools.wraps(fn)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            _TRACE_DEPTH.depth = getattr(_TRACE_DEPTH, "depth", 0) + 1
             t0 = time.perf_counter()
-            LOG.log(level, "START %s | %s", op, RESOURCES.brief())
+            print(f"[START] {callback_name}")
+            LOG.log(level, "START %s | %s", op, health_check(op))
             try:
                 result = fn(*args, **kwargs)
             except BaseException as exc:
-                LOG.error("FAIL  %s | %.3fs | %s: %s", op, time.perf_counter() - t0, type(exc).__name__, exc)
+                elapsed = time.perf_counter() - t0
+                LOG.error("FAIL  %s | %.3fs | %s: %s", op, elapsed, type(exc).__name__, exc)
+                _TRACE_DEPTH.depth -= 1
                 raise
-            LOG.log(level, "END   %s | %.3fs | %s", op, time.perf_counter() - t0, RESOURCES.brief())
-            RESOURCES.after_operation(op)
+            elapsed = time.perf_counter() - t0
+            print(f"[END] {callback_name} - Elapsed time: {elapsed:.6f} seconds")
+            monitor = _resources()
+            if monitor is None:
+                LOG.log(level, "END   %s | %.3fs | bootstrap", op, elapsed)
+            else:
+                LOG.log(level, "END   %s | %.3fs | %s", op, elapsed, monitor.brief())
+                monitor.after_operation(op)
+            _TRACE_DEPTH.depth -= 1
             return result
 
-        return wrapper
+        return cast(Callable[P, R], wrapper)
+
+    if callable(label_or_fn):
+        return wrap(label_or_fn, None)
+    label = label_or_fn if isinstance(label_or_fn, str) or label_or_fn is None else str(label_or_fn)
+
+    def decorate(fn: Callable[P, R]) -> Callable[P, R]:
+        return wrap(fn, label)
 
     return decorate
+
+
+def redact_url(raw: str) -> str:
+    """Return a URL with secret-ish query parameters redacted for logging, never password/full token."""
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    try:
+        parsed = urlsplit(str(raw))
+    except ValueError:
+        return str(raw)
+    if parsed.fragment or parsed.query:
+        sensitive = {"token", "key", "auth", "sig", "signature", "secret", "password", "pass", "bearer"}
+        kept = [
+            (k, "<redacted>" if k.split("-", 1)[-1].lower() in sensitive or len(v) > 48 else v)
+            for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        ]
+        safe_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(kept, doseq=True), None))
+        return safe_url
+    return str(raw)
+
+
+def safe_path_text(path: Path, *, home: Path | None = None) -> str:
+    """Render a path for logs while folding the home folder to ``~`` so it stays readable but not exposing user."""
+    source = Path(home) if home is not None else Path.home()
+    try:
+        rel = Path(path).resolve().relative_to(source.resolve())
+    except (OSError, ValueError):
+        return str(path)
+    return "~/" + ("", rel.as_posix())[bool(rel.parts)]
+
+
+def system_profile(
+    *,
+    output_dir: Path | None = None,
+    log_path: Path | None = None,
+    cache_roots: Sequence[str] | tuple[Path, ...] | None = None,
+) -> str:
+    """A compact, secret-free system snapshot for logs and app pane, as a single line of key=value pairs."""
+    import platform
+
+    try:
+        from .resources import MB, RESOURCES, cgroup_memory_available
+    except ImportError:
+        return "system profile unavailable during bootstrap"
+
+    snap = RESOURCES.snapshot()
+    mb_total = snap.mem_total // MB
+    available = snap.mem_available // MB
+    os_name = platform.system()
+    parts = [
+        f"os={os_name}",
+        f"python={platform.python_version()}",
+        f"cpus={RESOURCES.cpus}",
+        f"ram_total={mb_total}MB",
+        f"ram_available={available}MB",
+        f"pressure={snap.pressure}",
+        f"cpu_percent={snap.cpu_percent:.2f}",
+        f"output_dir={safe_path_text(output_dir)}" if output_dir else "output_dir=<not-set>",
+        f"log={safe_path_text(log_path)}" if log_path else "log=<none>",
+    ]
+    if isinstance(cache_roots, (list, tuple)):
+        try:
+            for root in cache_roots:
+                parts.append(f"cache_root={safe_path_text(Path(str(root)))}")
+        except Exception as exc:
+            LOG.debug("could not add cache root %s: %s", root, exc)
+    cgroup = cgroup_memory_available()
+    if cgroup is not None:
+        parts.append(f"cgroup_free={cgroup // MB}MB")
+    return " | ".join(parts)
+
+
+def health_check(label: str = "step") -> str:
+    """A compact, secret-free system health record (before steps/hooks)."""
+    try:
+        from .resources import MB, RESOURCES, cgroup_memory_available
+    except ImportError:
+        import psutil
+
+        memory = psutil.virtual_memory()
+        return f"health {label}: bootstrap | ram_total={memory.total // (1024 * 1024)}MB | cpus={psutil.cpu_count(logical=True) or 1}"
+
+    try:
+        snap = RESOURCES.snapshot()
+        available = max(0, snap.mem_available // MB - RESOURCES.res.memory_reserve_mb)
+        cgroup = cgroup_memory_available()
+    except ImportError:
+        import psutil
+
+        memory = psutil.virtual_memory()
+        return f"health {label}: bootstrap | ram_total={memory.total // (1024 * 1024)}MB | cpus={psutil.cpu_count(logical=True) or 1}"
+    parts = [
+        f"health {label}: cpus={RESOURCES.cpus}",
+        f"cpu_budget={RESOURCES.cpu_budget()}",
+        f"cpu_percent={snap.cpu_percent:.2f}",
+        f"ram_total={snap.mem_total // MB}MB",
+        f"ram_available={snap.mem_available // MB}MB",
+        f"ram_free={available}MB",
+        f"rss={snap.rss // MB}MB",
+        f"pressure={snap.pressure}",
+    ]
+    if cgroup is not None:
+        parts.append(f"cgroup_free={cgroup // MB}MB")
+    return " | ".join(parts)

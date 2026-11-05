@@ -16,7 +16,8 @@ render (enhance audio, cut pauses/fillers, layout, burn captions, encode on GPU 
 * Runs on Linux, macOS and Windows, Python >= 3.11 (developed and verified on 3.12). No system ffmpeg required.
 * Four parts: `core` (the engine), `cli` (the command line), `app` (the desktop app, Tk) and `server` (the optional
   FastAPI/WebSocket service).
-* Version 3.0.0. ~9,500 lines of package code in 46 modules, ~11,000 lines of tests (100% statement + branch coverage).
+* Version 3.0.11 (see `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml`). ~9,500 lines of
+  package code in 46 modules, ~11,000 lines of tests (100% statement + branch coverage).
 
 ## 2. Commands
 
@@ -55,9 +56,13 @@ AUTOCLIP_E2E_TESTS=1 AUTOCLIP_E2E_LEVEL=3 pytest tests/e2e -m e2e --no-cov   # 1
 A full `pytest` takes about one minute (real ffmpeg encodes, real worker processes).
 
 **Release:** bump `version` in `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml` (they must match -
-`tests/unit/test_version.py` checks it) and push to `main`. The build workflow checks that `v<version>` is not tagged
-yet, builds the five targets, then creates the tag and publishes the GitHub release. A push that does not change
-the version skips the build; a pull request builds without releasing.
+`tests/unit/test_version.py` checks it), **add a new section to `CHANGELOG.md` with the release number and its git
+timestamp** (run `git log -1 --format=\"%ci|%H|%s\" HEAD` for the timestamp, and include the changes that went in), and
+**update `README.md`, `AGENTS.md` and `docs/` when behaviour or operating instructions changed**, and push to `main`.
+The build workflow checks that `v<version>` is not tagged yet, builds the five targets, then creates the tag and publishes
+the GitHub release. A push that does not change the version skips the build; a pull request builds without releasing.
+A release that forgets to touch `CHANGELOG.md`, `README.md`, `AGENTS.md` or `docs/` is incomplete - all four are part
+of the release commit, next to the version bump.
 
 ## 3. Repository layout
 
@@ -347,7 +352,7 @@ scene), `min_seconds`, `target_seconds` (recommended, optional), `max_seconds`, 
 `SkipCfg` = `stt`, `denoise`, `audio_enhance`, `audio`, `pauses`, `caption`, `title`, `fade`, `thumbnail`, `llm`, `snap`
 (all `false`; see invariant 16).
 `DownloadCfg` = `quality`, `fps`, `prefer`, `codec`, `container`, `audio_quality`, `audio_language`, `original_dir`,
-`metadata`, `subtitles`, `playlist`, `max_videos`, `time_range`, `cookies`, `network`, `js_runtime`, `platforms`;
+`metadata`, `subtitles`, `playlist`, `max_videos`, `time_range`, `cookies`, `network`, `js_runtime`, `platforms`, `cache` (cached originals enable a fully offline second run).
 `PlatformsCfg` = `allow`, `deny`, `groups`, `settings`, `group_by_platform`.
 Defaults aim at quality: `download.quality: "best"`, `download.fps: null` (any), `video.fps: null` (source fps),
 `video.upscale: false` (never enlarge a smaller source), `video.crf: 18`, `video.preset: "veryslow"`,
@@ -363,7 +368,8 @@ HTTPS format over HLS/DASH at equal quality and fps (the segmented variants repo
 * `load_config` resolves every path relative to the config file (including `download.original_dir`, `download.cookies.file`,
   `download.js_runtime.path` and the same keys inside `download.platforms.settings`), expands `input` globs (sorted,
   de-duplicated, absolute) and leaves http(s) URLs **verbatim**, and requires `{stem}` in `transcript.file` when several
-  videos are given.
+  videos are given. **Exception:** a relative `output_dir` is resolved against the current working directory instead, so the
+  output folder is independent of where the config file lives.
 * `scenes`: `"all"` | one name | list; `ClipsCfg.scene_list()` expands it. `"scenes"` means the scene *types* (the keys of
   `STYLES`); shot-change snapping is `snap_to_cuts` (renamed from `snap_scenes` to avoid the clash).
 * `download.platforms`: names are extractor **families** (`youtube`, `tiktok`, ...), aliases (`x`, `vm.tiktok`, `html5`)
@@ -386,9 +392,10 @@ HTTPS format over HLS/DASH at equal quality and fps (the segmented variants repo
   Models are `@dataclass(slots=True)` (no `TypedDict`, no raw `dict[str, Any]` for domain data; `Any` only for MoviePy
   objects). NumPy arrays are `NDArray[np.float32]` etc. (`F32`, `F64`).
 * **Docstrings:** every public function/class has one (what, args that are not obvious, returns). Comments explain *why*.
-* **Logging:** use the `autoclip` logger (`log = logging.getLogger("autoclip")`). Wrap meaningful operations in
-  `@traced("name")` (START/END with wall time, RSS, free RAM, CPU, pressure; FAIL with the exception). Use `speed_text`
-  for throughput. Never log the LLM API key (`LlmCfg.api_key` has `repr=False`).
+* **Logging:** use the `autoclip` logger (`log = logging.getLogger("autoclip")`). Every production function is
+  wrapped with `@traced` (nested calls are intentionally not double-logged, so the inner tree does not drown
+  callers). `.log` records are flushed and fsync'ed before the caller returns. Never log the LLM API key
+  (`LlmCfg.api_key` has `repr=False`).
 * **Errors:** raise `AutoclipError` (or `ConfigError`) for expected, user-fixable problems; let real bugs raise.
   Never `except:`; catching `Exception` is allowed only at isolation boundaries (per video, per clip, best-effort hooks) and must log.
 * **The desktop app is native Tk:** `ttk` widgets with the platform theme (`system_theme()`), no custom colours
@@ -657,7 +664,8 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 
 **Always**
 * Run the four gates (section 2) and keep coverage >= 95% (aim for 100%).
-* Add/adjust tests with every change; update `README.md` (and this file when architecture, invariants or commands change).
+* Add/adjust tests with every change; update `README.md`, `AGENTS.md` and `docs/` when architecture,
+  commands, release flow, behaviour or operational guidance change.
 * Keep config backward-compatibility notes in the README "Upgrading" section when keys change.
 * Preserve cross-platform behaviour (paths, encodings, spawn, optional dependencies).
 * Keep the clip folders clips-only: downloaded originals, subtitles and metadata sidecars live in

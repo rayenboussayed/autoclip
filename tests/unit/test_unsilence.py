@@ -117,7 +117,7 @@ def test_no_removable_silence_copies_source(media: Media, tmp_path: Path, monkey
     cfg.unsilence.enabled = True
     destination = tmp_path / "long" / media.video.stem / f"unsilence_{media.video.stem}.mp4"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr("autoclip.core.unsilence._non_silent_intervals", lambda cfg, audio: [])
+    monkeypatch.setattr("autoclip.core.unsilence._non_silent_intervals", lambda cfg, src, info: [])
     returned = remove_silence(media.video, cfg, destination)
     assert returned == destination
     assert destination.is_file()
@@ -166,32 +166,32 @@ def test_audioop_fallback_branch(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_non_silent_interval_helpers(monkeypatch: pytest.MonkeyPatch, media: Media) -> None:
-    from pydub import AudioSegment
-
     from autoclip.core import unsilence
 
     from ..support import make_cfg
 
     cfg = make_cfg(media, Path("."), None)
     cfg.unsilence.enabled = True
-    audio = AudioSegment.silent(duration=1000)
+    from autoclip.core.models import MediaInfo
+
+    info = MediaInfo(1.0, True, 320, 180, 30.0)
 
     monkeypatch.setattr("pydub.silence.detect_nonsilent", lambda audio, **kw: [])
-    assert unsilence._non_silent_intervals(cfg, audio) == []
+    assert unsilence._non_silent_intervals(cfg, media.video, info) == []
 
     raw = [(0, 1000), (900, 2000), (2500, 2600)]
     monkeypatch.setattr("pydub.silence.detect_nonsilent", lambda audio, **kw: raw)
-    intervals = unsilence._non_silent_intervals(cfg, audio)
+    intervals = unsilence._non_silent_intervals(cfg, media.video, info)
     assert len(intervals) == 1
     cfg_one = cfg
     monkeypatch.setattr("pydub.silence.detect_nonsilent", lambda audio, **kw: [(0, 1000)])
-    intervals = unsilence._non_silent_intervals(cfg_one, AudioSegment.silent(duration=1000))
+    intervals = unsilence._non_silent_intervals(cfg_one, media.video, info)
     assert intervals == [(0.0, 1.0)]
 
     cfg_long_min = cfg
     cfg_long_min.unsilence.min_segment_seconds = 10
     monkeypatch.setattr("pydub.silence.detect_nonsilent", lambda audio, **kw: [(0, 100)])
-    assert unsilence._non_silent_intervals(cfg_long_min, AudioSegment.silent(duration=1000)) == []
+    assert unsilence._non_silent_intervals(cfg_long_min, media.video, info) == []
 
 
 def test_cancel_and_video_failure_branches(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -308,17 +308,17 @@ def test_audioop_lts_unavailable_branch(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_non_silent_merge_branch(media: Media, monkeypatch: pytest.MonkeyPatch) -> None:
-    from pydub import AudioSegment
-
     from autoclip.core import unsilence
 
     from ..support import make_cfg
 
     cfg = make_cfg(media, Path("."), None)
     cfg.unsilence.enabled = True
-    audio = AudioSegment.silent(duration=2000)
+    from autoclip.core.models import MediaInfo
+
+    info = MediaInfo(2.0, True, 320, 180, 30.0)
     monkeypatch.setattr("pydub.silence.detect_nonsilent", lambda audio, **kw: [(0, 1000), (500, 1500)])
-    intervals = unsilence._non_silent_intervals(cfg, audio)
+    intervals = unsilence._non_silent_intervals(cfg, media.video, info)
     assert len(intervals) == 1
 
 
@@ -346,3 +346,44 @@ def test_moviepy_failure_with_copy_failure(media: Media, tmp_path: Path, monkeyp
     monkeypatch.setattr("shutil.copyfile", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
     returned = remove_silence(media.video, cfg, destination)
     assert returned is media.video
+
+
+def test_windowed_detection_matches_single_pass(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """5-minute segmentation must produce the same intervals as a single-pass detection (no quality loss)."""
+    import autoclip.core.unsilence as unsilence
+    from autoclip.core.media import probe
+
+    from ..support import make_cfg
+
+    cfg_whole = make_cfg(media, tmp_path / "whole", None)
+    cfg_chunked = make_cfg(media, tmp_path / "chunked", None)
+    info = probe(media.video)
+
+    monkeypatch.setattr(unsilence, "_window_seconds", lambda cfg: 40.0)  # single window, covers the 40 s clip
+    intervals_whole = unsilence._non_silent_intervals(cfg_whole, media.video, info)
+
+    monkeypatch.setattr(unsilence, "_window_seconds", lambda cfg: 3.0)  # many windows over the same file
+    intervals_chunked = unsilence._non_silent_intervals(cfg_chunked, media.video, info)
+
+    assert len(intervals_whole) == len(intervals_chunked)
+    for (a, b), (c, d) in zip(intervals_whole, intervals_chunked, strict=True):
+        assert a == pytest.approx(c, abs=0.05)
+        assert b == pytest.approx(d, abs=0.05)
+
+
+def test_assembly_splitting_honours_the_30_percent_slack(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A kept span below chunk * 1.3 is left alone; above it, it is split at the chunk boundary."""
+    import autoclip.core.unsilence as unsilence
+
+    from ..support import make_cfg
+
+    cfg = make_cfg(media, tmp_path / "out", None)
+    monkeypatch.setattr(unsilence, "_window_seconds", lambda cfg: 300.0)  # 5 minutes, unreal fixtures aside
+    assert unsilence._split_for_assembly([(0.0, 380.0)], cfg) == [(0.0, 380.0)]  # under slack
+    assert unsilence._split_for_assembly([(0.0, 391.0)], cfg) == [(0.0, 300.0), (300.0, 391.0)]  # just over slack
+    assert unsilence._split_for_assembly([(0.0, 1000.0)], cfg) == [
+        (0.0, 300.0),
+        (300.0, 600.0),
+        (600.0, 900.0),
+        (900.0, 1000.0),
+    ]

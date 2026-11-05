@@ -15,7 +15,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .config import ClipsCfg, Config, KindCfg
-from .log import logger_decorator, traced
+from .log import traced
 from .media import F32, FRAME, frame_energy_db, scene_cuts, snap_to_cut, snap_to_quiet
 from .models import MediaInfo, Moment
 from .store import Cache, Store
@@ -260,7 +260,6 @@ def energy_track(src: Path, info: MediaInfo, cache: Cache) -> F32:
 
 
 @traced("select_moments")
-@logger_decorator
 def select_moments(
     src: Path, info: MediaInfo, store: Store, cache: Cache, cfg: Config, kind: str, db: F32, have_text: bool
 ) -> list[Moment]:

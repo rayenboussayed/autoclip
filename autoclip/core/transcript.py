@@ -18,9 +18,9 @@ from typing import Any
 import numpy as np
 
 from .config import Config, ProcessingCfg, TranscriptCfg
-from .denoise import SpeechEnhancer
+from .denoise import SpeechEnhancer, default_models_dir
 from .errors import AutoclipError
-from .log import logger_decorator, speed_text, traced
+from .log import speed_text, traced
 from .media import F32, decode_audio, snap_to_quiet
 from .models import MediaInfo, Segment, Word
 from .resources import MB, RESOURCES
@@ -408,7 +408,6 @@ def _cache_key(src: Path, cfg: TranscriptCfg, proc: ProcessingCfg, *, denoise: b
 
 
 @traced("get_transcript")
-@logger_decorator
 def get_transcript(
     src: Path,
     cfg: Config,
@@ -460,7 +459,7 @@ def get_transcript(
             log.info("skip.stt is set: no transcript is available without Whisper")
             return False
         if not segments:
-            enhancer = SpeechEnhancer(tc.enhance, _model_dir(tc, work_dir)) if denoise else None
+            enhancer = SpeechEnhancer(tc.enhance, _model_dir(tc)) if denoise else None
             try:
                 segments = transcribe(src, cfg, info, db, enhancer, consent=consent)
             except Exception as e:
@@ -491,11 +490,11 @@ def _downloaded_segments(path: Path, mode: str, manual: bool) -> list[Segment]:
     return segments
 
 
-def _model_dir(cfg: TranscriptCfg, work_dir: Path) -> Path:
-    """Where the speech enhancement model is kept: the configured folder or ``<output>/.work/models``."""
+def _model_dir(cfg: TranscriptCfg) -> Path:
+    """Where the speech enhancement model is kept: the configured folder or the shared per-user cache."""
     if cfg.enhance.model_dir:
         return Path(cfg.enhance.model_dir)
-    return work_dir.parent / "models"
+    return default_models_dir()
 
 
 def _plain(seg: Segment) -> dict[str, Any]:
