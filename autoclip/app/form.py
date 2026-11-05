@@ -173,18 +173,60 @@ class Form(ttk.Frame):
         self._changed = changed
         self._wheel = wheel
         self.columnconfigure(1, weight=1)
+        main_options = [option for option in options if not option.advanced]
+        advanced_options = [option for option in options if option.advanced]
         row = 0
-        for option in options:
+        for option in main_options:
             field = self._build_row(row, option)
             self.fields[option.path] = field
             row += 2
+
+        self._advanced_fields: list[tuple[Option, Field]] = []
+        self._advanced_shown = False
+        if advanced_options:
+            row += 1
+            button = ttk.Button(self, text="Show advanced options")
+            button.grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 2))
+            row += 1
+            separator = ttk.Separator(self, orient="horizontal")
+            separator.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 2))
+            row += 1
+            ar = row
+            for option in advanced_options:
+                field = self._build_row(ar, option)
+                self.fields[option.path] = field
+                self._advanced_fields.append((option, field))
+                ar += 2
+            button.configure(command=self._toggle_advanced)
+            self._advanced_button = button
+            self._set_advanced_visible(False)
         self._apply_visibility()
 
-    def _build_row(self, row: int, option: Option) -> Field:
+    def _toggle_advanced(self) -> None:
+        self._set_advanced_visible(not self._advanced_shown)
+        button = getattr(self, "_advanced_button", None)
+        if button is not None:
+            button.configure(text="Hide advanced options" if self._advanced_shown else "Show advanced options")
+
+    def _set_advanced_visible(self, visible: bool) -> None:
+        self._advanced_shown = visible
+        for _option, field in getattr(self, "_advanced_fields", []):
+            if self._advanced_shown:
+                field.label.grid()
+                field.holder.grid()
+                field.help_label.grid()
+            else:
+                field.label.grid_remove()
+                field.holder.grid_remove()
+                field.help_label.grid_remove()
+        self._apply_visibility()
+
+    def _build_row(self, row: int, option: Option, master: tk.Misc | None = None) -> Field:
         """Label, control and the one-line summary of one option."""
-        label = ttk.Label(self, text=option.label, width=26, anchor="w")
+        parent = master if master is not None else self
+        label = ttk.Label(parent, text=option.label, width=26, anchor="w")
         label.grid(row=row, column=0, sticky="nw", padx=(0, 12), pady=(2, 2))
-        holder = ttk.Frame(self)
+        holder = ttk.Frame(parent)
         holder.grid(row=row, column=1, sticky="ew", pady=(2, 2))
         control, var, text = self._build_control(option, holder)
         control.grid(row=0, column=0, sticky="ew")
@@ -194,7 +236,7 @@ class Form(ttk.Frame):
             ttk.Button(holder, text="Add videos...", command=self._browse_videos).grid(row=0, column=1, sticky="e", padx=(6, 0))
             self._enable_drag_and_drop(holder)
         holder.columnconfigure(0, weight=1)
-        help_label = ttk.Label(self, text=option.what, style="Help.TLabel", wraplength=620, justify="left")
+        help_label = ttk.Label(parent, text=option.what, style="Help.TLabel", wraplength=620, justify="left")
         help_label.grid(row=row + 1, column=1, sticky="w", pady=(0, 6))
         for widget in (label, control, help_label):
             widget.bind("<FocusIn>", self._focus_reporter(option))
@@ -345,6 +387,8 @@ class Form(ttk.Frame):
             if option.visible_when:
                 other, _, wanted = option.visible_when.partition("=")
                 visible = str(self._values.get(other, "")) == wanted
+            if getattr(option, "advanced", False) and not getattr(self, "_advanced_shown", False):
+                visible = False
             if visible:
                 field.holder.grid()
                 field.help_label.grid()

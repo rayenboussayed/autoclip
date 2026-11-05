@@ -17,7 +17,7 @@ python -m autoclip.app                 # the desktop app (same options, explaine
 `python -m autoclip.app` opens a native window (Tk, the look of your system) with **every option of
 the config file**:
 
-- ten tabs - *Videos, Download, Clips, Transcript, Video, Captions, Audio, Skip, Speed, LLM & log* - each
+- eleven tabs - *Videos, Download, Clips, Transcript, Video, Captions, Audio, Unsilence, Skip, Speed, LLM & log* - each
   option with a one-line summary under it;
 - a details panel that explains the option you clicked: **what** it does, **why** you would change
   it and **when** it is the right moment;
@@ -270,8 +270,7 @@ keyboard clicks or hum. `transcript.enhance` is enabled by default:
 | `denoise_strength` | `0.75` | only for the `noisereduce` backend |
 | `snr_threshold_db` | `20.0` | only enhance a chunk whose speech-to-noise ratio is below this (`null` = always) |
 | `num_threads` | `4` | CPU threads of the denoiser |
-| `model_dir` | `<output_dir>/.work/models` | where the ONNX model is kept |
-
+| `model_dir` | empty (shared per-user cache, e.g. `~/.cache/autoclip/models` on Linux) | where the ONNX model is kept |
 * The `sherpa` backend needs the optional package `sherpa-onnx` (`pip install sherpa-onnx`); its model is downloaded
   once from the sherpa-onnx release. Without the package the run continues with the original audio and says so.
 * **Denoising only helps when there is noise.** A clean recording is damaged by it and the ASR model then drifts into
@@ -406,7 +405,11 @@ line - so `./autoclip-x86_64.AppImage config.json` still cuts clips.
   **Hindi / Thai / Khmer** need Pillow built with libraqm; a warning is logged when it is missing.
 * Worker processes use `spawn` everywhere, so behaviour is identical on all three systems.
 
+See `docs/options-reference.md` for every option and its explanation (this is the complete reference).
+
 ## Upgrading from 2.1
+
+See `docs/UPGRADING-3.0.md` for the 3.0 command-line, `autoclip cfg.json` compatibility, trim rename and other upgrade details.
 2.2 is additive: the new `download` section has defaults, so a 2.1 config runs unchanged, and a run whose
 `input` holds only local files never imports yt-dlp and makes no network request. What is new:
 
