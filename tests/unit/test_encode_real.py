@@ -26,9 +26,9 @@ def _clip() -> ColorClip:
 
 @pytest.mark.parametrize("container", ["mp4", "mkv"])
 def test_encode_writes_a_real_file_in_the_requested_container(tmp_path: Path, container: Literal["mp4", "mkv"]) -> None:
-    video = VideoCfg(preset="ultrafast", container=container, audio_bitrate_kbps=96)
+    video = VideoCfg(container=container)
     dst = tmp_path / f"clip.{container}"
-    encode(_clip(), dst, 10, cpu_encoder(video), 1, video)
+    encode(_clip(), dst, 10, cpu_encoder(video, "low"), 1, video, "low")
     assert dst.is_file()
     assert not list(tmp_path.glob("*.part*")), "the temporary file must be renamed away"
     info = probe(dst)
@@ -38,7 +38,8 @@ def test_encode_writes_a_real_file_in_the_requested_container(tmp_path: Path, co
 
 def test_render_clip_writes_the_container_from_the_config(media: Media, tmp_path: Path) -> None:
     """The pipeline names the output ``.<container>``; rendering it must not depend on the muxer name."""
-    cfg = make_cfg(media, tmp_path, video={"container": "mkv", "preset": "ultrafast"}, captions={"enabled": False})
+    cfg = make_cfg(media, tmp_path, video={"container": "mkv"}, captions={"enabled": False})
+    cfg.quality = "lowest"
     store = Store(tmp_path / "r.db", fresh=True)
     store.put_segments(load_transcript_file(media.transcript))
     cache = Cache(store, RESOURCES)
@@ -50,7 +51,7 @@ def test_render_clip_writes_the_container_from_the_config(media: Media, tmp_path
         dst,
         "short",
         "9:16",
-        cpu_encoder(cfg.video),
+        cpu_encoder(cfg.video, cfg.quality),
         probe(media.video).has_audio,
         cfg,
         store.path,

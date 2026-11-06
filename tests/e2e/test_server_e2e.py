@@ -173,11 +173,10 @@ def _upload_config(media: Media) -> dict[str, Any]:
             "short": {"count": 1, "min_seconds": 5, "max_seconds": 10, "aspect": "9:16"},
         },
         "transcript": {"mode": "file", "file": str(media.transcript)},
-        "video": {"short_side": 96, "preset": "ultrafast", "gpu": "off", "thumbnail": True},
+        "video": {"short_side": 480, "gpu": "off", "thumbnail": True},
         "audio": {"denoise": "none"},
         "compute": {"device": "cpu"},
         "logging": {"enabled": False},
-        "resources": {"max_workers": 1},
     }
 
 

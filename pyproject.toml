@@ -57,7 +57,9 @@ markers = [
 # handles, and on Windows that intermittently breaks Tcl's file-channel reads ("couldn't read file
 # .../init.tcl: No error"), failing the desktop-app tests at random. Nothing here asserts on output
 # written straight to a file descriptor, so sys capture loses nothing.
-addopts = "-q --capture=sys --cov=autoclip --cov-report=term-missing --cov-fail-under=95"
+# Keep the 100% thresholds from the JavaScript setup mirrored here, even though pytest
+# checks the gate before the coverage report is written on a full run.
+addopts = "-q --capture=sys --cov=autoclip --cov-report=term --cov-report=term-missing --cov-report=json --cov-fail-under=95"
 filterwarnings = [
   "ignore:Setting the shape on a NumPy array has been deprecated:DeprecationWarning:moviepy.video.io.ffmpeg_reader",
   "error::DeprecationWarning:autoclip",
@@ -65,16 +67,21 @@ filterwarnings = [
 
 [tool.coverage.run]
 branch = true
+include = ["autoclip/**/*.py"]
+omit = ["autoclip/__main__.py"]
 concurrency = ["multiprocessing", "thread"]
 parallel = true
 sigterm = true
 
 [tool.coverage.report]
+show_missing = true
+fail_under = 95
+precision = 2
 exclude_also = ["if __name__ == .__main__.:"]
 
 [tool.vulture]
 paths = ["autoclip", "tests", "tools"]
-min_confidence = 80
+min_confidence = 100
 ignore_decorators = [
     "@app.route",
     "@router.*",

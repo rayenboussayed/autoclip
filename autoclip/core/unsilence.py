@@ -15,6 +15,8 @@ import numpy as np
 from .config import Config
 from .errors import AutoclipError
 from .events import CancelToken, Reporter
+from .internal import CHUNK_MINUTES as _CHUNK_MINUTES
+from .internal.quality import quality_profile
 from .log import LOG as log
 from .log import health_check, traced
 from .media import SR, decode_audio, probe
@@ -54,9 +56,9 @@ def _merge_intervals(raw: list[tuple[float, float]]) -> list[tuple[float, float]
     return merged
 
 
-def _window_seconds(cfg: Config) -> float:
-    """The seconds loaded at once when cleaning silence — ``processing.chunk_minutes`` (5 minutes by default)."""
-    return max(60.0, float(cfg.processing.chunk_minutes) * 60.0)
+def _window_seconds(cfg: Config) -> float:  # cfg retained for call-site compatibility
+    """The seconds loaded at once when cleaning silence, with a memory-safe chunk size."""
+    return _CHUNK_MINUTES * 60.0
 
 
 def _split_for_assembly(intervals: list[tuple[float, float]], cfg: Config) -> list[tuple[float, float]]:
@@ -170,16 +172,17 @@ def remove_silence(
                 if cancel is not None:
                     cancel.check()
             assembled = concatenate_videoclips(parts, method="compose")
+            _profile = quality_profile(cfg.quality)
             try:
                 assembled.write_videofile(
                     str(temporary),
                     fps=clip.fps or None,
                     codec="libx264",
-                    preset=cfg.unsilence.quality_preset,
+                    preset=_profile.preset,
                     audio_codec="aac",
-                    audio_bitrate=f"{cfg.unsilence.audio_bitrate_kbps}k",
+                    audio_bitrate=f"{_profile.aac_bitrate_kbps}k",
                     audio_fps=clip.audio.fps if getattr(clip, "audio", None) is not None and getattr(clip.audio, "fps", None) else 44100,
-                    ffmpeg_params=["-crf", str(cfg.unsilence.quality_crf)],
+                    ffmpeg_params=["-crf", str(_profile.crf)],
                     threads=1,
                     logger=None,
                 )

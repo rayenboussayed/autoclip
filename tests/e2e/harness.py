@@ -405,9 +405,11 @@ def download_config(output_dir: Path, url: str, *, time_range: str | None = None
     return {
         "input": [url],
         "output_dir": str(output_dir),
+        "mode": "balance",
+        "quality": "lowest",
         "download": download,
         "logging": {"enabled": True, "file": "logs/autoclip.log", "level": "INFO", "console_level": "INFO"},
-        "resources": {"max_workers": 1},
+        "compute": {"device": "cpu"},
     }
 
 
@@ -416,17 +418,18 @@ def pipeline_config(output_dir: Path, source: Path, transcript: Path, clips: dic
     data: dict[str, Any] = {
         "input": [str(source)],
         "output_dir": str(output_dir),
+        "mode": "balance",
+        "quality": "lowest",
         "clips": {
             "kinds": ["short"],
             "scenes": ["best"],
             "short": {"count": 1, "min_seconds": 15, "target_seconds": 25, "max_seconds": 45},
         },
         "transcript": {"mode": "file", "file": str(transcript)},
-        "video": {"short_side": 144, "preset": "ultrafast", "gpu": "off", "thumbnail": True},
+        "video": {"short_side": 720, "gpu": "off", "thumbnail": True},
         "audio": {"denoise": "none"},
         "compute": {"device": "cpu"},
         "logging": {"enabled": True, "file": "logs/autoclip.log", "level": "INFO", "console_level": "INFO"},
-        "resources": {"max_workers": 1},
     }
     data["clips"] = merge(data["clips"], clips or {})
     return data

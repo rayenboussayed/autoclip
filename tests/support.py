@@ -86,9 +86,9 @@ def make_cfg(media: Media, out: Path, source: Path | None = None, **sections: di
             "long": {"min_seconds": 12, "max_seconds": 30},
         },
         "transcript": {"mode": "file", "file": str(media.transcript)},
-        "video": {"short_side": 144, "preset": "ultrafast", "thumbnail": False, "gpu": "off"},
+        "video": {"short_side": 720, "thumbnail": False, "gpu": "off"},
+        "quality": "lowest",
         "logging": {"enabled": False, "console_level": "ERROR"},
-        "resources": {"max_workers": 1},
         "unsilence": {"enabled": False},
     }
     cfg = parse(Config, merge(data, sections))
@@ -162,7 +162,9 @@ def install_stub_whisper(
                 if calls == 1:
                     raise RuntimeError("CUDA out of memory mid-file")
             # The 1 s CUDA warm-up passes no language; a real chunk call always does.
-            if isinstance(audio, np.ndarray) and len(audio) < full_samples - 16000 and "language" in options:  # a chunk
+            if (
+                isinstance(audio, np.ndarray) and len(audio) < full_samples - 16000 and "language" in options
+            ):  # a real chunk (slightly short of the full file), not the warm-up
                 record.setdefault("chunks", []).append((len(audio), options["language"]))
                 seg = SimpleNamespace(start=0.5, end=2.5, text=" chunk", words=[SimpleNamespace(start=0.5, end=1.5, word=" chunk")])
                 return iter([seg]), SimpleNamespace(language="en", language_probability=0.9, duration=len(audio) / 16000)
@@ -222,10 +224,10 @@ BASE_CONFIG: dict[str, Any] = {
         "short": {"count": 1, "min_seconds": 6, "max_seconds": 12},
         "long": {"count": 1, "min_seconds": 12, "max_seconds": 30},
     },
-    "video": {"short_side": 96, "preset": "ultrafast", "gpu": "off"},
+    "video": {"short_side": 480, "gpu": "off"},
+    "quality": "lowest",
     "audio": {"denoise": "none"},
     "logging": {"console_level": "ERROR"},
-    "resources": {"max_workers": 1},
     "unsilence": {"enabled": False},
 }
 

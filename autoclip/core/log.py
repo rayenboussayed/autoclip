@@ -354,7 +354,7 @@ def health_check(label: str = "step") -> str:
 
     try:
         snap = RESOURCES.snapshot()
-        available = max(0, snap.mem_available // MB - RESOURCES.res.memory_reserve_mb)
+        available = max(0, snap.mem_available // MB - RESOURCES.memory_reserve_mb)
         cgroup = cgroup_memory_available()
     except ImportError:
         import psutil

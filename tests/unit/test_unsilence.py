@@ -41,7 +41,7 @@ def test_remove_silence_does_not_need_system_ffprobe(media: Media, tmp_path: Pat
 
     cfg = make_cfg(media, tmp_path, None)
     cfg.unsilence.enabled = True
-    cfg.unsilence.quality_preset = "medium"
+    cfg.quality = "medium"
     destination = tmp_path / "long" / media.video.stem / f"unsilence_{media.video.stem}.mp4"
     destination.parent.mkdir(parents=True, exist_ok=True)
     empty_bin = tmp_path / "empty-bin"
@@ -70,7 +70,7 @@ def test_process_video_runs_after_unsilence(media: Media, tmp_path: Path) -> Non
     cfg = make_cfg(media, tmp_path, None, unsilence={"enabled": True, "min_silence_ms": 300})
     out = tmp_path / "out"
     cfg.output_dir = str(out)
-    (done, failed) = process_video(media.video, cfg, None, cpu_encoder(cfg.video), name=media.video.stem, consent=None)
+    (done, failed) = process_video(media.video, cfg, None, cpu_encoder(cfg.video, cfg.quality), name=media.video.stem, consent=None)
     assert failed == 0
     assert done > 0
     expected = out / "long" / media.video.stem / f"unsilence_{media.video.stem}.mp4"

@@ -128,14 +128,14 @@ def test_join_tokens() -> None:
 
 
 def test_make_chunks_split_on_length_pause_punctuation_and_glue() -> None:
-    cfg = CaptionsCfg(max_chars=12, max_seconds=2.0)
+    cfg = CaptionsCfg(max_seconds=2.0)
     chunks = make_chunks(
         words(("Hello", 0, 0.4), ("big", 0.4, 0.8), ("world.", 0.8, 1.2), ("Next", 1.3, 1.6), ("one", 1.6, 2.0), ("here", 4.0, 4.1)), cfg
     )
-    assert [c.text for c in chunks] == ["Hello big", "world.", "Next one", "here"]  # length, sentence end, pause
-    assert chunks[0].end <= chunks[1].start and chunks[3].end == pytest.approx(4.8)  # at least 0.8 s on screen
-    comma = make_chunks(words(("alpha,", 0, 0.3), ("beta,", 0.3, 0.6), ("gamma", 0.6, 0.9)), CaptionsCfg(max_chars=14))
-    assert [c.text for c in comma] == ["alpha, beta,", "gamma"]
+    assert [c.text for c in chunks] == ["Hello big world.", "Next one", "here"]  # length, sentence end, pause
+    assert chunks[0].end <= chunks[1].start and chunks[2].end == pytest.approx(4.8)  # at least 0.8 s on screen
+    comma = make_chunks(words(("alpha,", 0, 0.3), ("beta,", 0.3, 0.6), ("gamma", 0.6, 0.9)), CaptionsCfg())
+    assert [c.text for c in comma] == ["alpha, beta, gamma"]
     punct = make_chunks(words(("Hi.", 0, 0.5), ("!!", 0.5, 0.8)), CaptionsCfg())
     assert len(punct) == 1 and punct[0].text == "Hi.!!"
     slow = make_chunks(words(("a", 0, 1.5), ("b", 1.5, 3.0)), CaptionsCfg(max_seconds=2.0))
@@ -271,7 +271,7 @@ def test_safe_top_keeps_captions_out_of_app_ui() -> None:
     assert safe_top(0.95, 1920, 1080, cfg, 100) == int(0.8 * 1920 - 100)  # pushed up above the bottom UI
     assert safe_top(0.0, 1920, 1080, cfg, 100) == int(0.10 * 1920)  # pushed down below the top UI
     assert safe_top(0.95, 1080, 1920, cfg, 100) == int(0.97 * 1080 - 100)  # landscape: thin margins only
-    assert safe_top(0.5, 100, 50, CaptionsCfg(safe_top=0.9, safe_bottom=0.9), 80) == 90  # impossible zone: top wins
+    assert safe_top(0.5, 100, 50, CaptionsCfg(), 80) == int(0.10 * 100)  # no per-caption override remains
 
 
 def test_sprite_key_is_stable_and_sensitive() -> None:
@@ -307,7 +307,7 @@ def sentence() -> list[Word]:
 
 def test_build_captions_highlights_each_word(cache: Cache, real_font: Path) -> None:
     clip, lines = build_captions(sentence(), Timeline([(0.0, 3.0)]), config(), cache, (360, 640), 3.0)
-    assert clip is not None and [ln.text for ln in lines] == ["Welcome to the show.", "Next up"]
+    assert clip is not None and [ln.text for ln in lines] == ["Welcome to the", "show.", "Next up"]
     assert all(isinstance(ln, Span) and ln.end > ln.start for ln in lines)
     first = clip.mask.get_frame(0.2)
     assert first.max() > 0 and first.shape[1] == 360

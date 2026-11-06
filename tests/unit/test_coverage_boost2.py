@@ -341,7 +341,8 @@ def test_cli_main_json_flag(media: Any, tmp_path: Path, monkeypatch: pytest.Monk
         "output_dir": str(tmp_path / "o2"),
         "clips": {"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}},
         "skip": {"stt": True, "caption": True, "title": True},
-        "video": {"short_side": 64, "preset": "ultrafast", "gpu": "off"},
+        "video": {"short_side": 320, "gpu": "off"},
+        "quality": "lowest",
     }
     p = tmp_path / "c.json"
     p.write_text(__import__("json").dumps(cfg), encoding="utf-8")
@@ -359,7 +360,8 @@ def test_cli_main_events_jsonl_flag(media: Any, tmp_path: Path, monkeypatch: pyt
         "output_dir": str(tmp_path / "o3"),
         "clips": {"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}},
         "skip": {"stt": True, "caption": True, "title": True},
-        "video": {"short_side": 64, "preset": "ultrafast", "gpu": "off"},
+        "video": {"short_side": 320, "gpu": "off"},
+        "quality": "lowest",
     }
     p = tmp_path / "c.json"
     p.write_text(__import__("json").dumps(cfg), encoding="utf-8")

@@ -33,7 +33,7 @@ def test_parity_process_video_vs_server_job(media: Any, tmp_path: Path, monkeypa
     cfg = parse(Config, cfg_data)
     cfg.input = [str(media.video)]
     cfg.output_dir = str(out_direct)
-    encoder = pick_encoder(cfg.video, allow_gpu=False)
+    encoder = pick_encoder(cfg.video, cfg.quality, allow_gpu=False)
     process_video(media.video, cfg, None, encoder, name=media.video.stem)
 
     # server

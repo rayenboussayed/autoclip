@@ -19,12 +19,12 @@ def _fresh_probe_cache() -> None:
 
 
 def test_cpu_encoder_arguments() -> None:
-    enc = cpu_encoder(VideoCfg(crf=18, preset="slow", maxrate_mbps=8))
-    assert (enc.name, enc.hardware, enc.preset) == ("libx264", False, "slow")
-    assert enc.params == ("-crf", "18", "-profile:v", "high", "-maxrate", "8M", "-bufsize", "16M")
-    assert "-maxrate" not in cpu_encoder(VideoCfg(maxrate_mbps=0)).params
-    hevc = cpu_encoder(VideoCfg(codec="h265", crf=20))
-    assert (hevc.name, hevc.preset) == ("libx265", "veryslow")
+    enc = cpu_encoder(VideoCfg(), "medium")
+    assert (enc.name, enc.hardware, enc.preset) == ("libx264", False, "medium")
+    assert enc.params == ("-crf", "24", "-profile:v", "high")
+    assert cpu_encoder(VideoCfg(), "highest").params == ("-crf", "16", "-profile:v", "high")
+    hevc = cpu_encoder(VideoCfg(codec="h265"), "high")
+    assert (hevc.name, hevc.preset) == ("libx265", "slow")
     assert hevc.params == ("-crf", "20", "-profile:v", "main")
 
 
@@ -32,34 +32,32 @@ def test_cpu_encoder_arguments() -> None:
     "name, codec", [("nvenc", "h264_nvenc"), ("videotoolbox", "h264_videotoolbox"), ("qsv", "h264_qsv"), ("amf", "h264_amf")]
 )
 def test_every_gpu_encoder_is_described(name: str, codec: str) -> None:
-    enc = HARDWARE[name](VideoCfg(crf=21, maxrate_mbps=0))
+    enc = HARDWARE[name](VideoCfg(), "medium")
     assert enc.name == codec and enc.hardware and enc.preset == PLACEHOLDER_PRESET  # real GPU presets are set via params
     assert "-crf" not in enc.params and "libx264" not in enc.name
-    assert ("21" in enc.params) == (name != "videotoolbox")  # VideoToolbox maps CRF onto its own quality scale
-    assert HARDWARE["videotoolbox"](VideoCfg(maxrate_mbps=6)).params[:2] == ("-b:v", "6M")
-    assert "-maxrate" in HARDWARE["nvenc"](VideoCfg(maxrate_mbps=6)).params
+    if name == "videotoolbox":
+        assert enc.params == ("-q:v", "65", "-profile:v", "high")
+    else:
+        assert "28" in enc.params  # the native quality level of the medium tier
 
 
 @pytest.mark.parametrize(
     "name, codec", [("nvenc", "hevc_nvenc"), ("videotoolbox", "hevc_videotoolbox"), ("qsv", "hevc_qsv"), ("amf", "hevc_amf")]
 )
 def test_every_gpu_encoder_has_an_hevc_variant(name: str, codec: str) -> None:
-    enc = HARDWARE[name](VideoCfg(codec="h265", crf=21))
+    enc = HARDWARE[name](VideoCfg(codec="h265"), "medium")
     assert enc.name == codec
     assert enc.params[enc.params.index("-profile:v") + 1] == "main"
 
 
-def test_videotoolbox_quality_mode_is_mapped_from_crf() -> None:
-    quality = HARDWARE["videotoolbox"](VideoCfg(crf=18))
-    assert quality.params == ("-q:v", "65", "-profile:v", "high") and "-b:v" not in quality.params
-    capped = HARDWARE["videotoolbox"](VideoCfg(maxrate_mbps=6))
-    assert capped.params[:2] == ("-b:v", "6M") and "-q:v" not in capped.params and "-maxrate" in capped.params
-    assert HARDWARE["videotoolbox"](VideoCfg(crf=51)).params[1] == "1"  # never below the encoder's minimum
-    assert HARDWARE["videotoolbox"](VideoCfg(crf=0)).params[1] == "100"
+def test_videotoolbox_quality_is_mapped() -> None:
+    assert HARDWARE["videotoolbox"](VideoCfg(), "medium").params == ("-q:v", "65", "-profile:v", "high")
+    assert HARDWARE["videotoolbox"](VideoCfg(), "highest").params[1] == "100"
+    assert HARDWARE["videotoolbox"](VideoCfg(), "lowest").params[1] == "25"
 
 
 def test_probe_tells_working_from_broken_encoders_with_real_ffmpeg() -> None:
-    assert works(cpu_encoder(VideoCfg(preset="ultrafast")))
+    assert works(cpu_encoder(VideoCfg(), "lowest"))
     assert not works(Encoder("h264_does_not_exist", True, "medium", ()))
     assert not works(Encoder("libx264", False, "no-such-preset", ()))
     # MoviePy always passes a preset first; a later "-preset" in the arguments wins, so this placeholder is harmless
@@ -79,7 +77,7 @@ def test_probe_uses_the_ffmpeg_moviepy_encodes_with(monkeypatch: pytest.MonkeyPa
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(subprocess, "run", record)
-    assert works(cpu_encoder(VideoCfg(preset="ultrafast"))) and seen == [ffmpeg_writer.FFMPEG_BINARY]
+    assert works(cpu_encoder(VideoCfg(), "lowest")) and seen == [ffmpeg_writer.FFMPEG_BINARY]
 
 
 def test_probe_survives_hangs_and_missing_binaries(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -98,8 +96,8 @@ def test_probe_survives_hangs_and_missing_binaries(monkeypatch: pytest.MonkeyPat
 def test_what_is_listed_is_not_what_is_chosen() -> None:
     """On any machine: the chosen encoder is a GPU one exactly when its probe encode succeeds."""
     for name in HARDWARE:
-        chosen = pick_encoder(VideoCfg(gpu=name))  # type: ignore[arg-type]
-        assert chosen.hardware == works(HARDWARE[name](VideoCfg())) and (chosen.hardware or chosen.name == "libx264")
+        chosen = pick_encoder(VideoCfg(gpu=name), "high")  # type: ignore[arg-type]
+        assert chosen.hardware == works(HARDWARE[name](VideoCfg(), "high")) and (chosen.hardware or chosen.name == "libx264")
 
 
 def fake_probe(monkeypatch: pytest.MonkeyPatch, working: set[str]) -> list[str]:
@@ -128,7 +126,7 @@ def test_auto_follows_the_platform_priority(
     monkeypatch: pytest.MonkeyPatch, system: str, working: set[str], expected: str, tried: list[str]
 ) -> None:
     log = fake_probe(monkeypatch, working)
-    assert pick_encoder(VideoCfg(gpu="auto"), system).name == expected and log == tried
+    assert pick_encoder(VideoCfg(gpu="auto"), "high", system).name == expected and log == tried
     assert PRIORITY["Darwin"] == ("videotoolbox",)
 
 
@@ -136,14 +134,14 @@ def test_off_never_probes_and_explicit_choice_warns_when_unusable(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     tried = fake_probe(monkeypatch, {"h264_amf"})
-    assert pick_encoder(VideoCfg(gpu="off")).name == "libx264" and tried == []
-    assert pick_encoder(VideoCfg(gpu="amf")).name == "h264_amf" and tried == ["h264_amf"]
+    assert pick_encoder(VideoCfg(gpu="off"), "high").name == "libx264" and tried == []
+    assert pick_encoder(VideoCfg(gpu="amf"), "high").name == "h264_amf" and tried == ["h264_amf"]
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        assert pick_encoder(VideoCfg(gpu="nvenc")).name == "libx264"
+        assert pick_encoder(VideoCfg(gpu="nvenc"), "high").name == "libx264"
     assert "not usable on this machine" in caplog.text
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        pick_encoder(VideoCfg(gpu="auto"), "Linux")  # nothing works on "auto": silently the CPU (not a warning)
+        pick_encoder(VideoCfg(gpu="auto"), "high", "Linux")  # nothing works on "auto": silently the CPU (not a warning)
     assert caplog.text == ""
 
 
@@ -151,9 +149,9 @@ def test_cpu_fallback_log_names_the_selected_encoder(monkeypatch: pytest.MonkeyP
     """The log must not say libx264 when ``video.codec: "h265"`` actually selected libx265."""
     fake_probe(monkeypatch, set())
     with caplog.at_level(logging.INFO, logger="autoclip"):
-        assert pick_encoder(VideoCfg(codec="h265", gpu="auto"), "Linux").name == "libx265"
+        assert pick_encoder(VideoCfg(codec="h265", gpu="auto"), "high", "Linux").name == "libx265"
     assert "no usable GPU video encoder: using libx265 on the CPU" in caplog.text
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="autoclip"):
-        assert pick_encoder(VideoCfg(codec="h265"), "Linux", allow_gpu=False).name == "libx265"
+        assert pick_encoder(VideoCfg(codec="h265"), "high", "Linux", allow_gpu=False).name == "libx265"
     assert "compute.device is 'cpu': using libx265 on the CPU" in caplog.text

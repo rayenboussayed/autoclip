@@ -18,7 +18,7 @@ def test_run_batch_no_downloader_url(media: Any, tmp_path: Path) -> None:
     cfg = make_cfg(media, out, clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
     cfg.input = ["https://example.com/x.mp4"]
     cfg.output_dir = str(out)
-    code_result = run_batch(cfg, downloader=None, encoder=pick_encoder(cfg.video, allow_gpu=False), log_file=None)
+    code_result = run_batch(cfg, downloader=None, encoder=pick_encoder(cfg.video, cfg.quality, allow_gpu=False), log_file=None)
     assert code_result.clips_failed >= 1
 
 
@@ -37,7 +37,7 @@ def test_run_batch_cancel(media: Any, tmp_path: Path, monkeypatch: pytest.Monkey
     from autoclip.core.events import Cancelled
 
     with contextlib.suppress(Cancelled):
-        run_batch(cfg, downloader=None, encoder=pick_encoder(cfg.video, allow_gpu=False), log_file=None, cancel=tok)
+        run_batch(cfg, downloader=None, encoder=pick_encoder(cfg.video, cfg.quality, allow_gpu=False), log_file=None, cancel=tok)
 
 
 def test_unique_name_first_candidate() -> None:

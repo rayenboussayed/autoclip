@@ -131,7 +131,6 @@ class EnhanceCfg(Section):
     attenuation_limit_db: Annotated[Float, Field(ge=0, le=100)] = 12.0  # how much noise may be removed (0 = off, 100 = no suppression)
     denoise_strength: Annotated[Float, Field(ge=0, le=1)] = 0.75  # only used by the noisereduce backend
     snr_threshold_db: Annotated[Float, Field(gt=0)] | None = 20.0  # only enhance below this speech-to-noise ratio (null = always)
-    num_threads: Annotated[Int, Field(ge=1)] = 4
     model_dir: str | None = None  # where the ONNX model is kept; default <output_dir>/.work/models
 
     def fingerprint(self) -> dict[str, Any]:
@@ -173,7 +172,6 @@ class TranscriptCfg(Section):
     language: str | None = None  # None = auto-detect
     multilingual: Bool = True  # detect the language per segment (mixed-language audio)
     device: Literal["auto", "cpu", "cuda"] = "auto"
-    beam_size: Int = 5  # 1 = fastest, 5 = most accurate
     word_timestamps: Bool = True
     enhance: EnhanceCfg = field(default_factory=EnhanceCfg)
 
@@ -224,10 +222,6 @@ class VideoCfg(Section):
     fade_seconds: Float = 0.2
     codec: Literal["h264", "h265"] = "h264"
     gpu: Literal["auto", "off", "nvenc", "videotoolbox", "qsv", "amf"] = "auto"  # GPU encoder if one really works
-    crf: Int = 18  # quality (CPU: libx264/libx265 CRF; GPU: the encoder's quality level)
-    preset: str = "veryslow"  # libx264/libx265 only
-    maxrate_mbps: Float = 0  # bitrate cap (upload friendly); 0 = uncapped
-    audio_bitrate_kbps: Int = 192  # AAC bitrate of the clip audio
     container: Literal["mp4", "mkv"] = "mp4"  # mkv = no faststart; needed for some H.265/audio combinations
     thumbnail: Bool = True  # also write <clip>.jpg
 
@@ -247,9 +241,6 @@ class CaptionsCfg(Section):
     highlight: Bool = True  # colour the spoken word (spaced left-to-right scripts only)
     highlight_color: str = "#FFD400"
     position: Position = "lower"
-    safe_top: Float = 0.10  # fraction of a vertical frame kept free of captions (app UI)
-    safe_bottom: Float = 0.20
-    max_chars: Int = 24  # characters per caption screen
     max_seconds: Float = 2.6
     uppercase: Bool = False
 
@@ -283,9 +274,6 @@ class UnsilenceCfg(Section):
     silence_threshold_db: Float = -40.0
     min_silence_ms: Annotated[Int, Field(ge=0)] = 500
     keep_silence_ms: Annotated[Int, Field(ge=0)] = 120
-    quality_crf: Annotated[Int, Field(ge=0, le=51)] = 0
-    quality_preset: Literal["medium", "slow", "slower", "veryslow"] = "slow"
-    audio_bitrate_kbps: Annotated[Int, Field(ge=32, le=512)] = 320
     min_segment_seconds: Annotated[Float, Field(ge=0.05)] = 0.25
 
 
@@ -299,35 +287,6 @@ class SilenceCfg(Section):
     threshold_db: Float | Literal["auto"] = "auto"
     remove_fillers: Bool = True  # needs word timestamps
     fillers: list[str] = field(default_factory=lambda: ["um", "uh", "umm", "uhh", "uhm", "erm", "hmm", "mmm"])
-
-
-@dataclass(config=SCHEMA)
-class ProcessingCfg(Section):
-    """Chunking of long audio and how clips render."""
-
-    chunk_threshold_minutes: Annotated[Float, Field(ge=0)] = 0  # 0 = always transcribe in chunks; N = only videos longer than N minutes
-    chunk_minutes: Annotated[Float, Field(gt=0)] = 5  # chunk length; boundaries snap to the quietest moment nearby
-    mode: Literal["sequential", "parallel"] = "sequential"  # sequential = one clip at a time; parallel = adaptive pool
-
-
-@dataclass(config=SCHEMA)
-class ResourcesCfg(Section):
-    """Adaptive CPU / RAM balancing (re-evaluated before and after every operation)."""
-
-    cpus: Int = 0  # 0 = auto-detect (affinity + container quota)
-    max_cpu_percent: Float = 50  # default half of available cores
-    max_workers: Int = 0  # parallel pool cap: 0 = as many as cores/RAM allow (sequential mode ignores this)
-    encoding_threads: Int = 4  # CPU threads per encode; 0 = use encoding cap
-    memory_fraction: Float = 0.5  # default half of the *currently free* RAM the script may claim
-    memory_reserve_mb: Int = 512  # RAM always left to the OS and other programs
-
-
-@dataclass(config=SCHEMA)
-class StorageCfg(Section):
-    """Cache sizes (the SQLite database itself is recreated empty for every video)."""
-
-    cache_memory_mb: Int = 0  # 0 = auto (sized from free RAM)
-    cache_disk_mb: Int = 2048  # cap for cached blobs inside the SQLite file
 
 
 @dataclass(config=SCHEMA)
@@ -501,7 +460,7 @@ class PlatformsCfg(Section):
 class DownloadCfg(Section):
     """Downloading the http(s) URLs found in ``input`` with yt-dlp."""
 
-    quality: Annotated[Int, Field(ge=144, le=4320)] | Literal["best", "worst"] = "best"  # short side, or best/worst
+    quality: Annotated[Int, Field(ge=144, le=4320)] | Literal["best", "worst"] | None = None  # short side or best/worst
     fps: Annotated[Float, Field(gt=0, le=240)] | None = None  # None = any
     prefer: Literal["closest", "at_most", "at_least"] = "closest"  # how quality/fps are matched
     codec: Literal["auto", "h264", "vp9", "av1", "h265"] = "auto"  # auto = h264, then vp9, av1, h265, other
@@ -548,12 +507,17 @@ def _default_output_dir() -> str:
     return str(Path.home() / "Videos" / "clips")
 
 
+_DOWNLOAD_QUALITY_BY_OUTPUT = {"highest": 1080, "high": 720, "medium": 480, "low": 360, "lowest": 240}
+
+
 @dataclass(config=SCHEMA)
 class Config(Section):
     """The whole configuration file."""
 
     input: list[str] = field(default_factory=lambda: ["input.mp4"])  # files, glob patterns or http(s) URLs
     output_dir: str = field(default_factory=_default_output_dir)  # one sub-folder per video is created inside
+    mode: Literal["performance", "resources", "balance"] = "balance"  # performance/resource/balance policy
+    quality: Literal["highest", "high", "medium", "low", "lowest"] = "high"  # encode resolution/fps/audio quality
     compute: ComputeCfg = field(default_factory=ComputeCfg)
     download: DownloadCfg = field(default_factory=DownloadCfg)
     clips: ClipsCfg = field(default_factory=ClipsCfg)
@@ -566,9 +530,6 @@ class Config(Section):
     silence: SilenceCfg = field(default_factory=SilenceCfg)
     unsilence: UnsilenceCfg = field(default_factory=UnsilenceCfg)
     skip: SkipCfg = field(default_factory=SkipCfg)
-    processing: ProcessingCfg = field(default_factory=ProcessingCfg)
-    resources: ResourcesCfg = field(default_factory=ResourcesCfg)
-    storage: StorageCfg = field(default_factory=StorageCfg)
     logging: LoggingCfg = field(default_factory=LoggingCfg)
 
     @model_validator(mode="after")
@@ -576,6 +537,13 @@ class Config(Section):
         """Skipping Whisper while forcing it would leave nothing to transcribe with."""
         if self.skip.stt and self.transcript.mode == "whisper":
             raise ConfigError("skip.stt cannot be combined with transcript.mode: 'whisper' (nothing would transcribe)")
+        return self
+
+    @model_validator(mode="after")
+    def _auto_download_quality(self) -> Config:
+        """A user who leaves ``download.quality`` unset gets it from the top-level quality level."""
+        if self.download.quality is None:
+            self.download.quality = _DOWNLOAD_QUALITY_BY_OUTPUT[self.quality]
         return self
 
 
@@ -658,6 +626,8 @@ def load_config(path: str | Path) -> Config:
         raw["input"] = [raw["input"]]
     cfg = parse(Config, raw)
     base = p.resolve().parent
+    if cfg.download.quality is None:
+        cfg.download.quality = _DOWNLOAD_QUALITY_BY_OUTPUT[cfg.quality]
     cfg.input = expand_inputs(cfg.input, base)
     cfg.output_dir = _abs(Path.cwd(), cfg.output_dir)  # independent of where the config file lives
     if cfg.logging.file:

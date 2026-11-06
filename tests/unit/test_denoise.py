@@ -202,7 +202,7 @@ def test_sherpa_backend_builds_a_denoiser(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setitem(sys.modules, "sherpa_onnx", module)
     monkeypatch.setattr(denoise, "fetch_model", lambda model, directory, timeout=120.0: directory / "m.onnx")
 
-    enhancer = SpeechEnhancer(EnhanceCfg(model="dpdfnet2", attenuation_limit_db=9.0, num_threads=2), tmp_path)
+    enhancer = SpeechEnhancer(EnhanceCfg(model="dpdfnet2", attenuation_limit_db=9.0), tmp_path)
     assert enhancer.active
     assert built["dpdfnet"].model.endswith("m.onnx") and built["dpdfnet"].attenuation_limit_db == 9.0
     assert built["threads"] == 2 and built["provider"] == "cpu"

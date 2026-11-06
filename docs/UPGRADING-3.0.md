@@ -16,3 +16,11 @@
   `curl -fsSL https://github.com/rayenboussayed/autoclip/releases/latest/download/install.sh | sh`.
 - Outputs are written to `<name>.part` and renamed on success, so a killed job leaves no
   half-written `.mp4`.
+- `video.quality` is now the single media-quality control (`highest`, `high`, `medium`,
+  `low`, `lowest`). It scales resolution from `video.short_side`, caps frame rate below the source
+  for `medium` and lower, and selects encoder and AAC settings. `video.crf`, `video.preset`,
+  `video.maxrate_mbps` and `video.audio_bitrate_kbps` were removed; replace them with `video.quality`.
+- The `processing`, `resources` and `storage` config sections were removed. CPU affinity and container
+  quotas, free RAM, chunking, cache budgets and worker plans are now derived automatically.
+  Add `compute.mode` (`performance`, `resources`, or the default `balance`) to choose the speed-versus-
+  resource trade-off; remove the old keys to keep the configuration valid.

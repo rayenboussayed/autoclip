@@ -47,14 +47,14 @@ def make_jobs(
     **sections: dict[str, Any],
 ) -> tuple[list[RenderJob], Store, Config]:
     cfg = make_cfg(media, tmp_path, None, **sections)
-    cfg.video.short_side = 96
+    cfg.video.short_side = 480  # quality=lowest renders at 20% of this (96)
     store = Store(tmp_path / "jobs.db", fresh=True)
     store.put_segments(load_transcript_file(media.transcript))
     jobs = []
     for k in range(1, n + 1):
         m = Moment(4.0 * k, 4.0 * k + 6, "", title="t", scene="best")
         clip_id = store.save_moment("short", "best", k, m)
-        enc = encoder or cpu_encoder(cfg.video)
+        enc = encoder or cpu_encoder(cfg.video, cfg.quality)
         jobs.append(
             RenderJob(
                 clip_id,
@@ -128,14 +128,13 @@ def test_render_all_sequential_and_empty(media: Media, tmp_path: Path) -> None:
 def test_render_all_is_sequential_by_default(
     media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # Null ProcessPoolExecutor: the pool must never be constructed while the default mode is sequential.
-    monkeypatch.setattr(runner, "ProcessPoolExecutor", lambda *a, **k: (_ for _ in ()).throw(AssertionError("pool used")))
+    # With only one CPU budget available, the runtime plan keeps one job at a time.
     jobs, store, cfg = make_jobs(media, tmp_path, n=2)
     RESOURCES.configure(cfg)
+    monkeypatch.setattr(RESOURCES, "cpu_budget", lambda: 1)
     with caplog.at_level(logging.INFO, logger="autoclip"):
         render_all(jobs, 100 << 20)
     assert statuses(store) == ["done", "done"]
-    assert "sequential: rendering 2 clip(s) one at a time" in caplog.text
     assert "submit clip" not in caplog.text
 
 
@@ -148,10 +147,10 @@ class ThreadPool(ThreadPoolExecutor):
 
 
 def parallel_jobs(media: Media, tmp_path: Path, n: int, cpus: int = 2, **kw: Any) -> tuple[list[RenderJob], Store, Config]:
-    jobs, store, cfg = make_jobs(
-        media, tmp_path, n=n, processing={"mode": "parallel"}, resources={"cpus": cpus, "max_workers": cpus, "max_cpu_percent": 100}, **kw
-    )
-    RESOURCES.configure(cfg)
+    jobs, store, cfg = make_jobs(media, tmp_path, n=n, **kw)
+    RESOURCES.configure(None)
+    RESOURCES.cpus = cpus
+    RESOURCES.max_cpu_percent = 100.0
     return jobs, store, cfg
 
 
@@ -215,15 +214,10 @@ def test_render_all_retries_a_killed_worker_alone(
 
 def test_render_all_with_real_spawned_workers(media: Media, tmp_path: Path) -> None:
     log_file = tmp_path / "pool.log"
-    jobs, store, cfg = make_jobs(
-        media,
-        tmp_path,
-        n=2,
-        log_file=log_file,
-        resources={"cpus": 2, "max_workers": 2, "max_cpu_percent": 100},
-        processing={"mode": "parallel"},
-    )
-    RESOURCES.configure(cfg)
+    jobs, store, cfg = make_jobs(media, tmp_path, n=2, log_file=log_file)
+    RESOURCES.configure(None)
+    RESOURCES.cpus = 2
+    RESOURCES.max_cpu_percent = 100.0
     render_all(jobs, 100 << 20)
     assert statuses(store) == ["done", "done"]
     text = log_file.read_text(encoding="utf-8")
@@ -313,7 +307,7 @@ def test_run_batch_processes_inputs_one_at_a_time(media: Media, tmp_path: Path, 
         return 1, 0
 
     monkeypatch.setattr(batch, "process_video", fake)
-    cfg = make_cfg(media, tmp_path / "out", processing={"mode": "sequential"})
+    cfg = make_cfg(media, tmp_path / "out")
     cfg.input = [str(media.video), str(media.video)]
     RESOURCES.configure(cfg)
     from autoclip.core.batch import run_batch
@@ -373,10 +367,11 @@ def test_needs_text_only_when_selection_captions_or_titles_use_it(media: Media, 
 def test_main_chunks_long_videos_for_transcription(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
-    cfg = write_config(tmp_path, media, input=[str(media.video)], transcript={"mode": "whisper", "file": None, "model": "tiny"},
-                       processing={"chunk_threshold_minutes": 0.5, "chunk_minutes": 0.25})  # fmt: skip
+    cfg = write_config(tmp_path, media, input=[str(media.video)], transcript={"mode": "whisper", "file": None, "model": "tiny"})  # fmt: skip
     assert main([str(cfg)]) == 0
-    assert len(rec["chunks"]) == 3 and len(clips_json(tmp_path, "short", "talk")) == 1  # three chunk calls, clip still produced
+    assert (
+        "chunks" not in rec and rec["samples"] > 0 and len(clips_json(tmp_path, "short", "talk")) == 1
+    )  # one automatic pass (possibly whole audio), clip still produced
     assert (tmp_path / "out" / ".work" / "talk" / "talk.transcript.json").exists()
 
 
@@ -406,8 +401,7 @@ def test_main_config_errors_and_init(tmp_path: Path, capsys: pytest.CaptureFixtu
     full = tmp_path / "full.json"
     assert main(["--init-full", str(full)]) == 0
     data = json.loads(full.read_text(encoding="utf-8"))
-    assert data["resources"]["memory_fraction"] == 0.5 and data["clips"]["long"]["aspect"] == "16:9" and data["video"]["gpu"] == "auto"
-    assert data["processing"] == {"chunk_threshold_minutes": 0, "chunk_minutes": 5, "mode": "sequential"}
+    assert data["clips"]["long"]["aspect"] == "16:9" and data["video"]["gpu"] == "auto"
     # The default model is resolved for the machine: large-v3 with CUDA, small on the CPU.
     assert data["transcript"]["model"] in {"small", "large-v3"} and data["transcript"]["enhance"]["enabled"] is True
 

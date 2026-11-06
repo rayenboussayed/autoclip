@@ -64,7 +64,8 @@ def test_snapshot_pressure() -> None:
 
 def test_cpu_detection(monkeypatch: pytest.MonkeyPatch) -> None:
     mon = ResourceMonitor()
-    mon.configure(cfg_with(resources={"cpus": 6}))
+    mon.configure()
+    mon.cpus = 6
     assert mon.cpus == 6
     monkeypatch.setattr(resources, "cgroup_cpu_quota", lambda: 1.5)
     mon.configure(Config())
@@ -81,9 +82,63 @@ def test_cpu_detection(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def make_monitor(monkeypatch: pytest.MonkeyPatch, free_mb: int, total_mb: int = 16000, **resources_cfg: object) -> ResourceMonitor:
     mon = ResourceMonitor()
-    mon.configure(cfg_with(resources={"cpus": 8, "max_cpu_percent": 100, **resources_cfg}))
+    mon.configure()
+    mon.cpus = 8
+    mon.max_cpu_percent = float(resources_cfg.pop("max_cpu_percent", 100.0))  # type: ignore[arg-type]
     monkeypatch.setattr(mon, "snapshot", lambda: Snapshot(10.0, total_mb * MB, free_mb * MB, 100 * MB))
     return mon
+
+
+def test_mode_profiles_are_applied(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    perf = parse(Config, {"mode": "performance", "output_dir": str(tmp_path)})
+    res = parse(Config, {"mode": "resources", "output_dir": str(tmp_path)})
+    bal = parse(Config, {"mode": "balance", "output_dir": str(tmp_path)})
+    pmon = ResourceMonitor()
+    rmon = ResourceMonitor()
+    bmon = ResourceMonitor()
+    pmon.configure(perf)
+    rmon.configure(res)
+    bmon.configure(bal)
+    assert pmon.mode == "performance" and pmon.max_cpu_percent == 90.0
+    assert rmon.mode == "resources" and rmon.max_cpu_percent == 25.0
+    assert bmon.mode == "balance" and bmon.max_cpu_percent == 50.0
+
+
+def test_mode_resources_is_in_process_and_lean(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    cfg = parse(Config, {"mode": "resources", "output_dir": str(tmp_path)})
+    mon = ResourceMonitor()
+    mon.configure(cfg)
+    mon.cpus = 8
+    monkeypatch.setattr(mon, "usable_memory", lambda: 8_000 * MB)
+    plan = mon.plan_workers(100 * MB, 4)
+    assert plan.workers == 1
+
+
+def test_mode_adapt_raises_on_low_utilisation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    cfg = parse(Config, {"mode": "performance", "output_dir": str(tmp_path)})
+    mon = ResourceMonitor()
+    mon.configure(cfg)
+    mon.cpus = 8
+    mon._cpu_samples.clear()
+    monkeypatch.setattr(mon, "snapshot", lambda: Snapshot(10.0, 32_000 * MB, 30_000 * MB, 100 * MB))
+    old = mon.max_cpu_percent
+    for _ in range(3):
+        mon.record_job(1.0, peak_rss=100 * MB, threads=1, workers=1)
+    mon.adapt()
+    assert mon.max_cpu_percent > old
+
+
+def test_mode_adapt_backs_off_under_high_pressure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    cfg = parse(Config, {"mode": "performance", "output_dir": str(tmp_path)})
+    mon = ResourceMonitor()
+    mon.configure(cfg)
+    mon.cpus = 8
+    monkeypatch.setattr(mon, "snapshot", lambda: Snapshot(80.0, 16_000 * MB, 500 * MB, 10_000 * MB))
+    old = mon.max_cpu_percent
+    mon.record_job(1.0, peak_rss=10_000 * MB, threads=8, workers=8)
+    mon._adapt_ts = 0.0
+    mon.adapt()
+    assert mon.max_cpu_percent < old
 
 
 def test_worker_plan_scales_with_free_memory(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -94,7 +149,6 @@ def test_worker_plan_scales_with_free_memory(monkeypatch: pytest.MonkeyPatch) ->
     assert (two.workers, two.threads) == (2, 4)  # leftover cores become encoder threads
     tight = make_monitor(monkeypatch, 1000).plan_workers(per_job, 6)
     assert (tight.workers, tight.threads) == (1, 8)  # one job, but every core still used
-    assert make_monitor(monkeypatch, 12000, max_workers=3).plan_workers(per_job, 6).workers == 3
     gpu = make_monitor(monkeypatch, 12000).plan_workers(per_job, 6, limit=3)  # a GPU allows only a few encode sessions
     assert (gpu.workers, gpu.threads) == (3, 2)
     assert make_monitor(monkeypatch, 12000, max_cpu_percent=50).cpu_budget() == 4
@@ -104,8 +158,9 @@ def test_cache_budget_follows_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     assert make_monitor(monkeypatch, 100).cache_budget() == 8 * MB
     assert 16 * MB <= make_monitor(monkeypatch, 12000).cache_budget() <= 768 * MB
     fixed = ResourceMonitor()
-    fixed.configure(cfg_with(storage={"cache_memory_mb": 5}))
-    assert fixed.cache_budget() == 5 * MB
+    fixed.configure()
+    # No hard-coded tier remains now: runtime auto caps the cache from usable memory.
+    assert fixed.cache_budget() >= 8 * MB
 
 
 def test_real_snapshot_and_brief() -> None:
@@ -361,7 +416,8 @@ def test_memory_lru() -> None:
 
 def test_two_tier_cache(tmp_path: Path) -> None:
     mon = ResourceMonitor()
-    mon.configure(cfg_with(storage={"cache_memory_mb": 1, "cache_disk_mb": 1}))
+    mon.configure()
+    mon.memory_fraction = 0.000001  # force a tiny runtime budget
     store = Store(tmp_path / "a.db")
     cache = Cache(store, mon)
     arr = np.arange(1000, dtype=np.float32)

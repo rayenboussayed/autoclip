@@ -25,7 +25,9 @@ import numpy as np
 from .audio import frame_db
 from .config import EnhanceCfg
 from .errors import AutoclipError
+from .internal.automation import denoiser_threads
 from .media import F32
+from .resources import RESOURCES
 
 log = logging.getLogger("autoclip")
 
@@ -111,8 +113,9 @@ def _sherpa_denoise(cfg: EnhanceCfg, model_dir: Path) -> Callable[[F32], F32]:
         dpdfnet.attenuation_limit_db = cfg.attenuation_limit_db
     else:
         gtcrn.model = str(path)
+    threads = denoiser_threads(getattr(RESOURCES, "mode", "balance"))
     config = sherpa_onnx.OfflineSpeechDenoiserConfig(
-        model=sherpa_onnx.OfflineSpeechDenoiserModelConfig(gtcrn, dpdfnet, cfg.num_threads, False, "cpu")
+        model=sherpa_onnx.OfflineSpeechDenoiserModelConfig(gtcrn, dpdfnet, threads, False, "cpu")
     )
     if not config.validate():
         raise AutoclipError(f"invalid speech enhancement model '{cfg.model}'")
@@ -129,10 +132,9 @@ def _noisereduce_denoise(cfg: EnhanceCfg) -> Callable[[F32], F32]:
     import noisereduce
 
     def denoise(audio: F32) -> F32:
-        return np.asarray(
-            noisereduce.reduce_noise(y=audio, sr=SR, stationary=False, n_jobs=cfg.num_threads, prop_decrease=cfg.denoise_strength),
-            dtype=np.float32,
-        )
+        n_jobs = denoiser_threads(getattr(RESOURCES, "mode", "balance"))
+        result = noisereduce.reduce_noise(y=audio, sr=SR, stationary=False, n_jobs=n_jobs, prop_decrease=cfg.denoise_strength)
+        return np.asarray(result, dtype=np.float32)
 
     return denoise
 

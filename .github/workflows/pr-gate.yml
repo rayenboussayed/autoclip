@@ -1,0 +1,177 @@
+name: pr-gate
+
+# Full pull-request gate: offline quality gates, every supported OS build, and the Docker image build.
+# All jobs are required through the final "gate" job so branch protection only needs one status.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: pr-gate-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }}, ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: ruff check . && ruff format --check .
+      - run: mypy autoclip tests tools
+      - run: vulture
+      - run: deptry .
+      - name: Install a virtual display
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+      - name: Test
+        if: runner.os != 'Linux'
+        run: pytest
+      - name: Test (virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a pytest
+      - name: Re-run with the security-patched Pillow
+        if: runner.os != 'Linux'
+        run: pip install "Pillow>=12.3" && pytest
+      - name: Re-run with the security-patched Pillow (virtual display)
+        if: runner.os == 'Linux'
+        run: pip install "Pillow>=12.3" && xvfb-run -a pytest
+
+  build-os:
+    name: build-os (${{ matrix.name }})
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-24.04
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+          - name: macos-x64
+            os: macos-15-intel
+          - name: macos-arm64
+            os: macos-15
+          - name: windows-x64
+            os: windows-2022
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install the package and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[server]" "pyinstaller>=6.10"
+      - name: Build the standalone app
+        env:
+          AUTOCLIP_REQUIRE_SERVER: "1"
+        run: python -m PyInstaller autoclip.spec --noconfirm --clean
+      - name: Check the binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="dist/autoclip/autoclip"
+          [ -x "$BIN" ] || BIN="dist/autoclip/autoclip.exe"
+          rm -rf build-check.json build-run.json build-out build-check.mp4
+          "$BIN" --help
+          "$BIN" --init build-check.json
+          FFMPEG="$(python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')"
+          "$FFMPEG" -y -v error -f lavfi -i testsrc2=s=320x180:r=15:d=3 -f lavfi -i sine=frequency=220:duration=3 \
+            -pix_fmt yuv420p -c:v libx264 -c:a aac -shortest build-check.mp4
+          cat > build-run.json <<JSON
+          {
+            "input": ["build-check.mp4"],
+            "output_dir": "build-out",
+            "mode": "resources",
+            "quality": "lowest",
+            "compute": {"device": "cpu"},
+            "clips": {"mode": "highlights", "kinds": ["short"], "scenes": "best",
+                      "short": {"count": 1, "min_seconds": 2, "max_seconds": 3, "aspect": "9:16"}},
+            "transcript": {"mode": "off"},
+            "video": {"short_side": 144, "fps": 15, "gpu": "off", "thumbnail": false},
+            "captions": {"enabled": false},
+            "audio": {"enhance": false, "denoise": "none"},
+            "logging": {"enabled": true, "console_level": "INFO"}
+          }
+          JSON
+          "$BIN" build-run.json
+          ls build-out/short/build-check/*.mp4
+      - name: Check the frozen server serves the pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="dist/autoclip/autoclip"
+          [ -x "$BIN" ] || BIN="dist/autoclip/autoclip.exe"
+          PORT=8123
+          "$BIN" serve --host 127.0.0.1 --port "$PORT" >server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:$PORT/view/" >/dev/null 2>&1; then
+              echo "the frozen server serves /view/"
+              exit 0
+            fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "::error file=autoclip.spec::the frozen server exited before answering /view/"
+              cat server.log
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "::error file=autoclip.spec::the frozen server did not answer /view/ within 60 s"
+          cat server.log
+          exit 1
+
+  docker:
+    name: docker
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build --tag autoclip:pr .
+      - name: Smoke test container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --detach --name autoclip-pr --publish 8000:8000 --env PORT=8000 autoclip:pr
+          for _ in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:8000/view/" >/dev/null 2>&1 || \
+               curl -fsS "http://127.0.0.1:8000/docs" >/dev/null 2>&1; then
+              echo "Docker container answers requests"
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS "http://127.0.0.1:8000/view/" >/dev/null || curl -fsS "http://127.0.0.1:8000/docs" >/dev/null
+      - name: Stop container
+        if: always()
+        run: docker rm -f autoclip-pr || true
+
+  gate:
+    name: gate
+    needs: [verify, build-os, docker]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: echo "All quality gates, OS builds, and Docker build passed."

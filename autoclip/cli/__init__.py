@@ -213,6 +213,9 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
     )
     setup_logging(log_file, lg.level, None if getattr(args, "events", None) == "jsonl" else lg.console_level)
     RESOURCES.configure(cfg)
+    from ..core.internal.decisions import log_decisions
+
+    log_decisions()
     snap = RESOURCES.snapshot()
     has_urls = any(is_url(item) for item in cfg.input)
     input_labels = [redact_url(item) if is_url(item) else safe_path_text(Path(item)) for item in cfg.input]
@@ -248,7 +251,7 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
         print("error: --download-only needs at least one URL in input", file=sys.stderr)
         return 2
 
-    encoder = pick_encoder(cfg.video, allow_gpu=cfg.compute.device != "cpu")
+    encoder = pick_encoder(cfg.video, cfg.quality, allow_gpu=cfg.compute.device != "cpu")
     from ..core.batch import run_batch
 
     events = getattr(args, "events", None)

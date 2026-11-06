@@ -17,9 +17,11 @@ from typing import Any
 
 import numpy as np
 
-from .config import Config, ProcessingCfg, TranscriptCfg
+from .config import Config, TranscriptCfg
 from .denoise import SpeechEnhancer, default_models_dir
 from .errors import AutoclipError
+from .internal import CHUNK_MINUTES as _CHUNK_MINUTES
+from .internal.automation import transcription_beam_size
 from .log import speed_text, traced
 from .media import F32, decode_audio, snap_to_quiet
 from .models import MediaInfo, Segment, Word
@@ -250,7 +252,7 @@ def transcribe(
     """
     from faster_whisper import WhisperModel
 
-    tc, proc = cfg.transcript, cfg.processing
+    tc = cfg.transcript
     device = asr_device(cfg)
     _model = tc.model or "small"
     model_name = fit_whisper_model(_model, device) if tc.auto_downgrade else _model
@@ -324,8 +326,8 @@ def transcribe(
             attempts.append(("cpu", e))
             raise AutoclipError(f"Whisper failed on every available device ({_device_failure(attempts)})") from e
     log.info("whisper model=%s device=%s%s cpu_threads=%d", model_name, device, " (GPU)" if device == "cuda" else "", threads)
-    segmented = info.duration >= proc.chunk_threshold_minutes * 60
-    bounds = chunk_bounds(info.duration, db, proc.chunk_minutes * 60) if segmented else [(0.0, info.duration)]
+    # Chunking is now automatic once the audio is long enough for memory safety.
+    bounds = chunk_bounds(info.duration, db, _CHUNK_MINUTES * 60.0)
     language, raw, t0 = tc.language, [], time.perf_counter()
     # `vad_filter` is applied eagerly by faster-whisper; a missing/broken VAD model (or a provider that
     # rejects it) must not abort the run - retry the same chunk with VAD disabled.
@@ -343,7 +345,7 @@ def transcribe(
                     word_timestamps=tc.word_timestamps,
                     language=language,
                     condition_on_previous_text=False,
-                    beam_size=tc.beam_size,
+                    beam_size=transcription_beam_size(cfg.quality),
                     **options,
                 )
                 chunk_rows: list[dict[str, Any]] = []
@@ -392,7 +394,7 @@ def transcribe(
     return to_segments(raw)
 
 
-def _cache_key(src: Path, cfg: TranscriptCfg, proc: ProcessingCfg, *, denoise: bool = True) -> dict[str, Any]:
+def _cache_key(src: Path, cfg: TranscriptCfg, *, denoise: bool = True) -> dict[str, Any]:
     """Identity of a transcription run: the cached transcript is reused only while this is unchanged."""
     st = src.stat()
     return {
@@ -403,7 +405,7 @@ def _cache_key(src: Path, cfg: TranscriptCfg, proc: ProcessingCfg, *, denoise: b
         "word_timestamps": cfg.word_timestamps,
         "enhance": cfg.enhance.fingerprint(),
         "denoise": denoise,
-        "chunk_minutes": proc.chunk_minutes,
+        "chunk_minutes": _CHUNK_MINUTES,
     }
 
 
@@ -446,7 +448,7 @@ def get_transcript(
             store.put_segments(segments)
             return True
         denoise = not cfg.skip.denoise
-        cache_file, key = work_dir / f"{stem}.transcript.json", _cache_key(src, tc, cfg.processing, denoise=denoise)
+        cache_file, key = work_dir / f"{stem}.transcript.json", _cache_key(src, tc, denoise=denoise)
         segments = []
         if tc.cache and cache_file.exists():
             data = json.loads(cache_file.read_text(encoding="utf-8"))

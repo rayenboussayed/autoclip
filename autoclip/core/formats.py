@@ -90,10 +90,10 @@ def _quality_key(fmt: dict[str, Any], cfg: DownloadCfg) -> tuple[float, ...]:
     target = cfg.quality
     if quality <= 0:  # unknown dimensions always lose to a known format
         return (2, 0)
-    if target == "best":
-        return (0, -quality)
-    if target == "worst":
-        return (0, quality)
+    if target in ("best", "worst"):
+        return (0, -quality) if target == "best" else (0, quality)
+    if target is None:
+        return (0, 0)
     wanted = float(target)
     if cfg.prefer == "at_most":
         return (0, -quality) if quality <= wanted else (1, quality)
@@ -105,7 +105,7 @@ def _quality_key(fmt: dict[str, Any], cfg: DownloadCfg) -> tuple[float, ...]:
 def _fps_key(fmt: dict[str, Any], cfg: DownloadCfg) -> tuple[float, ...]:
     """Sort key for the fps preference (smaller is better; unknown fps loses)."""
     if cfg.fps is None:
-        if cfg.quality == "best":  # best quality also means the smoothest of two otherwise equal formats
+        if cfg.quality == "best" or cfg.quality is None:  # best quality also means the smoothest of two otherwise equal formats
             fps = _num(fmt.get("fps"))
             return (0, -fps) if fps else (1, 0)
         return (0,)
@@ -182,10 +182,13 @@ def _pick_audio(formats: list[dict[str, Any]], cfg: DownloadCfg, language: str) 
 
 def _quality_warnings(fmt: dict[str, Any], cfg: DownloadCfg) -> list[str]:
     """Warn when an at_most/at_least quality preference had to be broken."""
-    if cfg.quality in ("best", "worst"):
+    quality_download = cfg.quality
+    if quality_download in ("best", "worst"):
+        return []
+    if quality_download is None:
         return []
     quality = _short_side(fmt)
-    wanted = float(cfg.quality)
+    wanted = float(quality_download)
     shown = f"{quality:.0f}p" if quality else "an unknown resolution"
     if cfg.prefer == "at_most" and quality > wanted:
         return [f"no format at or below {wanted:.0f}p; using {shown}"]

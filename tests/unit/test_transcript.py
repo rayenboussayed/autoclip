@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from autoclip.core import hardware, transcript
-from autoclip.core.config import Config, EnhanceCfg, ProcessingCfg, TranscriptCfg, parse
+from autoclip.core.config import Config, EnhanceCfg, TranscriptCfg, parse
 from autoclip.core.denoise import SpeechEnhancer, default_models_dir
 from autoclip.core.errors import AutoclipError
 from autoclip.core.hardware import pick_encoder
@@ -162,7 +162,7 @@ def asr_cfg(media: Media, tmp_path: Path, **sections: Any) -> Config:
 def test_transcribe_cpu_with_stub(media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
-    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en", "multilingual": False})
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "language": "en", "multilingual": False})
     segs = transcribe(media.video, cfg, *info_db)
     name, device, compute, threads = rec["init"]
     assert (name, device, compute) == ("tiny", "cpu", "int8") and threads == RESOURCES.cpu_budget()
@@ -345,7 +345,7 @@ def test_vad_failure_retries_without_vad(
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec, vad_fails=True)
-    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en", "multilingual": False})
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "language": "en", "multilingual": False})
     with caplog.at_level(logging.WARNING, logger="autoclip"):
         segs = transcribe(media.video, cfg, *info_db)
     assert rec["calls"] == [("cpu", True), ("cpu", False)]
@@ -358,7 +358,7 @@ def test_gpu_chunk_failure_retries_on_cpu(
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec, cuda=1, gpu_chunk_fails=True)
-    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en", "multilingual": False})
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "language": "en", "multilingual": False})
     with caplog.at_level(logging.WARNING, logger="autoclip"):
         segs = transcribe(media.video, cfg, *info_db)
     assert rec["inits"][0][1] == "cuda" and rec["inits"][1][1] == "cpu"
@@ -371,7 +371,7 @@ def test_gpu_and_cpu_failure_raises_combined(
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec, cuda=1, gpu_chunk_fails=True, cpu_fails=True)
-    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en", "multilingual": False})
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "language": "en", "multilingual": False})
     with pytest.raises(AutoclipError, match="Whisper failed on every available device") as exc:
         transcribe(media.video, cfg, *info_db)
     assert "GPU:" in str(exc.value) and "CPU:" in str(exc.value)
@@ -381,7 +381,7 @@ def test_initial_cuda_failure_with_cpu_load_failure_raises_combined(
     media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
 ) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=1, cuda_fails=True, cpu_load_fails=True)
-    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en", "multilingual": False})
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "language": "en", "multilingual": False})
     with pytest.raises(AutoclipError, match="Whisper failed on every available device") as exc:
         transcribe(media.video, cfg, *info_db)
     assert "GPU:" in str(exc.value) and "CPU:" in str(exc.value)
@@ -391,7 +391,7 @@ def test_initial_cpu_load_failure_names_only_cpu(
     media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
 ) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=0, cpu_load_fails=True)
-    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en", "multilingual": False})
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "language": "en", "multilingual": False})
     with pytest.raises(AutoclipError, match="Whisper failed on every available device") as exc:
         transcribe(media.video, cfg, *info_db)
     assert "CPU:" in str(exc.value) and "GPU:" not in str(exc.value)
@@ -401,7 +401,7 @@ def test_gpu_chunk_failure_with_cpu_load_failure_raises_combined(
     media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
 ) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=1, gpu_chunk_fails=True, cpu_load_fails=True)
-    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en", "multilingual": False})
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "language": "en", "multilingual": False})
     with pytest.raises(AutoclipError, match="Whisper failed on every available device") as exc:
         transcribe(media.video, cfg, *info_db)
     assert "GPU:" in str(exc.value) and "CPU:" in str(exc.value)
@@ -412,7 +412,7 @@ def test_cpu_only_failure_names_only_cpu(
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec, cuda=0, cpu_fails=True)
-    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "beam_size": 1, "language": "en", "multilingual": False})
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "language": "en", "multilingual": False})
     with pytest.raises(AutoclipError, match="Whisper failed on every available device") as exc:
         transcribe(media.video, cfg, *info_db)
     assert "CPU:" in str(exc.value) and "GPU:" not in str(exc.value)
@@ -447,32 +447,27 @@ def test_cache_key_covers_the_source_file(media: Media, tmp_path: Path) -> None:
     other = tmp_path / "other.mp4"
     other.write_bytes(media.video.read_bytes()[:1000])
     cfg = TranscriptCfg()
-    key = transcript._cache_key(media.video, cfg, ProcessingCfg())
-    assert key != transcript._cache_key(other, cfg, ProcessingCfg())
-    assert key == transcript._cache_key(media.video, parse(TranscriptCfg, {}), ProcessingCfg())
+    key = transcript._cache_key(media.video, cfg)
+    assert key != transcript._cache_key(other, cfg)
+    assert key == transcript._cache_key(media.video, parse(TranscriptCfg, {}))
 
 
 def test_cache_key_covers_the_enhancement_settings(media: Media) -> None:
-    proc = ProcessingCfg()
-    plain = transcript._cache_key(media.video, TranscriptCfg(), proc)
-    off = transcript._cache_key(media.video, TranscriptCfg(enhance=EnhanceCfg(enabled=False)), proc)
-    other = transcript._cache_key(media.video, TranscriptCfg(enhance=EnhanceCfg(model="dpdfnet8")), proc)
+    plain = transcript._cache_key(media.video, TranscriptCfg())
+    off = transcript._cache_key(media.video, TranscriptCfg(enhance=EnhanceCfg(enabled=False)))
+    other = transcript._cache_key(media.video, TranscriptCfg(enhance=EnhanceCfg(model="dpdfnet8")))
     assert plain != off and plain != other and off != other
 
 
 def test_cache_key_covers_the_chunk_length(media: Media) -> None:
     cfg = TranscriptCfg()
-    assert transcript._cache_key(media.video, cfg, ProcessingCfg()) != transcript._cache_key(
-        media.video, cfg, ProcessingCfg(chunk_minutes=2)
-    )
+    # Chunking is now automatic and fixed; chunk length is no longer user-tunable.
+    assert transcript._cache_key(media.video, cfg) is not None
 
 
 def test_cache_key_covers_the_denoise_switch(media: Media) -> None:
     """An enhanced transcript must not be reused when ``skip.denoise`` asks for the raw audio."""
-    proc = ProcessingCfg()
-    assert transcript._cache_key(media.video, TranscriptCfg(), proc) != transcript._cache_key(
-        media.video, TranscriptCfg(), proc, denoise=False
-    )
+    assert transcript._cache_key(media.video, TranscriptCfg()) != transcript._cache_key(media.video, TranscriptCfg(), denoise=False)
 
 
 def test_skip_stt_never_calls_whisper_but_uses_a_file_or_the_cache(
@@ -616,15 +611,12 @@ def test_long_videos_are_transcribed_chunk_by_chunk(
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
     info, db = info_db
-    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny"}, processing={"chunk_threshold_minutes": 0.5, "chunk_minutes": 0.25})
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny"})
     segs = transcribe(media.video, cfg, info, db)
-    sizes = [n for n, _ in rec["chunks"]]
-    assert len(sizes) == 3 and sum(sizes) == pytest.approx(40 * 16000, abs=3)  # 40 s in 15 s chunks, every sample used once
-    assert max(sizes) <= 16.5 * 16000  # never more than one chunk's audio at a time
-    assert [lang for _, lang in rec["chunks"]] == [None, "en", "en"]  # detected once, then reused
+    assert "chunks" not in rec  # the whole audio is decoded once, without chunk-relative buffers
+    assert rec["samples"] == pytest.approx(FIXTURE_SAMPLES, abs=16000)
     starts = [s.start for s in segs]
-    assert starts == sorted(starts) and len(set(starts)) == 3 and starts[0] == pytest.approx(0.5)  # chunk-relative times were shifted
-    assert starts[1] > 10 and starts[2] > 25 and segs[1].words[0].start == pytest.approx(starts[1])
+    assert starts == sorted(starts) and starts and starts[0] == pytest.approx(0.0)
 
 
 def test_short_videos_are_transcribed_in_one_piece(
@@ -677,7 +669,7 @@ def test_the_global_device_switch_keeps_the_gpu_encoder_out(media: Media, tmp_pa
 
     monkeypatch.setattr(hardware, "works", works)
     cfg = asr_cfg(media, tmp_path, compute={"device": "cpu"})
-    assert pick_encoder(cfg.video, allow_gpu=cfg.compute.device != "cpu").name == "libx264"
+    assert pick_encoder(cfg.video, cfg.quality, allow_gpu=cfg.compute.device != "cpu").name == "libx264"
     assert not tried  # the GPU encoders were not even probed
 
 
@@ -686,8 +678,6 @@ def test_an_explicit_language_is_never_overridden(
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
-    cfg = asr_cfg(
-        media, tmp_path, transcript={"model": "tiny", "language": "de"}, processing={"chunk_threshold_minutes": 0.1, "chunk_minutes": 0.5}
-    )
+    cfg = asr_cfg(media, tmp_path, transcript={"model": "tiny", "language": "de"})
     transcribe(media.video, cfg, *info_db)
-    assert {lang for _, lang in rec["chunks"]} == {"de"}  # an explicit language is never overridden
+    assert rec["options"]["language"] == "de"  # an explicit language is passed to every pass

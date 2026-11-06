@@ -15,6 +15,7 @@ from .audio import Timeline, build_audio, compute_keep, enhance_audio
 from .captions import Y_CENTER, build_captions, render_text_image, safe_top
 from .config import VideoCfg
 from .fonts import find_font
+from .internal import output_fps, quality_profile, quality_short_side
 from .log import safe_path_text, speed_text, traced
 from .media import AUDIO_SR
 from .models import Encoder, RenderJob, Span, Word
@@ -121,7 +122,7 @@ def _is_hevc(name: str) -> bool:
 
 
 @traced("encode_video")
-def encode(comp: Any, dst: Path, fps: float, encoder: Encoder, threads: int, video: VideoCfg) -> None:
+def encode(comp: Any, dst: Path, fps: float, encoder: Encoder, threads: int, video: VideoCfg, quality: str) -> None:
     """Write the chosen codec + AAC (yuv420p; faststart and the ``hvc1`` tag for MP4) with the ``encoder``."""
     t0 = time.perf_counter()
     mp4 = dst.suffix.lower() == ".mp4"
@@ -141,7 +142,7 @@ def encode(comp: Any, dst: Path, fps: float, encoder: Encoder, threads: int, vid
         fps=fps,
         codec=encoder.name,
         audio_codec="aac",
-        audio_bitrate=f"{video.audio_bitrate_kbps}k",
+        audio_bitrate=f"{quality_profile(quality).aac_bitrate_kbps}k",
         preset=encoder.preset,
         pixel_format="yuv420p",
         threads=threads,
@@ -199,7 +200,14 @@ def render_clip(vclip: Any, job: RenderJob, store: Store, cache: Cache) -> tuple
     moment.trimmed = round(float(fg.duration), 2)
     if moment.trimmed < kcfg.min_seconds - 0.5:
         log.info("clip is %.1fs, shorter than the requested %s minimum of %.0fs", moment.trimmed, job.kind, kcfg.min_seconds)
-    size = canvas_size(job.aspect, cfg.video.short_side, vclip.w, vclip.h, upscale=cfg.video.upscale, fill=cfg.video.layout == "fill")
+    size = canvas_size(
+        job.aspect,
+        quality_short_side(cfg.video.short_side, cfg.quality),
+        vclip.w,
+        vclip.h,
+        upscale=cfg.video.upscale,
+        fill=cfg.video.layout == "fill",
+    )
     overlays = []
     captions, lines = (
         build_captions(words, Timeline(kept), cfg, cache, size, fg.duration)
@@ -223,11 +231,11 @@ def render_clip(vclip: Any, job: RenderJob, store: Store, cache: Cache) -> tuple
         if cfg.audio.fade_seconds > 0 and not cfg.skip.fade:
             sound = sound.with_effects([afx.AudioFadeIn(cfg.audio.fade_seconds), afx.AudioFadeOut(cfg.audio.fade_seconds)])
         comp = comp.with_audio(sound)
-    fps = min(cfg.video.fps or vclip.fps, vclip.fps)
+    fps = output_fps(vclip.fps, cfg.video.fps, cfg.quality)
     # Flattening here drops the per-overlay alpha from the frames MoviePy sends to ffmpeg,
     # so the encoder never sees an rgba/i444 stream (libx265 main profile rejects i444).
     comp = comp.without_mask()
-    encode(comp, dst, float(fps), job.encoder, threads, cfg.video)
+    encode(comp, dst, float(fps), job.encoder, threads, cfg.video, cfg.quality)
     if cfg.video.thumbnail and not cfg.skip.thumbnail:
         cover_t = min(max(0.5, cfg.title.seconds / 2 if title_on else 1.0), max(0.0, fg.duration - 0.1))
         comp.save_frame(str(dst.with_suffix(".jpg")), t=cover_t, with_mask=False)

@@ -9,7 +9,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from ..core.config import Config, parse
+from ..core.config import _DOWNLOAD_QUALITY_BY_OUTPUT, Config, parse
 from ..core.process import pipeline_command
 from .config import get_settings
 from .progress import progress_manager
@@ -42,6 +42,8 @@ def prepare_config(job: Job, custom: dict[str, Any] | None) -> Config:
     base.pop("input", None)
     base.pop("output_dir", None)
     cfg = parse(Config, base) if base else Config()
+    if cfg.download.quality is None:
+        cfg.download.quality = _DOWNLOAD_QUALITY_BY_OUTPUT[cfg.quality]
     cfg.input = [str(job.input_path)]
     cfg.output_dir = str(job.output_dir)
     return cfg
@@ -62,7 +64,7 @@ def _run_job_inprocess(job: Job, cfg: Config) -> None:
 
     reporter = Reporter(_sink)
     _publish(job, "probing", "Probing media", 5.0)
-    encoder = pick_encoder(cfg.video, allow_gpu=cfg.compute.device != "cpu")
+    encoder = pick_encoder(cfg.video, cfg.quality, allow_gpu=cfg.compute.device != "cpu")
     _publish(job, "transcribing", "Transcription ready", 12.0)
     result = run_batch(cfg, downloader=None, encoder=encoder, log_file=None, report=reporter)
     # collect outputs

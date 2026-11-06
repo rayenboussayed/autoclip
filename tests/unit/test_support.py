@@ -56,9 +56,8 @@ def test_make_cfg_uses_fast_defaults_and_merges_nested_sections(media: Media, tm
     assert cfg.clips.kinds == ["short"]
     assert (cfg.clips.short.count, cfg.clips.short.min_seconds, cfg.clips.short.max_seconds) == (3, 6, 12)
     assert cfg.transcript.mode == "file" and cfg.transcript.file == str(media.transcript)
-    assert (cfg.video.short_side, cfg.video.preset, cfg.video.thumbnail, cfg.video.gpu) == (144, "ultrafast", False, "off")
+    assert (cfg.video.short_side, cfg.quality, cfg.video.thumbnail, cfg.video.gpu) == (720, "lowest", False, "off")
     assert cfg.logging.enabled is False and cfg.logging.console_level == "ERROR"
-    assert cfg.resources.max_workers == 1
 
 
 def test_make_cfg_accepts_another_source(media: Media, tmp_path: Path) -> None:

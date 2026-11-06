@@ -52,8 +52,11 @@ def join_tokens(tokens: Sequence[str]) -> str:
 MIN_CHUNK_SECONDS = 0.8
 
 
-def make_chunks(words: Sequence[Word], cfg: CaptionsCfg) -> list[Chunk]:
+def make_chunks(words: Sequence[Word], cfg: CaptionsCfg, width: int = 1080) -> list[Chunk]:
     """Group words into caption screens by length, duration, long pauses and punctuation."""
+    from .internal.automation import caption_chars
+
+    char_limit = caption_chars(width)
     chunks: list[Chunk] = []
     current: list[Word] = []
 
@@ -70,14 +73,14 @@ def make_chunks(words: Sequence[Word], cfg: CaptionsCfg) -> list[Chunk]:
 
     for w in words:
         if current and (
-            len(join_tokens([x.text for x in current] + [w.text])) > cfg.max_chars
+            len(join_tokens([x.text for x in current] + [w.text])) > char_limit
             or w.end - current[0].start > cfg.max_seconds
             or w.start - current[-1].end > 0.8
         ):
             flush()
         current.append(w)
         if w.text.endswith(ENDERS) or (
-            re.search(r"[,;\uff0c\u3001\u060c]$", w.text) and len(join_tokens([x.text for x in current])) > 0.6 * cfg.max_chars
+            re.search(r"[,;\uff0c\u3001\u060c]$", w.text) and len(join_tokens([x.text for x in current])) > 0.6 * char_limit
         ):
             flush()
     flush()
@@ -284,8 +287,8 @@ class CaptionTrack:
 def safe_top(centre: float, H: int, W: int, cfg: CaptionsCfg, band_h: int) -> int:
     """Top pixel of a ``band_h`` band centred at ``centre`` (fraction of H), kept inside the app-UI safe zone."""
     vertical = H > 1.2 * W
-    low = (cfg.safe_top if vertical else 0.03) * H
-    high = (1 - (cfg.safe_bottom if vertical else 0.03)) * H - band_h
+    low = (0.10 if vertical else 0.03) * H
+    high = (1 - (0.20 if vertical else 0.03)) * H - band_h
     return int(min(max(centre * H - band_h / 2, low), max(low, high)))
 
 
@@ -331,7 +334,7 @@ def build_captions(
         params = (text, font, font_size, cc, max_w, active)
         sprites.append(Sprite(start, end, sprite_key(*params), functools.partial(render_text_image, *params)))
 
-    for chunk in make_chunks(words, cc):
+    for chunk in make_chunks(words, cc, W):
         span = tl.map_range(chunk.start, chunk.end)
         if span is None or span[1] - span[0] < 0.08:
             continue

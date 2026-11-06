@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import gc
 import logging
-import math
-import os
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +18,11 @@ from pathlib import Path
 import psutil
 
 from .config import Config
+from .internal import (
+    adaptive,
+    detect_cpu_count,
+    modes,
+)
 
 log = logging.getLogger("autoclip")
 MB = 1 << 20
@@ -91,18 +95,37 @@ class ResourceMonitor:
         self._cpu_last = 0.0
         self._cpu_time = 0.0
         self.peak_rss = 0
+        self.mode = "balance"
+        self.profile = modes.profile_for(self.mode)
+        self._cpu_samples: deque[float] = deque(maxlen=adaptive.SAMPLE_CAP)
+        self._adapt_ts = 0.0
+        self._oom = False
+        self._state_path: Path | None = None
         self.configure(Config())
 
-    def configure(self, cfg: Config) -> None:
-        """Apply the ``resources`` / ``storage`` settings and (re-)detect the usable CPU count."""
-        self.res, self.storage = cfg.resources, cfg.storage
-        if self.res.cpus > 0:
-            self.cpus = self.res.cpus
+    def configure(self, cfg: Config | None = None) -> None:
+        """(Re-)detect the usable CPU count; apply the active mode profile."""
+        mode = "balance"
+        if cfg is not None:
+            mode = cfg.mode
+        self.mode = mode
+        self.profile = modes.profile_for(mode)
+        self.max_cpu_percent = float(self.profile.cpu_percent_default)
+        self.encoding_threads = self.profile.encoding_threads_cap
+        self.memory_fraction = self.profile.mem_fraction
+        self.memory_reserve_mb = self.profile.memory_reserve_mb
+        self.cpus = detect_cpu_count()
+        self._cpu_samples = deque(maxlen=adaptive.SAMPLE_CAP)
+        if cfg is not None and getattr(cfg, "output_dir", None):
+            self._state_path = Path(cfg.output_dir) / ".work" / "adaptive.json"
         else:
-            n = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
-            quota = cgroup_cpu_quota()
-            self.cpus = max(1, min(n, math.ceil(quota)) if quota else n)
-        psutil.cpu_percent(None)  # prime the counter so later reads are meaningful
+            self._state_path = None
+        if self._state_path is not None:
+            state = adaptive.load_state(self._state_path)
+            if isinstance(state, dict) and state.get("mode") == self.mode:
+                persisted = state.get("cpu_percent")
+                if isinstance(persisted, (int, float)):
+                    self.max_cpu_percent = adaptive.clamp(float(persisted), self.profile.cpu_percent_min, self.profile.cpu_percent_max)
 
     def snapshot(self) -> Snapshot:
         """Measure now (a few cheap syscalls)."""
@@ -125,17 +148,17 @@ class ResourceMonitor:
 
     def cpu_budget(self) -> int:
         """Cores the script may use (all of them by default)."""
-        return max(1, round(self.cpus * self.res.max_cpu_percent / 100))
+        return max(1, round(self.cpus * self.max_cpu_percent / 100))
 
     def encoding_thread_budget(self) -> int:
         """Threads to use for a single encode (always capped - # threads == # jobs * threads summed)."""
-        requested = self.res.encoding_threads or 4
-        return max(1, min(requested or 4, 4, self.cpu_budget()))  # cap at 4 threads per worker to avoid runaway memory
+        requested = self.encoding_threads or self.profile.encoding_threads_cap
+        return max(1, min(requested, self.profile.encoding_threads_cap, 4, self.cpu_budget()))
 
     def usable_memory(self) -> int:
         """Bytes the script may still claim right now, keeping the configured reserve free."""
-        free = self.snapshot().mem_available - self.res.memory_reserve_mb * MB
-        return max(0, int(free * self.res.memory_fraction))
+        free = self.snapshot().mem_available - self.memory_reserve_mb * MB
+        return max(0, int(free * self.memory_fraction))
 
     def plan_workers(self, per_job_bytes: int, jobs: int, limit: int = 1 << 30) -> WorkerPlan:
         """Parallelism for ``jobs`` pending jobs of roughly ``per_job_bytes`` RAM each.
@@ -145,16 +168,95 @@ class ResourceMonitor:
         """
         cores = self.cpu_budget()
         fits = max(1, self.usable_memory() // max(per_job_bytes, 1))
-        workers = max(1, min(jobs, cores, self.res.max_workers or cores, fits, limit))
-        return WorkerPlan(workers, max(1, cores // workers))
+        if not getattr(self.profile, "parallel", True):
+            workers = 1 if not (jobs <= 4 and per_job_bytes <= 8 * 1024 * 1024) else max(1, min(jobs, cores, fits, limit, 2))
+        else:
+            workers = max(1, min(jobs, cores, fits, limit))
+        return WorkerPlan(workers, max(1, cores // max(workers, 1)))
 
     def cache_budget(self) -> int:
         """Bytes the in-memory cache tier may hold now (shrinks under memory pressure)."""
-        if self.storage.cache_memory_mb > 0:
-            return self.storage.cache_memory_mb * MB
         if self.snapshot().pressure == "high":
             return 8 * MB
         return int(min(max(self.usable_memory() * 0.20, 16 * MB), 768 * MB))
+
+    def record_job(self, wall: float, peak_rss: int = 0, threads: int = 1, workers: int = 1) -> None:
+        """Feed one finished job's outcome into the adaptive history (best-effort)."""
+        try:
+            observed = min(100.0, (max(threads, 1) * max(workers, 1) / max(self.cpus, 1)) * 100.0)
+            self._cpu_samples.append(observed)
+            if peak_rss and peak_rss > self.peak_rss:
+                self.peak_rss = peak_rss
+        except Exception as e:  # best-effort
+            log.debug("record_job failed: %s", e)
+
+    def notify_oom(self) -> None:
+        self._oom = True
+
+    def adapt(self) -> None:
+        """Nudge ``max_cpu_percent`` based on recent utilisation (throttled, mode-aware)."""
+        import time
+
+        now = time.monotonic()
+        if now - self._adapt_ts < 5.0:
+            return
+        self._adapt_ts = now
+        profile = self.profile
+        samples = list(self._cpu_samples)
+        avg = (sum(samples) / len(samples)) if samples else float(profile.cpu_percent_default)
+        prev = float(self.max_cpu_percent)
+        pressure = "low"
+        try:
+            pressure = self.snapshot().pressure
+        except Exception:
+            pressure = "low"
+        samples_deque = deque(self._cpu_samples, maxlen=adaptive.SAMPLE_CAP)
+        trend_dir = adaptive.trend(samples_deque) if len(samples) >= 3 else 0
+        if self._oom:
+            new = prev - profile.step_down
+            self._oom = False
+        elif pressure == "high":
+            new = prev - profile.step_down
+        elif self.mode == "performance":
+            if avg < profile.target_cpu_low:
+                new = prev + profile.step_up
+            elif avg > profile.target_cpu_high and trend_dir <= 0:
+                new = prev - profile.step_down
+            elif trend_dir > 0 and avg < profile.target_cpu_high:
+                new = prev + profile.step_up * 0.5
+            else:
+                new = prev
+        elif self.mode == "resources":
+            if avg > profile.target_cpu_high:
+                new = prev - profile.step_down
+            elif avg < profile.target_cpu_low and trend_dir >= 0 and pressure == "low":
+                new = prev + profile.step_up * 0.5
+            else:
+                new = prev
+        elif avg < profile.target_cpu_low:
+            new = prev + profile.step_up
+        elif avg > profile.target_cpu_high:
+            new = prev - profile.step_down
+        elif trend_dir > 0 and avg < profile.target_cpu_high:
+            new = prev + profile.step_up * 0.5
+        elif trend_dir < 0 and avg > profile.target_cpu_low:
+            new = prev - profile.step_down * 0.5
+        else:
+            new = prev
+        new = adaptive.clamp(new, profile.cpu_percent_min, profile.cpu_percent_max)
+        if abs(new - prev) >= 0.5:
+            self.max_cpu_percent = new
+            log.info(
+                "automation mode=%s cpu_percent=%.1f mem_fraction=%.2f",
+                self.mode,
+                self.max_cpu_percent,
+                self.memory_fraction,
+            )
+            if self._state_path is not None:
+                adaptive.save_state(
+                    self._state_path,
+                    {"mode": self.mode, "cpu_percent": new, "samples": samples},
+                )
 
     def register_trim_hook(self, hook: Callable[[], None]) -> None:
         """Run ``hook`` (e.g. ``Cache.trim``) after every traced operation."""
@@ -171,8 +273,15 @@ class ResourceMonitor:
                 hook()
             except Exception as e:  # rebalancing is best-effort: it must never break the operation it follows
                 log.debug("trim hook failed after %s: %s: %s", op, type(e).__name__, e)
+        try:
+            self.adapt()
+        except Exception as e:  # best-effort
+            log.debug("adapt failed: %s", e)
         if self.snapshot().pressure != "low":
             log.debug("rebalance after %s: gc freed %d objects", op, gc.collect())
+
+
+CACHE_DISK_MB = 2048
 
 
 #: The process-wide monitor; ``main`` and every worker call ``RESOURCES.configure(cfg)`` once.

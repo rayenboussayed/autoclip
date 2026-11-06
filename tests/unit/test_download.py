@@ -620,7 +620,7 @@ def test_per_platform_settings_are_merged_and_cached(dl_factory: Any) -> None:
     assert youtube.subtitles.languages == ["ar"]
     assert dl._settings("youtube") is youtube
     tiktok = dl._settings("tiktok")
-    assert tiktok.quality == "best"
+    assert tiktok.quality == 240
     assert tiktok.subtitles.languages == ["en", "ar"]
 
 

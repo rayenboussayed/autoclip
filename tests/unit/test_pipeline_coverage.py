@@ -25,7 +25,9 @@ def test_process_video_unsilence_returns_destination(media: Any, tmp_path: Path,
     shutil.copyfile(media.video, destination)
     monkeypatch.setattr("autoclip.core.unsilence.remove_silence", lambda src, cfg, dst, *a, **k: dst)
 
-    rc = process_video(media.video, cfg, None, __import__("autoclip.core.hardware", fromlist=["cpu_encoder"]).cpu_encoder(cfg.video))
+    rc = process_video(
+        media.video, cfg, None, __import__("autoclip.core.hardware", fromlist=["cpu_encoder"]).cpu_encoder(cfg.video, cfg.quality)
+    )
     assert rc[0] >= 0
 
 
@@ -42,7 +44,9 @@ def test_process_video_unsilence_exception(media: Any, tmp_path: Path, monkeypat
         raise RuntimeError("boom")
 
     monkeypatch.setattr("autoclip.core.unsilence.remove_silence", boom)
-    rc = process_video(media.video, cfg, None, __import__("autoclip.core.hardware", fromlist=["cpu_encoder"]).cpu_encoder(cfg.video))
+    rc = process_video(
+        media.video, cfg, None, __import__("autoclip.core.hardware", fromlist=["cpu_encoder"]).cpu_encoder(cfg.video, cfg.quality)
+    )
     assert rc[0] >= 0
 
 
@@ -57,7 +61,7 @@ def test_process_video_unsilence_returns_original(media: Any, tmp_path: Path, mo
     monkeypatch.setattr("autoclip.core.unsilence.remove_silence", lambda src, cfg, dst, *a, **k: src)
     from autoclip.core.hardware import cpu_encoder as ce
 
-    rc = process_video(media.video, cfg, None, ce(cfg.video))
+    rc = process_video(media.video, cfg, None, ce(cfg.video, cfg.quality))
     assert rc[0] >= 0
 
 
@@ -81,5 +85,5 @@ def test_process_video_no_transcript_needed(media: Any, tmp_path: Path, monkeypa
     assert _needs_text(cfg) is False
     from autoclip.core.hardware import cpu_encoder as ce
 
-    rc = process_video(media.video, cfg, None, ce(cfg.video))
+    rc = process_video(media.video, cfg, None, ce(cfg.video, cfg.quality))
     assert rc[0] >= 0

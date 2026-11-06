@@ -99,7 +99,7 @@ def test_download_config_requests_subtitles_metadata_and_an_optional_range(tmp_p
     assert config["download"]["metadata"] == {"info_json": True}
     assert "time_range" not in config["download"] and "cookies" not in config["download"]
     assert "original_dir" not in config["download"]
-    assert config["logging"]["enabled"] is True and config["resources"]["max_workers"] == 1
+    assert config["logging"]["enabled"] is True
 
     monkeypatch.setenv("AUTOCLIP_E2E_COOKIES", "/tmp/cookies.txt")
     ranged = harness.download_config(
@@ -235,8 +235,9 @@ def test_pipeline_config_merges_clip_overrides_over_its_fast_defaults(tmp_path: 
     assert config["transcript"] == {"mode": "file", "file": "subs.srt"}
     assert config["clips"]["kinds"] == ["short"] and config["clips"]["scenes"] == ["best"]
     assert config["clips"]["short"] == {"count": 1, "min_seconds": 15, "target_seconds": 25, "max_seconds": 45}
-    assert config["video"] == {"short_side": 144, "preset": "ultrafast", "gpu": "off", "thumbnail": True}
-    assert config["compute"] == {"device": "cpu"} and config["resources"] == {"max_workers": 1}
+    assert config["video"] == {"short_side": 720, "gpu": "off", "thumbnail": True}
+    assert config["compute"] == {"device": "cpu"}
+    assert config["quality"] == "lowest"
 
     ranged = harness.pipeline_config(
         tmp_path / "out", Path("video.mp4"), Path("subs.srt"), {"mode": "ranges", "short": {"ranges": ["00:00:10-00:00:30"]}}

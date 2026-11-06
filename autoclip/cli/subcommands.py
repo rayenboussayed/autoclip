@@ -81,7 +81,7 @@ def _doctor(rest: Sequence[str]) -> int:
     try:
         from ..core import hardware
 
-        enc = hardware.pick_encoder(__import__("autoclip.core.config", fromlist=["VideoCfg"]).VideoCfg(), allow_gpu=False)
+        enc = hardware.pick_encoder(__import__("autoclip.core.config", fromlist=["VideoCfg"]).VideoCfg(), "high", allow_gpu=False)
         report["encoder"] = {"name": enc.name, "hardware": enc.hardware}
     except Exception as e:
         report["encoder"] = f"error: {e}"

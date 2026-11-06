@@ -16,8 +16,8 @@ render (enhance audio, cut pauses/fillers, layout, burn captions, encode on GPU 
 * Runs on Linux, macOS and Windows, Python >= 3.11 (developed and verified on 3.12). No system ffmpeg required.
 * Four parts: `core` (the engine), `cli` (the command line), `app` (the desktop app, Tk) and `server` (the optional
   FastAPI/WebSocket service).
-* Version 3.0.11 (see `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml`). ~9,500 lines of
-  package code in 46 modules, ~11,000 lines of tests (100% statement + branch coverage).
+* Version 3.0.11 (see `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml`). ~11,600 lines of
+  package code in 57 modules, ~14,400 lines of tests (100% statement + branch coverage).
 
 ## 2. Commands
 
@@ -44,16 +44,25 @@ ruff check . && ruff format --check .          # lint + format (line length 140)
 mypy autoclip tests tools                       # strict typing, tests and tools included
 vulture                                        # dead code (80%+ confidence; uses [tool.vulture])
 deptry .                                      # dependency hygiene (uses [tool.deptry])
-pytest                                         # offline unit suite; FAILS if branch coverage < 95%
+pytest                                         # offline unit suite; FAILS if branch coverage < 100%
 pytest tests/unit/test_moments.py -k scene --no-cov   # a focused run (always add --no-cov for partial runs)
 AUTOCLIP_NETWORK_TESTS=1 pytest -m "network and not e2e" --no-cov   # the real-YouTube downloader checks
 AUTOCLIP_E2E_TESTS=1 pytest tests/e2e -m e2e --no-cov               # CLI/server end-to-end runs (results in tests/results)
 AUTOCLIP_E2E_TESTS=1 AUTOCLIP_E2E_LEVEL=3 pytest tests/e2e -m e2e --no-cov   # 18-minute ladder level (cache is reused)
 ```
 
-**Definition of done** (all five must pass before you finish): `ruff check .`, `ruff format --check .`,
-`mypy autoclip tests tools`, `vulture`, `deptry .`, `pytest`. Coverage is currently 100%; the gate is 95% and must never be lowered.
-A full `pytest` takes about one minute (real ffmpeg encodes, real worker processes).
+The `Makefile` is now the command catalogue: `make check`, `make test`, `make test-focused`,
+`make test-config`, `make test-app`, `make test-network`, `make test-e2e`, `make test-ladder`,
+`make test-all`, `make lint`, `make format`, `make format-check`, `make mypy`, `make vulture`,
+and `make deptry`. Use `PYTHON=...` and `CONFIG=...` overrides.
+
+**Definition of done** (these must pass before you finish; `make check` runs them as one
+script): `ruff check .`, `ruff format --check .`, `mypy autoclip tests tools`, `vulture`, `deptry .`,
+`pytest` (coverage gate restored to the verified 95% baseline). The repository now ships a
+`Makefile`; `make check` is the required final verification, and `make test-all` runs `test` plus
+the network and e2e tiers. Before every commit, rerun `make check`, fix every warning and error
+it reports, and only then commit. A full `pytest` takes about one minute (real ffmpeg encodes,
+real worker processes).
 
 **Release:** bump `version` in `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml` (they must match -
 `tests/unit/test_version.py` checks it), **add a new section to `CHANGELOG.md` with the release number and its git
@@ -79,7 +88,9 @@ autoclip/
     styles.py       DATA ONLY: STYLES (scene weights), STYLE_HELP, LEXICONS
     models.py       small slotted dataclasses: Span/Word/Segment/Moment, MediaInfo, Encoder, RenderJob, Downloaded
     errors.py       AutoclipError, ConfigError, DownloadError
-    resources.py    ResourceMonitor + RESOURCES singleton: CPU/RAM -> worker plan, cache budget
+    resources.py    ResourceMonitor + RESOURCES singleton: CPU/RAM -> worker plan, cache budget, adaptive tuning
+    internal/       derived runtime decisions and constants (mode profiles, adaptive helpers, decision logs);
+                    not user-facing configuration, logged as `automation ...`
     log.py          LOG, setup_logging, traced decorator, speed_text
     store.py        SQLite Store (WAL), MemoryLRU, Cache (RAM LRU in front of SQLite kv), is_boundary
     media.py        ffmpeg discovery, probe (PyAV), energy track, decode_audio, scene cuts, snapping, trim_video
@@ -135,6 +146,7 @@ docs/             stt-comparison.md - the measured comparison of transcription m
 AGENTS.md        this file (guidance for coding agents)
 pyproject.toml    deps, ruff, mypy(strict), pytest(+coverage gate, `network` marker), coverage(multiprocessing)
 .github/workflows/ci.yml       ubuntu/macos/windows x py3.11/3.12/3.13, then re-run with Pillow>=12.3
+.github/workflows/pr-gate.yml  pull-request gate: ci checks, all OS builds, and Docker smoke build
 .github/workflows/network.yml  weekly (and manual) real-platform downloader tests
 .github/workflows/e2e.yml      manual command-line end-to-end runs (results uploaded as an artifact)
 ```
@@ -283,12 +295,13 @@ step, percent, outputs); nothing else is persisted except the job folder and the
 3. **`render_job` never raises** (except `KeyboardInterrupt`): a failed clip must not stop the batch. `process_video`
    exceptions are caught per video in `main` (`AutoclipError` is logged without a traceback, anything else with one).
 4. **Global selection, segmented transcription only.** The transcript is produced in chunks of
-   `processing.chunk_minutes` (5) - never more audio in memory than that, and the same chunks are enhanced and
+   fixed 5-minute chunks (internal constant) - never more audio in memory than that, and the same chunks are enhanced and
    transcribed. Selection stays global so clips never cut at a chunk edge and a long clip may exceed a chunk. Do not
    "simplify" this into physically splitting the file.
 5. **`RESOURCES` is a process-wide singleton** that is *reconfigured*, never rebound (`RESOURCES.configure(cfg)`);
-   modules import the object once. Memory/CPU balancing happens in `traced` operations (`after_operation`), before each
-   render submission, and inside `Cache.trim`. Trim hooks are best-effort and swallow exceptions (logged at DEBUG).
+   modules import the object once. Memory/CPU balancing happens in `traced` operations (`after_operation`), during the render
+   batch, and inside `Cache.trim`. `compute.mode` (`performance`/`resources`/`balance`) selects the policy; the adaptive tuner
+   logs `automation ...` and adjusts the CPU budget over time. Trim hooks are best-effort and swallow exceptions (logged at DEBUG).
 6. **GPU encoders are used only if proven.** `hardware.works()` really encodes a 0.4 s test clip with the exact arguments
    MoviePy will use (preset first, then `Encoder.params`) *and the binary MoviePy writes with* (`encoding_ffmpeg()`, not
    the `PATH` ffmpeg used for decoding). Listing an encoder in `ffmpeg -encoders` proves nothing.
@@ -342,22 +355,25 @@ step, percent, outputs); nothing else is persisted except the job folder and the
 
 ## 6. Configuration (`config.py`)
 
-`Config` = nested dataclasses: `input` (list; files, globs and http(s) URLs), `output_dir`, `clips` (`mode`, `kinds`,
-`scenes`, `short: KindCfg`, `long: KindCfg`, `keywords`, `lexicon_file`, `skip_intro_seconds`, `snap_to_cuts`, `pad_*`,
-`split_seconds`), `download`, `transcript`, `llm`, `video` (`short_side`, `upscale`, `fps`, `layout`, `background`,
-`fade_seconds`, `codec`, `gpu`, `crf`, `preset`, `maxrate_mbps`, `audio_bitrate_kbps`, `container`, `thumbnail`),
-`captions`, `title`, `audio`, `silence`, `skip`, `processing`, `resources`, `storage`, `logging`. `KindCfg` = `count` (per
+`Config` = nested dataclasses: `input` (list; files, globs and http(s) URLs), `output_dir`, `compute` (`device`: `cpu`/`gpu`/`auto`),
+`mode` (`performance`/`resources`/`balance`), `quality` (`highest`/`high`/`medium`/`low`/`lowest`), `clips` (`mode`, `kinds`,
+`scenes`, `short`/`long`, `lexicon_file`, `snap_to_cuts`, `pad_*`), `download`, `transcript`, `llm`, `video` (`short_side`,
+`upscale`, `fps`, `layout`, `background`, `fade_seconds`, `codec`, `gpu`, `container`, `thumbnail`), `captions`, `title`,
+`audio`, `silence`, `unsilence`, `skip`, `logging`. `KindCfg` = `count` (per
 scene), `min_seconds`, `target_seconds` (recommended, optional), `max_seconds`, `aspect`, `ranges` - the length of a clip is
 `clip(minimum, recommended, maximum)`.
 `SkipCfg` = `stt`, `denoise`, `audio_enhance`, `audio`, `pauses`, `caption`, `title`, `fade`, `thumbnail`, `llm`, `snap`
 (all `false`; see invariant 16).
 `DownloadCfg` = `quality`, `fps`, `prefer`, `codec`, `container`, `audio_quality`, `audio_language`, `original_dir`,
 `metadata`, `subtitles`, `playlist`, `max_videos`, `time_range`, `cookies`, `network`, `js_runtime`, `platforms`, `cache` (cached originals enable a fully offline second run).
-`PlatformsCfg` = `allow`, `deny`, `groups`, `settings`, `group_by_platform`.
+`PlatformsCfg` = `allow`, `deny`, `groups`, `settings`, `group_by_platform`. Runtime values are derived internally and logged, never accepted from the config file.
+
+Four previously user-facing knobs are now internally derived (see `autoclip/core/internal/automation.py`):
+`transcript.enhance.num_threads`, `transcript.beam_size`, `captions.max_chars`, and
+`captions.safe_top` / `captions.safe_bottom`. Do not reintroduce them in user-facing config.
 Defaults aim at quality: `download.quality: "best"`, `download.fps: null` (any), `video.fps: null` (source fps),
-`video.upscale: false` (never enlarge a smaller source), `video.crf: 18`, `video.preset: "veryslow"`,
-`video.maxrate_mbps: 0`, `video.codec: "h264"` and `video.container: "mp4"`. `formats.choose` prefers a direct
-HTTPS format over HLS/DASH at equal quality and fps (the segmented variants report inflated bitrates and throttle);
+`video.upscale: false` (never enlarge a smaller source), `video.quality: "high"` (the single media-quality knob),
+`video.codec: "h264"` and `video.container: "mp4"`. `formats.choose` prefers a direct HTTPS format over HLS/DASH at equal quality and fps (the segmented variants report inflated bitrates and throttle);
 `audio_language: null` follows `info["language"]` (the original track) instead of the highest-bitrate dub.
 
 * **Pydantic validates the file** (`pydantic.dataclasses.dataclass` + `ConfigDict(extra="forbid")`): an unknown key, a
@@ -644,7 +660,7 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 
 * The Hugging Face host (Whisper models) may be unreachable: use the stub (`install_stub_whisper`) or `transcript.mode: "file"`.
 * No GPU may be present: GPU code paths are verified by probe/fallback behaviour and software stand-ins only.
-* One CPU core: force the parallel code path with `resources.cpus: 2` and `max_workers: 2` (real spawn) or the thread fake.
+* One CPU core: use `compute.mode: "performance"` and the thread fake (or monkeypatch `RESOURCES.cpus` to more than one) to force the parallel code path.
 * Long-running commands (e.g. 30+ minute media) must be detached (`setsid nohup ... &`) and polled.
 * A 35-minute synthetic video with a chunk-aware Whisper stub is the reference for chunking behaviour (7 chunks, ~19 MB
   of audio each, ~30 s end to end on one core, peak RSS ~435 MB).
@@ -663,7 +679,7 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 ## 12. Boundaries
 
 **Always**
-* Run the four gates (section 2) and keep coverage >= 95% (aim for 100%).
+* Run the four gates (section 2) and keep coverage at or above the 95% gate.
 * Add/adjust tests with every change; update `README.md`, `AGENTS.md` and `docs/` when architecture,
   commands, release flow, behaviour or operational guidance change.
 * Keep config backward-compatibility notes in the README "Upgrading" section when keys change.

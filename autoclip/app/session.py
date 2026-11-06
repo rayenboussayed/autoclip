@@ -218,6 +218,9 @@ def run_pipeline(config_path: Path, *, cancel: CancelToken, on_line: Callable[[s
     from ..core.resources import RESOURCES as _RESOURCES
 
     _RESOURCES.configure(cfg)
+    from ..core.internal.decisions import log_decisions as _log_decisions
+
+    _log_decisions()
     snap = _RESOURCES.snapshot()
     from ..core.log import LOG as log
     from ..core.log import health_check as _health
@@ -273,7 +276,7 @@ def run_pipeline(config_path: Path, *, cancel: CancelToken, on_line: Callable[[s
         cancel=cancel,
     )
 
-    encoder = pick_encoder(cfg.video, allow_gpu=cfg.compute.device != "cpu")
+    encoder = pick_encoder(cfg.video, cfg.quality, allow_gpu=cfg.compute.device != "cpu")
     from ..core.batch import run_batch
 
     try:

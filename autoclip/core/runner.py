@@ -15,6 +15,7 @@ from dataclasses import replace
 
 from .events import CancelToken, Reporter
 from .hardware import HW_MAX_WORKERS
+from .internal import modes
 from .log import safe_path_text, setup_logging, traced
 from .models import RenderJob
 from .render import render_clip
@@ -99,22 +100,25 @@ def render_all(
     total = len(jobs)
     finished = 0
     pending = deque(jobs)
+    started_at: dict[Future[bool], float] = {}
     limit = HW_MAX_WORKERS if jobs[0].encoder.hardware else 1 << 30  # GPUs allow only a few encode sessions
-    cfg0 = jobs[0].cfg
-    sequential = str(getattr(getattr(cfg0, "processing", None), "mode", "sequential")).lower() != "parallel"
-    if sequential:
-        log.info("sequential: rendering %d clip(s) one at a time", len(jobs))
-    else:
-        plan = RESOURCES.plan_workers(est_bytes, len(jobs), limit)
-        log.info("parallel plan: up to %d worker(s) x %d thread(s) for %d clip(s)", plan.workers, plan.threads, len(jobs))
-    capacity = 1 if sequential else min(RESOURCES.cpu_budget(), RESOURCES.res.max_workers or RESOURCES.cpu_budget(), len(jobs), limit)
+    plan = RESOURCES.plan_workers(est_bytes, len(jobs), limit)
+    log.info("parallel plan: up to %d worker(s) x %d thread(s) for %d clip(s)", plan.workers, plan.threads, len(jobs))
+    mode_name = RESOURCES.mode if isinstance(getattr(RESOURCES, "mode", None), str) else "balance"
+    try:
+        profile = RESOURCES.profile
+    except AttributeError:
+        profile = modes.profile_for(mode_name)
+    capacity = 1 if not getattr(profile, "parallel", True) else min(RESOURCES.cpu_budget(), len(jobs), limit)
     if cancel is not None and cancel.cancelled:
         return
     if capacity <= 1:
         for job in jobs:
             if cancel is not None and cancel.cancelled:
                 break
+            t0 = time.perf_counter()
             render_job(replace(job, threads=RESOURCES.encoding_thread_budget()))
+            RESOURCES.record_job(time.perf_counter() - t0, peak_rss=0, threads=RESOURCES.encoding_thread_budget(), workers=1)
             finished += 1
             if report is not None:
                 report("render", finished / total, f"clip {finished}/{total}")
@@ -137,16 +141,21 @@ def render_all(
                         job.threads,
                         RESOURCES.brief(),
                     )
-                    running[pool.submit(render_job, job)] = job
+                    fut = pool.submit(render_job, job)
+                    running[fut] = job
+                    started_at[fut] = time.perf_counter()
                 if not running:
                     break
                 done, _ = wait(running, return_when=FIRST_COMPLETED)
                 for future in done:
                     job = running.pop(future)
+                    wall = time.perf_counter() - started_at.pop(future, time.perf_counter())
                     try:
                         future.result()
+                        RESOURCES.record_job(wall, peak_rss=0, threads=job.threads, workers=plan.workers)
                     except BrokenProcessPool:
                         log.warning("worker for clip %d died (probably out of memory): retrying it alone", job.clip_id)
+                        RESOURCES.notify_oom()
                         retry.append(job)
                     finished += 1
                     if report is not None:
@@ -170,7 +179,11 @@ def render_all(
         gc.collect()
         if cancel is not None and cancel.cancelled:
             break
+        t0 = time.perf_counter()
         render_job(replace(job, threads=RESOURCES.encoding_thread_budget()))
+        RESOURCES.record_job(time.perf_counter() - t0, peak_rss=0, threads=RESOURCES.encoding_thread_budget(), workers=1)
         finished += 1
         if report is not None:
             report("render", finished / total, f"clip {finished}/{total}")
+    with contextlib.suppress(Exception):
+        RESOURCES.adapt()

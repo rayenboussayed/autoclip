@@ -19,6 +19,7 @@ from typing import TypedDict, TypeVar, cast
 import numpy as np
 from numpy.typing import NDArray
 
+from .internal import CACHE_DISK_MB
 from .models import Moment, Segment, Word
 from .resources import MB, ResourceMonitor
 
@@ -254,7 +255,7 @@ class Cache:
         """Re-balance: resize the RAM tier to the current budget and cap the blob space in SQLite."""
         budget = self.monitor.cache_budget()
         self.mem.resize(budget)
-        self.store.kv_evict(self.monitor.storage.cache_disk_mb * MB)
+        self.store.kv_evict(CACHE_DISK_MB * MB)
 
     def memoize_array(self, key: str, producer: Callable[[], NDArray[_DType]]) -> NDArray[_DType]:
         """The cached array for ``key``, computing (and caching, zlib-compressed) it with ``producer`` on a miss."""

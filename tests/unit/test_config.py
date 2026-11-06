@@ -62,12 +62,10 @@ def test_parse_accepts_comments_and_int_for_float() -> None:
         ({"llm": {"base_url": "file:///etc/passwd"}}, "llm.base_url: String should match pattern"),
         ({"video": {"aspect": "9:16"}}, "video.aspect: Unexpected keyword argument"),
         ({"video": {"gpu": "cuda"}}, "video.gpu: Input should be"),
-        ({"processing": {"chunk_minutes": 0}}, "processing.chunk_minutes: Input should be greater than 0"),
         ({"transcript": {"enhance": {"backend": "nope"}}}, "transcript.enhance.backend: Input should be"),
         ({"transcript": {"enhance": {"model": "nope"}}}, "transcript.enhance.model: Input should be"),
         ({"transcript": {"enhance": {"attenuation_limit_db": 200}}}, "transcript.enhance.attenuation_limit_db:"),
         ({"transcript": {"enhance": {"denoise_strength": 2}}}, "transcript.enhance.denoise_strength:"),
-        ({"transcript": {"enhance": {"num_threads": 0}}}, "transcript.enhance.num_threads:"),
         ({"transcript": {"enhance": {"snr_threshold_db": 0}}}, "transcript.enhance.snr_threshold_db:"),
         ({"compute": {"device": "tpu"}}, "compute.device: Input should be"),
         ({"download": {"quality": 100}}, "download.quality.constrained-int: Input should be greater than or equal to 144"),
@@ -262,7 +260,7 @@ def test_expand_inputs_missing_local_pattern_still_errors_with_urls(tmp_path: Pa
 
 def test_download_defaults() -> None:
     d = Config().download
-    assert (d.quality, d.fps, d.prefer, d.codec, d.container) == ("best", None, "closest", "auto", "auto")
+    assert (d.quality, d.fps, d.prefer, d.codec, d.container) == (720, None, "closest", "auto", "auto")
     assert (d.audio_quality, d.audio_language, d.original_dir) == ("best", None, None)
     assert d.metadata.info_json and not d.metadata.thumbnail and not d.metadata.description
     assert not d.subtitles.enabled and d.subtitles.languages == ["en"] and d.subtitles.use_as_transcript == "never"
@@ -376,8 +374,7 @@ def test_default_transcript_model_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config._default_transcript_model() == "large-v3"
 
 
-def test_default_config_is_default_sequential() -> None:
+def test_default_config_keeps_the_stable_defaults() -> None:
     cfg = parse(Config, {})
-    assert cfg.processing.mode == "sequential"
     assert cfg.unsilence.enabled is True
     assert Path(cfg.output_dir) == Path.home() / "Videos" / "clips"

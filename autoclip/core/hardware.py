@@ -14,6 +14,7 @@ import subprocess
 from collections.abc import Callable
 
 from .config import VideoCfg
+from .internal.quality import quality_profile
 from .media import external_env
 from .models import Encoder
 
@@ -27,10 +28,9 @@ HW_MAX_WORKERS = 3
 PLACEHOLDER_PRESET = "medium"
 
 
-def _cap(cfg: VideoCfg) -> tuple[str, ...]:
-    """Bitrate cap arguments (upload friendly); empty when uncapped."""
-    m = cfg.maxrate_mbps
-    return ("-maxrate", f"{m:g}M", "-bufsize", f"{2 * m:g}M") if m > 0 else ()
+def _profile(cfg: VideoCfg) -> str:
+    """``high`` for H.264, ``main`` for H.265 (HEVC has no High profile in yuv420p 8-bit)."""
+    return "main" if cfg.codec == "h265" else "high"
 
 
 def _hevc(cfg: VideoCfg) -> int:
@@ -38,26 +38,17 @@ def _hevc(cfg: VideoCfg) -> int:
     return 1 if cfg.codec == "h265" else 0
 
 
-def _profile(cfg: VideoCfg) -> str:
-    """``high`` for H.264, ``main`` for H.265 (HEVC has no High profile in yuv420p 8-bit)."""
-    return "main" if cfg.codec == "h265" else "high"
+def _videotoolbox(cfg: VideoCfg, quality: str) -> Encoder:
+    """VideoToolbox: quality 100 best, quality 1 most efficient."""
+    profile = quality_profile(quality)
+    return Encoder(VIDEOTOOLBOX[_hevc(cfg)], True, PLACEHOLDER_PRESET, ("-q:v", str(profile.videotoolbox_qv), "-profile:v", _profile(cfg)))
 
 
-def _videotoolbox(cfg: VideoCfg) -> Encoder:
-    """VideoToolbox: ``-q:v`` (1-100, higher is better) when uncapped, a bitrate when capped.
-
-    A capped bitrate used to be its only mode, so ``maxrate_mbps = 0`` silently meant "10 Mbps". The quality
-    mode maps CRF (0 best .. 51 worst) onto VideoToolbox's 1-100 scale.
-    """
-    quality = max(1, min(100, round((51 - cfg.crf) * 100 / 51)))
-    mode = ("-b:v", f"{cfg.maxrate_mbps:g}M", *_cap(cfg)) if cfg.maxrate_mbps > 0 else ("-q:v", str(quality))
-    return Encoder(VIDEOTOOLBOX[_hevc(cfg)], True, PLACEHOLDER_PRESET, (*mode, "-profile:v", _profile(cfg)))
-
-
-def cpu_encoder(cfg: VideoCfg) -> Encoder:
+def cpu_encoder(cfg: VideoCfg, quality: str) -> Encoder:
     """libx264 / libx265 (constant quality)."""
+    profile = quality_profile(quality)
     name = "libx265" if cfg.codec == "h265" else "libx264"
-    return Encoder(name, False, cfg.preset, ("-crf", str(cfg.crf), "-profile:v", _profile(cfg), *_cap(cfg)))
+    return Encoder(name, False, profile.preset, ("-crf", str(profile.crf), "-profile:v", _profile(cfg)))
 
 
 #: Per-family codec names: index 0 = H.264, index 1 = H.265 (HEVC).
@@ -66,23 +57,57 @@ VIDEOTOOLBOX = ("h264_videotoolbox", "hevc_videotoolbox")
 QSV = ("h264_qsv", "hevc_qsv")
 AMF = ("h264_amf", "hevc_amf")
 
-#: Builders of the supported GPU encoders; ``cfg.crf`` is reused as their quality level.
-HARDWARE: dict[str, Callable[[VideoCfg], Encoder]] = {
-    "nvenc": lambda c: Encoder(
+
+#: Builders of the supported GPU encoders; the top-level ``quality`` selects their native quality level.
+def _nvenc_preset(quality: str) -> str:
+    return {"highest": "p5", "high": "p4", "medium": "p3", "low": "p2", "lowest": "p1"}[quality]
+
+
+def _amf_quality(quality: str) -> str:
+    return {"highest": "quality", "high": "balanced", "medium": "balanced", "low": "speed", "lowest": "speed"}[quality]
+
+
+HARDWARE: dict[str, Callable[[VideoCfg, str], Encoder]] = {
+    "nvenc": lambda c, q: Encoder(
         NVENC[_hevc(c)],
         True,
         PLACEHOLDER_PRESET,
-        ("-preset", "p4", "-rc", "vbr", "-cq", str(c.crf), "-b:v", "0", "-profile:v", _profile(c), *_cap(c)),
+        (
+            "-preset",
+            _nvenc_preset(q),
+            "-rc",
+            "vbr",
+            "-cq",
+            str(quality_profile(q).nvenc_cq),
+            "-b:v",
+            "0",
+            "-profile:v",
+            _profile(c),
+        ),
     ),
     "videotoolbox": _videotoolbox,
-    "qsv": lambda c: Encoder(
-        QSV[_hevc(c)], True, PLACEHOLDER_PRESET, ("-global_quality", str(c.crf), "-preset", "medium", "-profile:v", _profile(c))
+    "qsv": lambda c, q: Encoder(
+        QSV[_hevc(c)],
+        True,
+        PLACEHOLDER_PRESET,
+        ("-global_quality", str(quality_profile(q).nvenc_cq), "-preset", "medium", "-profile:v", _profile(c)),
     ),
-    "amf": lambda c: Encoder(
+    "amf": lambda c, q: Encoder(
         AMF[_hevc(c)],
         True,
         PLACEHOLDER_PRESET,
-        ("-quality", "balanced", "-rc", "cqp", "-qp_i", str(c.crf), "-qp_p", str(c.crf), "-profile:v", _profile(c)),
+        (
+            "-quality",
+            _amf_quality(q),
+            "-rc",
+            "cqp",
+            "-qp_i",
+            str(quality_profile(q).nvenc_cq),
+            "-qp_p",
+            str(quality_profile(q).nvenc_cq),
+            "-profile:v",
+            _profile(c),
+        ),
     ),
 }
 
@@ -119,12 +144,12 @@ def works(encoder: Encoder) -> bool:
         return False
 
 
-def pick_encoder(cfg: VideoCfg, system: str | None = None, allow_gpu: bool = True) -> Encoder:
+def pick_encoder(cfg: VideoCfg, quality: str, system: str | None = None, allow_gpu: bool = True) -> Encoder:
     """The encoder to use: the first working GPU encoder (``video.gpu``), otherwise the CPU's libx264/libx265.
 
     ``allow_gpu`` is false when ``compute.device`` is ``"cpu"``: then the GPU is not touched at all.
     """
-    cpu = cpu_encoder(cfg)
+    cpu = cpu_encoder(cfg, quality)
     if not allow_gpu:
         log.info("compute.device is 'cpu': using %s on the CPU", cpu.name)
         return cpu
@@ -132,7 +157,7 @@ def pick_encoder(cfg: VideoCfg, system: str | None = None, allow_gpu: bool = Tru
         return cpu
     names = PRIORITY.get(system or platform.system(), ()) if cfg.gpu == "auto" else (cfg.gpu,)
     for name in names:
-        candidate = HARDWARE[name](cfg)
+        candidate = HARDWARE[name](cfg, quality)
         if works(candidate):
             log.info("GPU video encoder: %s", candidate.name)
             return candidate

@@ -192,8 +192,7 @@ docker compose up --build
 The uploaded config keeps every option (clip length, scenes, captions, quality, ...); `input` and
 `output_dir` are ignored because the server owns the uploaded file and the job folder. The defaults
 are the same as the command line - notably `download.quality: "best"`, source fps, no upscaling and
-`video.crf: 18`/`preset: "veryslow"` - so a server job produces the highest-quality clips unless the
-config asks for something else.
+`quality: "high"` - so a server job produces high-quality clips unless the config asks for something else.
 
 | environment variable | default | meaning |
 | --- | --- | --- |
@@ -223,6 +222,19 @@ over `compute.device: gpu`; `compute.device: cpu` always wins. On the CPU the tr
 slower: `large-v3` needs roughly ten times the time of `small`, so pick a smaller
 `transcript.model` for long videos on a CPU-only machine.
 
+## Media quality (`quality`)
+`quality` is the single global output-quality control instead of low-level encoder knobs:
+
+| value | resolution vs `video.short_side` | frame rate | audio |
+| --- | --- | --- | --- |
+| `highest` | 100% | source | 256 kbps AAC |
+| `high` (default) | 80% | source | 192 kbps AAC |
+| `medium` | 60% | capped at 30 fps | 128 kbps AAC |
+| `low` | 40% | capped at 24 fps | 96 kbps AAC |
+| `lowest` | 20% | capped at 15 fps | 64 kbps AAC |
+
+Dimensions are rounded to even numbers and the source is never enlarged unless `video.upscale` is on. The chosen level also selects CPU/GPU encoder arguments; users no longer configure CRF, FFmpeg presets, bitrate caps or audio bitrates. An explicit `video.fps` remains a manual override and wins over the automatic cap.
+
 ## GPU acceleration (automatic, with CPU fallback)
 `video.gpu` is `auto` (default), `off`, or one of `nvenc` (NVIDIA), `videotoolbox` (macOS), `qsv` (Intel), `amf` (AMD).
 An encoder is used only if ffmpeg can **actually encode a test clip with it on this machine** (ffmpeg builds list
@@ -237,11 +249,11 @@ encoders such as `h264_nvenc` even on computers without that GPU); otherwise lib
   speed-up in encoding, not a 10x end-to-end gain.
 
 ## Very long videos
-The transcript is produced in **chunks of `processing.chunk_minutes` (5 minutes)**; the boundaries move to the quietest
+The transcript is produced in **fixed 5-minute chunks chosen automatically**; the boundaries move to the quietest
 moment nearby and the language is detected once and reused. Neither the denoiser nor Whisper ever holds more than one
 chunk in memory, so a 3-hour file no longer needs 3 hours of audio at once. Analysis already streams, noise reduction
 works in 60 s pieces, and selection stays **global**, so a clip is never cut at a chunk edge and a long clip may be
-longer than a chunk. Set `processing.chunk_threshold_minutes` to a positive number to transcribe short videos in one go.
+longer than a chunk. Very short videos are transcribed in a single chunk; chunking is not user-tunable.
 
 ## Unsilencing media before processing (optional)
 
@@ -269,8 +281,8 @@ keyboard clicks or hum. `transcript.enhance` is enabled by default:
 | `attenuation_limit_db` | `12.0` | how much noise may be removed (0 = off, 100 = no suppression) |
 | `denoise_strength` | `0.75` | only for the `noisereduce` backend |
 | `snr_threshold_db` | `20.0` | only enhance a chunk whose speech-to-noise ratio is below this (`null` = always) |
-| `num_threads` | `4` | CPU threads of the denoiser |
 | `model_dir` | empty (shared per-user cache, e.g. `~/.cache/autoclip/models` on Linux) | where the ONNX model is kept |
+* The denoiser thread count is now chosen internally from the active mode and available CPU cores.
 * The `sherpa` backend needs the optional package `sherpa-onnx` (`pip install sherpa-onnx`); its model is downloaded
   once from the sherpa-onnx release. Without the package the run continues with the original audio and says so.
 * **Denoising only helps when there is noise.** A clean recording is damaged by it and the ASR model then drifts into
@@ -281,8 +293,8 @@ keyboard clicks or hum. `transcript.enhance` is enabled by default:
 ## Transcription
 * `transcript.model` is `large-v3` (the most accurate multilingual model); `tiny`, `base`, `small` and `medium` are
   faster and smaller. On the CPU a model that does not fit into the free RAM is replaced by a smaller one.
-* The audio is transcribed in chunks of `processing.chunk_minutes` (5 minutes): neither the denoiser nor Whisper ever
-  holds more than that, and the language is detected once and reused for the remaining chunks.
+* The audio is transcribed in fixed 5-minute chunks: neither the denoiser nor Whisper ever holds more than that,
+  and the language is detected once and reused for the remaining chunks.
 
 ## What it does
 1. Enhances the audio and transcribes it with faster-whisper (auto language) or loads `.srt` / `.json`.
@@ -330,10 +342,28 @@ config - useful for a quick render, a silent clip or a run that must not downloa
 `audio_enhance` and `denoise` off. Skipping `stt`, `caption` and `title` also lets ranges/split runs
 avoid transcription entirely when no text is needed.
 
+## Automatic performance mode (`mode`)
+`compute.mode` decides how the run balances throughput against resource usage:
+
+| value | meaning | typical use |
+| --- | --- | --- |
+| `performance` | Use as much CPU and memory as the configured limits allow; keep parallelism high and threads bounded only by the encoder cap | dedicated machine / servers |
+| `resources` | Stay as lean as possible; render in-process and keep memory pressure low | laptops, shared machines |
+| `balance` | Start in the middle and adapt after every batch | default |
+
+The mode is **adaptive, not static**: before each render batch the worker plan is recomputed from current free
+memory and CPU, and after each completed batch the monitor smooths the observed utilisation (EMA) and nudges the
+CPU budget up or down. If memory becomes tight or a worker dies, parallelism drops automatically; when utilisation
+is below target and memory is calm, budget is raised (within the mode's bounds). Containers/cgroups are honoured
+on Linux, and macOS/Windows/Linux all use the same affinity/`psutil`-based accounting. Automatic values are logged
+as `automation ...`, and the current CPU-budget choice is persisted under `<output_dir>/.work/adaptive.json` so the
+next run starts close to the learned optimum. It is an internal tuning mechanism — no manual resource knobs are required.
+
 ## Resources, storage, logs
-* Before and after every operation the script re-reads CPU count (affinity + container quota) and *free* RAM, runs as many
-  parallel renders as both allow (spare cores become encoder threads), shrinks the cache and worker count under memory
-  pressure, and retries a worker the OS killed. A smaller Whisper model is chosen if the requested one will not fit in free RAM.
+* Before and after every operation the script re-reads CPU count (affinity + container quota) and *free* RAM. The number
+  of parallel renders, encoder threads, cache size and CPU budget are derived automatically from these readings and the
+  active `compute.mode`; they shrink under memory pressure and recover when memory is available again. A smaller Whisper
+  model is chosen if the requested one will not fit in free RAM.
 * One SQLite database (WAL) per video, recreated empty at every start. Only the transcript JSON is kept between runs.
 * Every production function is wrapped with `traced`: callers get `[START]` / `[END]` output, `START` /
   `END` / `FAIL` log records with machine state, and post-operation memory rebalancing. nested calls are

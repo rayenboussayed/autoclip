@@ -43,6 +43,18 @@ def test_even_and_canvas_size() -> None:
     assert canvas_size("original", 1080, 1279, 719) == (1280, 720)
 
 
+def test_quality_profile_scales_output_and_caps_fps() -> None:
+    from autoclip.core.internal import output_fps, quality_short_side
+
+    assert [quality_short_side(1000, q) for q in ("highest", "high", "medium", "low", "lowest")] == [1000, 800, 600, 400, 200]
+    assert output_fps(50.0, None, "highest") == 50.0
+    assert output_fps(50.0, None, "medium") == 30.0
+    assert output_fps(50.0, None, "low") == 24.0
+    assert output_fps(50.0, None, "lowest") == 15.0
+    assert output_fps(24.0, None, "medium") == 24.0  # never raise the source frame rate
+    assert output_fps(50.0, 60.0, "low") == 50.0  # an explicit request is clamped to the source, not the preset cap
+
+
 def test_canvas_size_never_enlarges_the_source_by_default() -> None:
     assert canvas_size("9:16", 1080, 720, 1280) == (720, 1280)  # a 720p source stays 720p
     assert canvas_size("9:16", 1080, 1920, 1080) == (1080, 1920)  # a 1080p landscape source is still fitted, not enlarged
@@ -67,21 +79,21 @@ def test_encode_sets_the_audio_bitrate_and_mp4_only_flags(tmp_path: Path) -> Non
         def write_videofile(self, path: str, **kwargs: Any) -> None:
             self.kwargs = {"path": path, **kwargs}
 
-    hevc, h264 = Encoder("hevc_nvenc", True, "medium", ("-cq", "18")), cpu_encoder(VideoCfg())
+    hevc, h264 = Encoder("hevc_nvenc", True, "medium", ("-cq", "18")), cpu_encoder(VideoCfg(), "high")
     mp4 = Fake()
-    encode(mp4, tmp_path / "hevc.mp4", 30, hevc, 2, VideoCfg())
+    encode(mp4, tmp_path / "hevc.mp4", 30, hevc, 2, VideoCfg(), "high")
     assert mp4.kwargs["audio_bitrate"] == "192k"
     assert mp4.kwargs["ffmpeg_params"] == ["-pix_fmt", "yuv420p", "-cq", "18", "-tag:v", "hvc1", "-movflags", "+faststart"]
     assert mp4.kwargs["path"].endswith("hevc.part.mp4"), "the temporary file keeps the muxer extension"
     mkv = Fake()
-    encode(mkv, tmp_path / "hevc.mkv", 30, hevc, 2, VideoCfg(container="mkv", audio_bitrate_kbps=256))
+    encode(mkv, tmp_path / "hevc.mkv", 30, hevc, 2, VideoCfg(container="mkv"), "highest")
     assert mkv.kwargs["ffmpeg_params"] == ["-pix_fmt", "yuv420p", "-cq", "18"]
     assert mkv.kwargs["path"].endswith("hevc.part.mkv")
     assert mkv.kwargs["audio_bitrate"] == "256k"
     plain = Fake()
-    encode(plain, tmp_path / "h264.mp4", 30, h264, 2, VideoCfg())
+    encode(plain, tmp_path / "h264.mp4", 30, h264, 2, VideoCfg(), "high")
     assert "hvc1" not in plain.kwargs["ffmpeg_params"] and plain.kwargs["ffmpeg_params"][-2:] == ["-movflags", "+faststart"]
-    assert plain.kwargs["preset"] == "veryslow" and plain.kwargs["codec"] == "libx264"
+    assert plain.kwargs["preset"] == "slow" and plain.kwargs["codec"] == "libx264"
 
 
 def test_blur_function_blurs_and_dims() -> None:
@@ -143,7 +155,7 @@ def render(
         dst,
         kind,
         aspect,
-        encoder or cpu_encoder(cfg.video),
+        encoder or cpu_encoder(cfg.video, cfg.quality),
         probe(src).has_audio,
         cfg,
         store.path,
@@ -196,7 +208,7 @@ def test_render_fill_layout_plain_settings(media: Media, tmp_path: Path) -> None
         media,
         tmp_path,
         m,
-        video={"layout": "fill", "maxrate_mbps": 0, "fade_seconds": 0, "fps": None},
+        video={"layout": "fill", "fade_seconds": 0, "fps": None},
         audio={"enhance": False, "fade_seconds": 0, "denoise": "none"},
         silence={"remove": False},
         title={"enabled": True},
@@ -234,7 +246,7 @@ def test_render_with_a_gpu_style_encoder_definition(media: Media, tmp_path: Path
     """GPU encoders override MoviePy's placeholder preset in their arguments; software libx264 stands in for the hardware."""
     stand_in = Encoder("libx264", True, "no-such-preset", ("-preset", "ultrafast", "-crf", "40", "-maxrate", "1M", "-bufsize", "2M"))
     low, _, _ = render(media, tmp_path / "a", moment(0, 5), encoder=stand_in)
-    cpu, _, _ = render(media, tmp_path / "b", moment(0, 5), encoder=cpu_encoder(VideoCfg(preset="ultrafast", crf=18)))
+    cpu, _, _ = render(media, tmp_path / "b", moment(0, 5), encoder=cpu_encoder(VideoCfg(), "highest"))
     assert probe(low).duration == pytest.approx(probe(cpu).duration, abs=0.3)
     assert low.stat().st_size < cpu.stat().st_size  # the placeholder preset was overridden and the custom arguments reached ffmpeg
 
@@ -243,7 +255,7 @@ def test_render_hevc_with_captions_writes_yuv420p(media: Media, tmp_path: Path) 
     """libx265 main rejects the i444 stream an RGBA composite would otherwise produce (regression)."""
     import av
 
-    encoder = cpu_encoder(VideoCfg(codec="h265", preset="ultrafast", crf=30))
+    encoder = cpu_encoder(VideoCfg(codec="h265"), "low")
     dst, size, lines = render(media, tmp_path, moment(0, 5), encoder=encoder)
     assert lines and probe(dst).duration > 0 and size == (144, 256)
     with av.open(str(dst)) as container:

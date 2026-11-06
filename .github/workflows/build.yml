@@ -161,14 +161,15 @@ jobs:
           {
             "input": ["build-check.mp4"],
             "output_dir": "build-out",
+            "mode": "resources",
+            "quality": "lowest",
             "compute": {"device": "cpu"},
             "clips": {"mode": "highlights", "kinds": ["short"], "scenes": "best",
                       "short": {"count": 1, "min_seconds": 2, "max_seconds": 3, "aspect": "9:16"}},
             "transcript": {"mode": "off"},
-            "video": {"short_side": 144, "fps": 15, "preset": "ultrafast", "gpu": "off", "thumbnail": false},
+            "video": {"short_side": 144, "fps": 15, "gpu": "off", "thumbnail": false},
             "captions": {"enabled": false},
             "audio": {"enhance": false, "denoise": "none"},
-            "resources": {"max_workers": 1},
             "logging": {"enabled": true, "console_level": "INFO"}
           }
           JSON
