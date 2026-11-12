@@ -133,6 +133,9 @@ def render_all(
             while (pending or running) and (cancel is None or not cancel.cancelled):
                 plan = RESOURCES.plan_workers(est_bytes, len(pending) + len(running), limit)
                 while pending and len(running) < plan.workers and (cancel is None or not cancel.cancelled):
+                    if running and RESOURCES.admission("render", est_bytes).value != "go":
+                        # a busy pool may free memory; do not pile more on a starved one (never starve the batch)
+                        break
                     job = replace(pending.popleft(), threads=min(plan.threads, RESOURCES.encoding_thread_budget()))
                     log.info(
                         "submit clip %d (running=%d allowed=%d threads=%d | %s)",

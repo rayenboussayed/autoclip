@@ -612,3 +612,26 @@ def test_render_all_cancel_after_pool_repeat(media: Media, tmp_path: Path, monke
     render_all(jobs, 100 << 20, cancel=tok)
     assert len(statuses(store)) == 2
     store.close()
+
+
+def test_render_all_defers_submissions_while_another_job_is_in_flight(
+    media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When admission says defer while a job is running, no extra clip is submitted this tick."""
+    jobs, store, _ = parallel_jobs(media, tmp_path, 2)
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", ThreadPool)
+    from autoclip.core import resources as _resources  # noqa: PLC0415
+    from autoclip.core.internal.budget import AutoDecision  # noqa: PLC0415
+
+    admission_calls: list[tuple[str, int]] = []
+
+    def defer(stage: str, cost_bytes: int = 0) -> AutoDecision:
+        admission_calls.append((stage, cost_bytes))
+        return AutoDecision(stage, "defer", "ram-oom")
+
+    monkeypatch.setattr(_resources.RESOURCES, "admission", defer)
+    render_all(jobs, 100 << 20)
+    assert statuses(store) == ["done", "done"]  # the batch always drains, deferral or not
+    assert admission_calls, "admission is consulted when a job is in flight"
+    assert all(stage == "render" for stage, _ in admission_calls)
+    store.close()

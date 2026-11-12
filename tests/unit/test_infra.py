@@ -8,7 +8,7 @@ import os
 import sys
 import types
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -677,3 +677,48 @@ def test_configure_restores_persisted_samples(tmp_path: Path) -> None:
     mon = ResourceMonitor()
     mon.configure(cfg)
     assert list(mon._cpu_samples) == [10.0, 20.0, 30.0, 999.0]  # strings and overflow are dropped
+
+
+def test_admission_goes_with_headroom(monkeypatch: pytest.MonkeyPatch) -> None:
+    mon = make_monitor(monkeypatch, free_mb=12000)
+    d = mon.admission("render", 100)
+    assert (d.value, d.source) == ("go", "headroom")
+
+
+def test_admission_defers_when_free_memory_is_below_the_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    mon = make_monitor(monkeypatch, free_mb=100)
+    d = mon.admission("render", 10 * 1024 * 1024 * 1024)
+    assert (d.value, d.source) == ("defer", "cost")
+
+
+def test_admission_skips_a_cosmetic_stage_under_high_pressure(monkeypatch: pytest.MonkeyPatch) -> None:
+    mon = make_monitor(monkeypatch, free_mb=10)  # 10 MB of 16 GB: high pressure
+    assert mon.admission("thumbnail", 0).value == "skip"
+    assert mon.admission("render", 0).value == "go"  # not cosmetic: never skipped
+
+
+def test_admission_defers_after_an_oom(monkeypatch: pytest.MonkeyPatch) -> None:
+    mon = make_monitor(monkeypatch, free_mb=12000)
+    mon._oom = True
+    d = mon.admission("render", 0)
+    assert (d.value, d.source) == ("defer", "ram-oom")
+
+
+def test_admission_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    mon = ResourceMonitor()
+
+    def broken() -> Any:
+        raise RuntimeError("unmeasurable")
+
+    monkeypatch.setattr(mon, "snapshot", broken)
+    d = mon.admission("render", 0)
+    assert (d.value, d.source) == ("go", "monitor-unavailable")
+
+
+def test_admission_logs_its_decision(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    mon = make_monitor(monkeypatch, free_mb=10)
+    with caplog.at_level(logging.INFO, logger="autoclip"):
+        mon.admission("thumbnail", 0)
+    assert "automation admission stage=thumbnail action=skip | source=ram-high" in caplog.text

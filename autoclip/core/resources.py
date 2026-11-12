@@ -23,6 +23,7 @@ from .internal import (
     detect_cpu_count,
     modes,
 )
+from .internal.budget import AutoDecision, Pressure, decide_admission
 
 log = logging.getLogger("autoclip")
 MB = 1 << 20
@@ -201,6 +202,27 @@ class ResourceMonitor:
                     self.peak_rss = sample
         except Exception as e:  # best-effort  # pragma: no cover
             log.debug("record_job failed: %s", e)  # pragma: no cover
+
+    def admission(self, stage: str, cost_bytes: int = 0) -> AutoDecision:
+        """Best-effort admission check for ``stage``.
+
+        Never raises, never reports more than a measurement error: any failure to measure
+        returns ``go`` with source ``monitor-unavailable`` (the trim hooks precedent).
+        """
+        try:
+            snap = self.snapshot()
+            decision = decide_admission(
+                stage,
+                cost_bytes,
+                Pressure(snap.mem_available, snap.mem_total, snap.pressure == "high", self._oom),
+            )
+            free_mb = snap.mem_available // MB
+        except Exception as e:  # best-effort; a missing reading must never stop a run
+            log.debug("admission check failed for %s: %s", stage, e)
+            decision = AutoDecision(stage, "go", "monitor-unavailable")
+            free_mb = -1
+        log.info("automation admission stage=%s action=%s | source=%s | free=%dMB", stage, decision.value, decision.source, free_mb)
+        return decision
 
     def notify_oom(self) -> None:
         self._oom = True
