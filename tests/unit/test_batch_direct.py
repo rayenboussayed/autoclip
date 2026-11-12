@@ -40,6 +40,29 @@ def test_run_batch_cancel(media: Any, tmp_path: Path, monkeypatch: pytest.Monkey
         run_batch(cfg, downloader=None, encoder=pick_encoder(cfg.video, cfg.quality, allow_gpu=False), log_file=None, cancel=tok)
 
 
+def test_run_batch_skips_a_rate_limited_url(media: Any, tmp_path: Path) -> None:
+    from autoclip.core.errors import RateLimitError
+
+    out = tmp_path / "out-rate"
+    out.mkdir()
+    cfg = make_cfg(media, out, clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
+    cfg.input = ["https://example.com/limited.mp4"]
+    cfg.output_dir = str(out)
+
+    class Limited:
+        def download(self, item: str) -> list[Any]:
+            raise RateLimitError("slow down")
+
+    from typing import cast
+
+    from autoclip.core.download import Downloader
+
+    result = run_batch(
+        cfg, downloader=cast(Downloader, Limited()), encoder=pick_encoder(cfg.video, cfg.quality, allow_gpu=False), log_file=None
+    )
+    assert result.clips_failed == 1
+
+
 def test_unique_name_first_candidate() -> None:
     from autoclip.core.batch import _unique_name
 

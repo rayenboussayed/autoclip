@@ -85,11 +85,9 @@ def make_cfg(media: Media, out: Path, source: Path | None = None, **sections: di
             "short": {"count": 2, "min_seconds": 6, "max_seconds": 12},
             "long": {"min_seconds": 12, "max_seconds": 30},
         },
-        "transcript": {"mode": "file", "file": str(media.transcript)},
-        "video": {"short_side": 720, "thumbnail": False, "gpu": "off"},
+        "transcript": {"file": str(media.transcript)},
         "quality": "lowest",
-        "logging": {"enabled": False, "console_level": "ERROR"},
-        "unsilence": {"enabled": False},
+        "logging": {"level": "OFF"},
     }
     cfg = parse(Config, merge(data, sections))
     cfg.input = [str(source or media.video)]
@@ -202,15 +200,15 @@ def install_stub_whisper(
         monkeypatch.setattr(transcript, "_download_model", lambda *a, **k: None, raising=False)
     else:
 
-        def _model_is_cached(model_name: str, cache_dir: str | None) -> bool:
+        def _model_is_cached(model_name: str) -> bool:
             try:
-                download_model(model_name, cache_dir=cache_dir, local_files_only=True)
+                download_model(model_name, local_files_only=True)
             except Exception:
                 return False
             return True
 
-        def _download_model(model_name: str, cache_dir: str | None) -> None:
-            download_model(model_name, cache_dir=cache_dir, local_files_only=False)
+        def _download_model(model_name: str) -> None:
+            download_model(model_name, local_files_only=False)
 
         monkeypatch.setattr(transcript, "_model_is_cached", _model_is_cached, raising=False)
         monkeypatch.setattr(transcript, "_download_model", _download_model, raising=False)
@@ -218,30 +216,45 @@ def install_stub_whisper(
     monkeypatch.setitem(sys.modules, "ctranslate2", ct)
 
 
+#: The smallest seven-key config file the CLI tests use (exact ranges keep a run to a few seconds).
 BASE_CONFIG: dict[str, Any] = {
-    "clips": {
-        "kinds": ["short"],
-        "short": {"count": 1, "min_seconds": 6, "max_seconds": 12},
-        "long": {"count": 1, "min_seconds": 12, "max_seconds": 30},
-    },
-    "video": {"short_side": 480, "gpu": "off"},
-    "quality": "lowest",
-    "audio": {"denoise": "none"},
-    "logging": {"console_level": "ERROR"},
-    "unsilence": {"enabled": False},
+    "clips": {"preset": "shorts", "scenes": "best", "keywords": [], "ranges": []},
 }
 
 
-def write_config(tmp_path: Path, media: Media, **overrides: Any) -> Path:
-    """Write a CLI config for the fixture video and its two extra transcript files."""
+def write_config(tmp_path: Path, media: Media, inputs: list[str] | None = None, **overrides: Any) -> Path:
+    """Write a seven-key config for the fixture video(s) and the per-stem transcript files."""
     (tmp_path / "subs").mkdir(parents=True, exist_ok=True)
     for stem in ("talk", "silent", "broken"):
         (tmp_path / "subs" / f"{stem}.json").write_text(media.transcript.read_text(encoding="utf-8"), encoding="utf-8")
     data = merge(
-        {**BASE_CONFIG, "input": [str(media.video), str(media.silent)], "output_dir": str(tmp_path / "out"),
-         "transcript": {"mode": "file", "file": str(tmp_path / "subs" / "{stem}.json")}},
+        {**BASE_CONFIG, "input": inputs if inputs is not None else [str(media.video), str(media.silent)]},
         overrides,
-    )  # fmt: skip
+    )
     path = tmp_path / "config.json"
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
+
+
+def run_args(
+    config: Path,
+    *,
+    output: Path | None = None,
+    transcript: bool = True,
+    quality: str = "lowest",
+    log_level: str = "OFF",
+    extra: list[str] | None = None,
+) -> list[str]:
+    """The argv that runs ``config`` with the test overrides the seven-key file no longer carries."""
+    argv = [
+        str(config),
+        "--output-dir",
+        str(output or Path(config).parent / "out"),
+        "--quality",
+        quality,
+        "--log-level",
+        log_level,
+    ]
+    if transcript:
+        argv += ["--transcript", str(Path(config).parent / "subs" / "{stem}.json")]
+    return argv + (extra or [])

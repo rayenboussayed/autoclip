@@ -15,16 +15,15 @@ import platform
 import sys
 from collections.abc import Sequence
 from dataclasses import asdict
-from datetime import datetime
 from pathlib import Path
 
 from .. import __version__
-from ..core.config import Config, PlatformsCfg, is_url, load_config, parse
+from ..core.config import Config, FileConfig, JsonValue, PlatformsCfg, RuntimeOverrides, is_url, load_config, parse
 from ..core.download import Downloader, format_report_text
-from ..core.errors import AutoclipError, ConfigError
+from ..core.errors import AutoclipError, ConfigError, RateLimitError
 from ..core.events import Progress, Reporter
 from ..core.hardware import pick_encoder
-from ..core.log import redact_url, safe_path_text, setup_logging, system_profile
+from ..core.log import default_log_file, redact_url, safe_path_text, setup_logging, system_profile
 from ..core.resources import MB, RESOURCES
 
 log = logging.getLogger("autoclip")
@@ -36,14 +35,10 @@ def init_config(path: Path, full: bool) -> None:
         raise ConfigError(f"{path} already exists (not overwriting)")
     starter = {
         "input": ["input.mp4"],
-        "clips": {
-            "kinds": ["short", "long"],
-            "scenes": ["best"],
-            "short": {"count": 3, "min_seconds": 20, "max_seconds": 60, "aspect": "9:16"},
-            "long": {"count": 1, "min_seconds": 180, "max_seconds": 600, "aspect": "16:9"},
-        },
+        "clips": {"preset": "both", "scenes": "best", "keywords": [], "ranges": []},
+        "download": {"platforms": {"allow": ["@popular"], "deny": []}},
     }
-    data = asdict(Config()) if full else starter
+    data = asdict(FileConfig()) if full else starter
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"wrote {path}")
 
@@ -53,6 +48,34 @@ def _csv(values: Sequence[str] | None) -> list[str] | None:
     if values is None:
         return None
     return [name.strip() for value in values for name in value.split(",") if name.strip()]
+
+
+def _overrides(args: argparse.Namespace) -> RuntimeOverrides:
+    """The runtime options passed on the command line (the file only carries the seven keys)."""
+    data: dict[str, JsonValue] = {}
+    for attr, name in (
+        ("output_dir", "output_dir"),
+        ("transcript", "transcript"),
+        ("cookies", "cookies"),
+        ("proxy", "proxy"),
+        ("log_level", "log_level"),
+        ("device", "device"),
+        ("llm_url", "llm_base_url"),
+        ("llm_model", "llm_model"),
+        ("mode", "mode"),
+        ("quality", "quality"),
+    ):
+        value = getattr(args, attr, None)
+        if value:
+            data[name] = value
+    skip = _csv(getattr(args, "skip", None))
+    if skip:
+        data["skip"] = skip  # type: ignore[assignment]
+    if getattr(args, "offline", False):
+        data["offline"] = True
+    if getattr(args, "split", False):
+        data["split"] = True
+    return parse(RuntimeOverrides, data)
 
 
 def _with_policy(cfg: Config, allow: list[str] | None, deny: list[str] | None) -> None:
@@ -106,6 +129,10 @@ def _download_only(cfg: Config, downloader: Downloader) -> int:
     for url in urls:
         try:
             items = downloader.download(url)
+        except RateLimitError as e:
+            log.warning("%s skipped (rate limited): %s", url, e)  # pragma: no cover
+            failed += 1  # pragma: no cover
+            continue  # pragma: no cover
         except AutoclipError as e:
             log.error("%s failed: %s", url, e)
             failed += 1
@@ -150,6 +177,23 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--platforms", nargs="?", const=True, metavar="URL", help="show the platform policy, and where URL would go")
     ap.add_argument("--allow", action="append", metavar="A,B", help="platforms/@groups to permit (overrides download.platforms.allow)")
     ap.add_argument("--deny", action="append", metavar="C", help="platforms/@groups to refuse (overrides download.platforms.deny)")
+    ap.add_argument("--output-dir", metavar="DIR", help="where clips are written (default: the platform's Videos/Movies folder)")
+    ap.add_argument("--transcript", metavar="FILE", help="use this .srt/.json transcript instead of Whisper")
+    ap.add_argument("--cookies", metavar="BROWSER|FILE", help="browser cookie store or a Netscape cookies.txt for downloads")
+    ap.add_argument("--proxy", metavar="URL", help="proxy for downloads (http(s) or SOCKS)")
+    ap.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "OFF"], help="console/log verbosity")
+    ap.add_argument("--device", choices=["auto", "cpu", "gpu"], help="compute device (cpu keeps the GPU out of the run)")
+    ap.add_argument(
+        "--skip",
+        action="append",
+        metavar="NAME",
+        help="skip a step: stt, denoise, audio_enhance, audio, pauses, caption, title, fade, thumbnail, llm, snap",
+    )
+    ap.add_argument("--llm-model", metavar="MODEL", help="Ollama model used for ranking and social captions")
+    ap.add_argument("--offline", action="store_true", help="forbid downloads and AI network calls")
+    ap.add_argument("--split", action="store_true", help="cut the sources into equal parts instead of highlights")
+    ap.add_argument("--mode", choices=["performance", "resources", "balance"], help="performance/resource/balance policy")
+    ap.add_argument("--quality", choices=["highest", "high", "medium", "low", "lowest"], help="encode resolution/fps/audio quality")
     args = ap.parse_args(argv)
     if args.gui:
         from ..app import launch
@@ -162,15 +206,24 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
         if args.formats and args.platforms:
             raise ConfigError("choose one of --formats and --platforms")
         default_path = Path("config.json")
+        config_dir = None
+        overrides = _overrides(args)
         if args.config is not None:
-            cfg = load_config(args.config)
+            cfg = load_config(args.config, overrides)
             built_in = False
+            config_dir = Path(args.config).resolve().parent
         elif default_path.is_file():
-            cfg = load_config(default_path)
+            cfg = load_config(default_path, overrides)
             built_in = False
+            config_dir = default_path.resolve().parent
         else:
-            cfg = Config()  # no file: the built-in defaults, kept in memory (never written)
+            # no file: the built-in defaults, kept in memory (never written); runtime flags still apply
+            cfg = FileConfig().to_config(RuntimeOverrides.combined(overrides))
+            cfg.output_dir = str(Path(cfg.output_dir).expanduser().resolve())
+            if cfg.transcript.file:
+                cfg.transcript.file = str(Path(cfg.transcript.file).expanduser().resolve())
             built_in = True
+            config_dir = Path.cwd()
         _with_policy(cfg, _csv(args.allow), _csv(args.deny))
     except ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
@@ -206,18 +259,17 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
             return 2
 
     lg = cfg.logging
-    log_file = (
-        (Path(lg.file) if lg.file else Path(cfg.output_dir) / "logs" / f"autoclip_{datetime.now():%Y%m%d_%H%M%S}.log")
-        if lg.enabled
-        else None
-    )
-    setup_logging(log_file, lg.level, None if getattr(args, "events", None) == "jsonl" else lg.console_level)
+    log_file = None if lg.level == "OFF" else default_log_file(cfg.output_dir)
+    setup_logging(log_file, lg.level, None if getattr(args, "events", None) == "jsonl" else lg.level)
     RESOURCES.configure(cfg)
     from ..core.internal.decisions import log_decisions
 
     log_decisions()
     snap = RESOURCES.snapshot()
     has_urls = any(is_url(item) for item in cfg.input)
+    if has_urls and cfg.offline:
+        print("error: input contains URLs but --offline/AUTOCLIP_OFFLINE forbids downloading", file=sys.stderr)
+        return 2
     input_labels = [redact_url(item) if is_url(item) else safe_path_text(Path(item)) for item in cfg.input]
     log.info(
         "autoclip start | %s | inputs=%d",
@@ -251,18 +303,17 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
         print("error: --download-only needs at least one URL in input", file=sys.stderr)
         return 2
 
-    encoder = pick_encoder(cfg.video, cfg.quality, allow_gpu=cfg.compute.device != "cpu")
+    encoder = pick_encoder(cfg.video, cfg.quality, allow_gpu=cfg.device != "cpu")
     from ..core.batch import run_batch
 
     events = getattr(args, "events", None)
 
     def _emit(p: Progress) -> None:
-        if events == "jsonl":
-            print(json.dumps({"event": "progress", "stage": p.stage, "percent": p.percent, "message": p.message}), flush=True)
+        print(json.dumps({"event": "progress", "stage": p.stage, "percent": p.percent, "message": p.message}), flush=True)
 
     reporter = Reporter(_emit) if events == "jsonl" else Reporter()
 
-    result = run_batch(cfg, downloader=downloader, encoder=encoder, log_file=log_file, report=reporter)
+    result = run_batch(cfg, downloader=downloader, encoder=encoder, log_file=log_file, report=reporter, config_dir=config_dir)
     if events == "jsonl":
         print(json.dumps({"event": "result", "done": result.clips_done, "failed": result.clips_failed}), flush=True)
     elif getattr(args, "json", False):
@@ -278,8 +329,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     raw = sys.argv[1:] if argv is None else list(argv)
     argv_list = subcommands.normalize(raw)
-    if not argv_list:
-        argv_list = ["run"]
     cmd = argv_list[0]
     rest = argv_list[1:]
 

@@ -26,7 +26,7 @@ def _clip() -> ColorClip:
 
 @pytest.mark.parametrize("container", ["mp4", "mkv"])
 def test_encode_writes_a_real_file_in_the_requested_container(tmp_path: Path, container: Literal["mp4", "mkv"]) -> None:
-    video = VideoCfg(container=container)
+    video = VideoCfg()
     dst = tmp_path / f"clip.{container}"
     encode(_clip(), dst, 10, cpu_encoder(video, "low"), 1, video, "low")
     assert dst.is_file()
@@ -36,9 +36,9 @@ def test_encode_writes_a_real_file_in_the_requested_container(tmp_path: Path, co
     assert (info.width, info.height) == (96, 54)
 
 
-def test_render_clip_writes_the_container_from_the_config(media: Media, tmp_path: Path) -> None:
-    """The pipeline names the output ``.<container>``; rendering it must not depend on the muxer name."""
-    cfg = make_cfg(media, tmp_path, video={"container": "mkv"}, captions={"enabled": False})
+def test_render_clip_writes_the_container_from_the_output_suffix(media: Media, tmp_path: Path) -> None:
+    """The output file name decides the muxer: rendering must not depend on a separate container setting."""
+    cfg = make_cfg(media, tmp_path, captions={"enabled": False})
     cfg.quality = "lowest"
     store = Store(tmp_path / "r.db", fresh=True)
     store.put_segments(load_transcript_file(media.transcript))
@@ -66,6 +66,6 @@ def test_render_clip_writes_the_container_from_the_config(media: Media, tmp_path
         vclip.close()
         cache.close()
         store.close()
-    assert dst.is_file() and size == (144, 256)
+    assert dst.is_file() and size == (216, 384)
     assert not list(tmp_path.glob("*.part*")), "the temporary file must be renamed away"
     assert probe(dst).duration > 3

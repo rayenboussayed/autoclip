@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from .config import AudioCfg, SilenceCfg
+from .internal.automation import AUDIO_HIGHPASS_HZ, AUDIO_TARGET_DBFS, DENOISE_STRENGTH, SILENCE_KEEP_PADDING, SILENCE_MIN_SECONDS
 from .log import traced
 from .media import AUDIO_SR, decode_audio
 from .models import Word
@@ -48,8 +48,6 @@ def frame_db(x: F32, win: float = 0.02) -> NDArray[np.float64]:
 
 log = logging.getLogger("autoclip")
 
-_NOISEREDUCE_MISSING_WARNED = [False]
-
 
 def _noisereduce_available() -> bool:
     """Whether the optional ``noisereduce`` package can actually be imported."""
@@ -57,33 +55,29 @@ def _noisereduce_available() -> bool:
         return False
     try:
         import noisereduce  # noqa: F401
-    except Exception:
-        return False
+    except Exception:  # pragma: no cover
+        return False  # pragma: no cover
     return True
 
 
 @traced("enhance_audio")
-def enhance_audio(src: Path, start: float, dur: float, cfg: AudioCfg, threads: int, *, enhance: bool = True, denoise: bool = True) -> F32:
-    """Window audio, high-passed, denoised, loudness-normalised (speech frames only) and soft-limited.
+def enhance_audio(src: Path, start: float, dur: float, threads: int, *, enhance: bool = True, denoise: bool = True) -> F32:
+    """Window audio, optionally high-passed, denoised, loudness-normalised (speech frames only) and soft-limited.
 
-    ``cfg.enhance`` is the master off switch; ``enhance`` and ``denoise`` let the caller skip one
-    half independently (``skip.audio_enhance`` / ``skip.denoise``).  Denoising without enhancement
-    still removes noise but keeps the original level and high-pass.
+    ``enhance``/``denoise`` let the caller exercise either stage; muted clips never decode audio elsewhere.
     """
-    if not cfg.enhance or (not enhance and not denoise):
+    if not enhance and not denoise:
         return load_window_audio(src, start, dur)
     have_nr = _noisereduce_available()
-    if cfg.denoise == "noisereduce" and denoise and not have_nr and not _NOISEREDUCE_MISSING_WARNED[0]:
-        _NOISEREDUCE_MISSING_WARNED[0] = True
-        log.warning("audio.denoise is set to 'noisereduce' but the package is unavailable; falling back to ffmpeg afftdn")
-    use_nr = denoise and have_nr and (cfg.denoise == "noisereduce" or (cfg.denoise == "auto" and have_nr))
-    fft = denoise and (cfg.denoise == "ffmpeg" or (cfg.denoise in ("auto", "noisereduce") and not use_nr))
-    x: F32 = load_window_audio(src, start, dur, cfg.highpass_hz if enhance else 0, fft_denoise=fft)
+    use_nr = denoise and have_nr
+    fft = denoise and not use_nr
+    highpass = AUDIO_HIGHPASS_HZ if enhance else 0.0
+    x: F32 = load_window_audio(src, start, dur, highpass, fft_denoise=fft)
     if use_nr and len(x) >= AUDIO_SR:  # clips under a second are too short to estimate noise from
         import noisereduce
 
         pieces = [
-            noisereduce.reduce_noise(y=x[a:b], sr=AUDIO_SR, stationary=False, n_jobs=threads, prop_decrease=cfg.denoise_strength)
+            noisereduce.reduce_noise(y=x[a:b], sr=AUDIO_SR, stationary=False, n_jobs=threads, prop_decrease=DENOISE_STRENGTH)
             for a, b in piece_bounds(len(x), DENOISE_CHUNK_SECONDS * AUDIO_SR, AUDIO_SR)
         ]
         x = np.concatenate(pieces).astype(np.float32)
@@ -94,7 +88,7 @@ def enhance_audio(src: Path, start: float, dur: float, cfg: AudioCfg, threads: i
     n = int(AUDIO_SR * 0.02)
     frames = np.resize(x, len(db) * n).reshape(len(db), n)[active]
     rms_db = 20 * np.log10(np.sqrt(np.mean(frames**2)) + 1e-9)
-    x = x * np.float32(10 ** (float(np.clip(cfg.target_dbfs - rms_db, -12, 24)) / 20))
+    x = x * np.float32(10 ** (float(np.clip(AUDIO_TARGET_DBFS - rms_db, -12, 24)) / 20))
     knee, ceiling = 0.8, 0.95  # soft limiter: stays under -0.45 dBFS so AAC encoding cannot clip
     over = np.abs(x) > knee
     x[over] = np.sign(x[over]) * (knee + (ceiling - knee) * np.tanh((np.abs(x[over]) - knee) / (ceiling - knee)))
@@ -121,32 +115,32 @@ def _within_minimum(cut: list[tuple[float, float]], dur: float, min_out: float) 
 
 
 @traced("compute_keep", logging.DEBUG)
-def compute_keep(x: F32, words: Sequence[Word], dur: float, cfg: SilenceCfg, min_out: float = 0.0) -> Keep:
+def compute_keep(
+    x: F32,
+    words: Sequence[Word],
+    dur: float,
+    fillers: Sequence[str] | set[str] | frozenset[str] = (),
+    min_out: float = 0.0,
+) -> Keep:
     """Ranges ``(a, b)`` of the window (seconds) to KEEP after shortening long pauses and cutting fillers.
 
     ``min_out`` is the length the clip must keep: when the trimming would go below it, the least
     important cuts are given back, so a clip never ends up shorter than the user asked for.
     """
     whole = [(0.0, dur)]
-    if not cfg.remove:
-        return whole
     db, step = frame_db(x), 0.02
-    if cfg.threshold_db == "auto":
-        # 8 dB over the quiet tenth, at least 18 dB under the loud part, never below -70 dB
-        quiet = float(min(np.percentile(db, 10) + 8, np.percentile(db, 95) - 18))
-        thr = max(quiet, -70.0)
-    else:
-        thr = float(cfg.threshold_db)
+    # 8 dB over the quiet tenth, at least 18 dB under the loud part, never below -70 dB
+    quiet = float(min(np.percentile(db, 10) + 8, np.percentile(db, 95) - 18))
+    thr = max(quiet, -70.0)
     edges = np.diff(np.concatenate([[0], (db < thr).astype(np.int8), [0]]))  # run-length encode the silent frames
-    cut: list[tuple[float, float]] = [
-        (float(i) * step + cfg.keep_padding, float(j) * step - cfg.keep_padding)
+    cut = [
+        (float(i) * step + SILENCE_KEEP_PADDING, float(j) * step - SILENCE_KEEP_PADDING)
         for i, j in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1), strict=True)
-        if (j - i) * step >= cfg.min_silence
+        if (j - i) * step >= SILENCE_MIN_SECONDS
     ]
     cut = [(a, b) for a, b in cut if b - a > 0.05]
-    if cfg.remove_fillers:
-        fillers = {f.lower() for f in cfg.fillers}
-        cut += [(max(0.0, w.start - 0.03), min(dur, w.end + 0.03)) for w in words if not w.pseudo and is_filler(w.text, fillers)]
+    filler_set = {f.lower() for f in fillers}
+    cut += [(max(0.0, w.start - 0.03), min(dur, w.end + 0.03)) for w in words if not w.pseudo and is_filler(w.text, filler_set)]
     cut = _within_minimum(sorted(cut), dur, min_out)
     keep: Keep = []
     t = 0.0
@@ -157,7 +151,7 @@ def compute_keep(x: F32, words: Sequence[Word], dur: float, cfg: SilenceCfg, min
     if dur - t > 0.15:
         keep.append((t, dur))
     kept = sum(b - a for a, b in keep)
-    return keep if kept >= max(3.0, 0.4 * dur) else whole  # never gut a clip
+    return keep if kept >= max(3.0, 0.4 * dur) else whole
 
 
 class Timeline:

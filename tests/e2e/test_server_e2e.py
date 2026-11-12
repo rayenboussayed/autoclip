@@ -173,8 +173,7 @@ def _upload_config(media: Media) -> dict[str, Any]:
             "short": {"count": 1, "min_seconds": 5, "max_seconds": 10, "aspect": "9:16"},
         },
         "transcript": {"mode": "file", "file": str(media.transcript)},
-        "video": {"short_side": 480, "gpu": "off", "thumbnail": True},
-        "audio": {"denoise": "none"},
+        "video": {"short_side": 480, "gpu": "off"},
         "compute": {"device": "cpu"},
         "logging": {"enabled": False},
     }
@@ -267,7 +266,7 @@ def test_server_renders_an_uploaded_video(live_server: LiveServer, media: Media,
         if ".work" not in path.relative_to(live_server.output_dir).parts
     )
     info = probe(extracted)
-    assert info.width == 96, (info.width, info.height)
+    assert info.width == 320, (info.width, info.height)
     assert 4.5 <= info.duration <= 10.5, info.duration
     rows = json.loads(next(rendered.parent.glob("clips.json")).read_text(encoding="utf-8"))
     assert len(rows) == 1 and rows[0]["scene"] == "best", rows

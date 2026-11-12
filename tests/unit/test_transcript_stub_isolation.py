@@ -32,7 +32,6 @@ def test_a_cached_real_utils_module_does_not_turn_the_stub_into_a_download(
     cfg = make_cfg(
         media,
         tmp_path / "out",
-        transcript={"model": "small", "model_dir": str(tmp_path / "empty"), "auto_downgrade": False},
     )
     segs = transcript.transcribe(media.video, cfg, probe(media.video), np.zeros(10, dtype=np.float32), None)
     assert [s.text for s in segs] == SENTENCES

@@ -75,7 +75,7 @@ def test_delete_job_does_not_block_the_event_loop(tmp_path: Path) -> None:
 
 def test_delete_job_kills_a_running_pipeline_process(client: TestClient, tmp_path: Path) -> None:
     job = _job(tmp_path, "running-delete")
-    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], text=True)
     job.process = process
     try:
         response = client.delete(f"/api/jobs/{job.job_id}")

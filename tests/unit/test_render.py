@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import numpy as np
 import pytest
@@ -17,6 +17,7 @@ from autoclip.core.hardware import cpu_encoder
 from autoclip.core.media import probe
 from autoclip.core.models import Encoder, Moment, RenderJob
 from autoclip.core.render import (
+    MoviePyClip,
     blur_function,
     canvas_size,
     encode,
@@ -46,13 +47,12 @@ def test_even_and_canvas_size() -> None:
 def test_quality_profile_scales_output_and_caps_fps() -> None:
     from autoclip.core.internal import output_fps, quality_short_side
 
-    assert [quality_short_side(1000, q) for q in ("highest", "high", "medium", "low", "lowest")] == [1000, 800, 600, 400, 200]
-    assert output_fps(50.0, None, "highest") == 50.0
-    assert output_fps(50.0, None, "medium") == 30.0
-    assert output_fps(50.0, None, "low") == 24.0
-    assert output_fps(50.0, None, "lowest") == 15.0
-    assert output_fps(24.0, None, "medium") == 24.0  # never raise the source frame rate
-    assert output_fps(50.0, 60.0, "low") == 50.0  # an explicit request is clamped to the source, not the preset cap
+    assert [quality_short_side(q) for q in ("highest", "high", "medium", "low", "lowest")] == [1080, 864, 648, 432, 216]
+    assert output_fps(50.0, "highest") == 50.0  # no cap: the source frame rate is kept
+    assert output_fps(50.0, "medium") == 30.0
+    assert output_fps(50.0, "low") == 24.0
+    assert output_fps(50.0, "lowest") == 15.0
+    assert output_fps(24.0, "medium") == 24.0  # never raise the source frame rate
 
 
 def test_canvas_size_never_enlarges_the_source_by_default() -> None:
@@ -61,7 +61,6 @@ def test_canvas_size_never_enlarges_the_source_by_default() -> None:
     assert canvas_size("9:16", 1080, 320, 180, fill=True) == (102, 180)  # fill: as tall as the source allows
     assert canvas_size("9:16", 1080, 320, 180) == (320, 568)  # fit: the 9:16 canvas shrinks, the picture is not enlarged
     assert canvas_size("9:16", 1080, 1, 1) == (2, 2)  # degenerate source: never enlarged
-    assert canvas_size("9:16", 1080, 720, 1280, upscale=True) == (1080, 1920)  # explicit opt-in
 
 
 def test_estimate_grows_with_size_and_duration() -> None:
@@ -81,17 +80,17 @@ def test_encode_sets_the_audio_bitrate_and_mp4_only_flags(tmp_path: Path) -> Non
 
     hevc, h264 = Encoder("hevc_nvenc", True, "medium", ("-cq", "18")), cpu_encoder(VideoCfg(), "high")
     mp4 = Fake()
-    encode(mp4, tmp_path / "hevc.mp4", 30, hevc, 2, VideoCfg(), "high")
+    encode(cast(MoviePyClip, mp4), tmp_path / "hevc.mp4", 30, hevc, 2, VideoCfg(), "high")
     assert mp4.kwargs["audio_bitrate"] == "192k"
     assert mp4.kwargs["ffmpeg_params"] == ["-pix_fmt", "yuv420p", "-cq", "18", "-tag:v", "hvc1", "-movflags", "+faststart"]
     assert mp4.kwargs["path"].endswith("hevc.part.mp4"), "the temporary file keeps the muxer extension"
     mkv = Fake()
-    encode(mkv, tmp_path / "hevc.mkv", 30, hevc, 2, VideoCfg(container="mkv"), "highest")
+    encode(cast(MoviePyClip, mkv), tmp_path / "hevc.mkv", 30, hevc, 2, VideoCfg(), "highest")
     assert mkv.kwargs["ffmpeg_params"] == ["-pix_fmt", "yuv420p", "-cq", "18"]
     assert mkv.kwargs["path"].endswith("hevc.part.mkv")
     assert mkv.kwargs["audio_bitrate"] == "256k"
     plain = Fake()
-    encode(plain, tmp_path / "h264.mp4", 30, h264, 2, VideoCfg(), "high")
+    encode(cast(MoviePyClip, plain), tmp_path / "h264.mp4", 30, h264, 2, VideoCfg(), "high")
     assert "hvc1" not in plain.kwargs["ffmpeg_params"] and plain.kwargs["ffmpeg_params"][-2:] == ["-movflags", "+faststart"]
     assert plain.kwargs["preset"] == "slow" and plain.kwargs["codec"] == "libx264"
 
@@ -122,11 +121,12 @@ def test_layout_variants(tmp_path: Path) -> None:
     assert len(layers(layout="fill")) == 1 and layers(layout="fill")[0].size == (72, 128)
     blur = layers()
     assert len(blur) == 2 and blur[0].size == (72, 128) and blur[1].size == (72, 40)
-    colour = layers(background={"type": "color", "color": "#ff0000"})
+    colour = layers(background="#ff0000")
     assert tuple(colour[0].get_frame(0)[0, 0]) == (255, 0, 0)
-    image = layers(background={"type": "image", "image": str(tmp_path / "bg.png")})
+    image = layers(background=str(tmp_path / "bg.png"))
     assert tuple(image[0].get_frame(0)[0, 0]) == (0, 255, 0)
-    assert len(layers(background={"type": "image", "image": None})) == 2  # no image given: falls back to blur
+    assert len(layers(background="blur")) == 2  # falls back to blur
+    assert len(layers(background=str(tmp_path / "missing.png"))) == 2  # a missing image falls back to blur
     exact = layout(ColorClip((72, 128), color=(1, 2, 3)).with_duration(1), (72, 128), VideoCfg(), 1.0)
     assert len(exact) == 1  # already the right size: nothing to letter-box
 
@@ -143,7 +143,7 @@ def render(
     **sections: dict[str, Any],
 ) -> tuple[Path, tuple[int, int], list[Any]]:
     src = src or media.video
-    cfg = make_cfg(media, tmp_path, source=src, **{"audio": {"denoise": "none"}, **sections})
+    cfg = make_cfg(media, tmp_path, source=src, **sections)
     store = Store(tmp_path / "r.db", fresh=True)
     store.put_segments(load_transcript_file(media.transcript))
     cache = Cache(store, RESOURCES)
@@ -179,19 +179,24 @@ def moment(start: float = 8.0, end: float = 19.0, title: str = "A great title") 
 
 def test_render_full_featured_clip(media: Media, tmp_path: Path) -> None:
     m = moment()
-    dst, size, lines = render(media, tmp_path, m, title={"enabled": True}, video={"thumbnail": True})
+    dst, size, lines = render(media, tmp_path, m, title={"enabled": True})
     info = probe(dst)
-    assert (info.width, info.height) == size == (144, 256) and info.has_audio
+    assert (info.width, info.height) == size == (216, 384) and info.has_audio
     assert info.duration == pytest.approx(m.trimmed, abs=0.4) and m.trimmed < (m.end - m.start) - 1  # pauses were cut
     assert dst.with_suffix(".jpg").stat().st_size > 500
     assert lines and all(ln.end <= m.trimmed + 0.1 for ln in lines)
     cover = np.array(Image.open(dst.with_suffix(".jpg")))
-    assert cover.shape[:2] == (256, 144)
+    assert cover.shape[:2] == (384, 216)
+
+
+def test_render_without_fades(media: Media, tmp_path: Path) -> None:
+    dst, size, lines = render(media, tmp_path, moment(), skip={"fade": True})
+    assert dst.is_file() and size == (216, 384) and probe(dst).has_audio
 
 
 def test_render_without_audio_track_and_without_captions(media: Media, tmp_path: Path) -> None:
     dst, size, lines = render(media, tmp_path, moment(2, 9), src=media.silent, captions={"enabled": False})
-    assert not probe(dst).has_audio and lines == [] and size == (144, 256)
+    assert not probe(dst).has_audio and lines == [] and size == (216, 384)
 
 
 def test_a_rendered_clip_keeps_the_requested_minimum_length(media: Media, tmp_path: Path) -> None:
@@ -208,9 +213,7 @@ def test_render_fill_layout_plain_settings(media: Media, tmp_path: Path) -> None
         media,
         tmp_path,
         m,
-        video={"layout": "fill", "fade_seconds": 0, "fps": None},
-        audio={"enhance": False, "fade_seconds": 0, "denoise": "none"},
-        silence={"remove": False},
+        video={"layout": "fill"},
         title={"enabled": True},
     )
     assert probe(dst).duration == pytest.approx(6, abs=0.4) and m.trimmed == pytest.approx(6, abs=0.1)
@@ -220,12 +223,12 @@ def test_render_fill_layout_plain_settings(media: Media, tmp_path: Path) -> None
 def test_render_original_aspect_needs_no_letterbox_and_colour_background(media: Media, tmp_path: Path) -> None:
     _, size, _ = render(media, tmp_path, moment(0, 5), aspect="original")
     assert size == (320, 180)
-    dst, size2, _ = render(media, tmp_path / "c", moment(0, 5), video={"background": {"type": "color", "color": "#202020"}})
-    assert size2 == (144, 256) and dst.exists()
+    dst, size2, _ = render(media, tmp_path / "c", moment(0, 5), video={"background": "#202020"})
+    assert size2 == (216, 384) and dst.exists()
 
 
 def test_render_with_noise_reduction(media: Media, tmp_path: Path) -> None:
-    dst, _, _ = render(media, tmp_path, moment(0, 4), audio={"denoise": "noisereduce"})
+    dst, _, _ = render(media, tmp_path, moment(0, 4))
     assert probe(dst).has_audio
 
 
@@ -239,7 +242,7 @@ def test_render_clamps_to_video_end_and_rejects_outside_windows(media: Media, tm
 def test_render_long_form_horizontal_clip_needs_no_letterbox(media: Media, tmp_path: Path) -> None:
     dst, size, lines = render(media, tmp_path, moment(0, 9), aspect="16:9")
     info = probe(dst)
-    assert size == (256, 144) and (info.width, info.height) == (256, 144) and lines and info.has_audio  # captions kept, 16:9 canvas
+    assert size == (320, 180) and (info.width, info.height) == (320, 180) and lines and info.has_audio  # captions kept, 16:9 canvas
 
 
 def test_render_with_a_gpu_style_encoder_definition(media: Media, tmp_path: Path) -> None:
@@ -257,7 +260,7 @@ def test_render_hevc_with_captions_writes_yuv420p(media: Media, tmp_path: Path) 
 
     encoder = cpu_encoder(VideoCfg(codec="h265"), "low")
     dst, size, lines = render(media, tmp_path, moment(0, 5), encoder=encoder)
-    assert lines and probe(dst).duration > 0 and size == (144, 256)
+    assert lines and probe(dst).duration > 0 and size == (216, 384)
     with av.open(str(dst)) as container:
         stream = container.streams.video[0]
         pixel_format = stream.codec_context.format
@@ -275,7 +278,7 @@ def test_skip_audio_mutes_the_clip_and_keeps_the_window(media: Media, tmp_path: 
 
 
 def test_skip_caption_burns_no_captions(media: Media, tmp_path: Path) -> None:
-    dst, _, lines = render(media, tmp_path, moment(), skip={"caption": True})
+    dst, _, lines = render(media, tmp_path, moment(), captions={"enabled": False})
     assert lines == [] and probe(dst).has_audio
 
 
@@ -290,18 +293,13 @@ def test_skip_title_draws_no_title(media: Media, tmp_path: Path, monkeypatch: py
         return real(*args, **kwargs)
 
     monkeypatch.setattr(render_mod, "render_text_image", spy)
-    dst, _, lines = render(media, tmp_path, moment(), title={"enabled": True}, skip={"title": True})
+    dst, _, lines = render(media, tmp_path, moment(), title={"enabled": False})
     assert drawn == [] and lines and dst.exists()  # the captions still go through captions.render_text_image
 
 
-def test_skip_thumbnail_writes_no_cover(media: Media, tmp_path: Path) -> None:
-    dst, _, _ = render(media, tmp_path, moment(), video={"thumbnail": True}, skip={"thumbnail": True})
-    assert dst.exists() and not dst.with_suffix(".jpg").exists()
-
-
-def test_skip_pauses_keeps_the_whole_window(media: Media, tmp_path: Path) -> None:
+def test_skip_audio_keeps_the_whole_window(media: Media, tmp_path: Path) -> None:
     m = moment()
-    dst, _, _ = render(media, tmp_path, m, skip={"pauses": True})
+    dst, _, _ = render(media, tmp_path, m, skip={"audio": True})
     assert m.trimmed == pytest.approx(m.end - m.start, abs=0.2)
     assert probe(dst).duration == pytest.approx(m.end - m.start, abs=0.4)
 
@@ -317,8 +315,8 @@ def test_render_passes_the_audio_skips(media: Media, tmp_path: Path, monkeypatch
         return real(*args, **kwargs)
 
     monkeypatch.setattr(render_mod, "enhance_audio", spy)
-    render(media, tmp_path, moment(0, 4), skip={"audio_enhance": True, "denoise": True})
-    assert seen == [{"enhance": False, "denoise": False}]
+    render(media, tmp_path, moment(0, 4), skip={"audio": True})
+    assert seen == []
 
 
 def first_frame_mean(path: Path) -> float:
@@ -329,7 +327,9 @@ def first_frame_mean(path: Path) -> float:
         clip.close()
 
 
-def test_skip_fade_does_not_darken_the_start(media: Media, tmp_path: Path) -> None:
-    faded, _, _ = render(media, tmp_path / "a", moment(0, 4), video={"fade_seconds": 1.0})
-    plain, _, _ = render(media, tmp_path / "b", moment(0, 4), video={"fade_seconds": 1.0}, skip={"fade": True})
+def test_render_internal_fade_darkens_the_start(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(render_mod, "video_fade_seconds", lambda duration, *args, **kwargs: 1.0)
+    faded, _, _ = render(media, tmp_path / "a", moment(0, 4))
+    monkeypatch.setattr(render_mod, "video_fade_seconds", lambda duration, *args, **kwargs: 0.0)
+    plain, _, _ = render(media, tmp_path / "b", moment(0, 4))
     assert first_frame_mean(faded) < first_frame_mean(plain) - 30

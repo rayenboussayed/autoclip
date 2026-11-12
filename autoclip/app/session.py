@@ -18,12 +18,11 @@ import threading
 import webbrowser
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
-from datetime import datetime
 from pathlib import Path
 from queue import Queue as _Queue
-from typing import Any
+from typing import cast
 
-from ..core.config import Config, is_url, load_config, parse
+from ..core.config import Config, FileConfig, JsonValue, RuntimeOverrides, _default_output_dir, is_url, load_config, parse
 from ..core.errors import AutoclipError, ConfigError
 from ..core.events import CancelToken
 from ..core.transcript import ConsentProvider
@@ -33,13 +32,13 @@ from .fields import JSON_PATHS
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def flatten(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
+def flatten(data: dict[str, JsonValue], prefix: str = "") -> dict[str, JsonValue]:
     """A nested config dict as ``{"clips.short.count": 5, ...}`` (lists stay lists).
 
     A JSON option (``download.platforms.groups`` and the like) is one leaf: the form edits the whole
     object in one control, so its keys must not become option paths of their own.
     """
-    flat: dict[str, Any] = {}
+    flat: dict[str, JsonValue] = {}
     for key, value in data.items():
         path = f"{prefix}{key}"
         if isinstance(value, dict) and path not in JSON_PATHS:
@@ -49,14 +48,14 @@ def flatten(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
     return flat
 
 
-def unflatten(values: dict[str, Any]) -> dict[str, Any]:
+def unflatten(values: dict[str, JsonValue]) -> dict[str, JsonValue]:
     """``{"clips.short.count": 5}`` back into a nested config dict."""
-    out: dict[str, Any] = {}
+    out: dict[str, JsonValue] = {}
     for path, value in values.items():
         parts = path.split(".")
         node = out
         for part in parts[:-1]:
-            node = node.setdefault(part, {})
+            node = cast(dict[str, JsonValue], node.setdefault(part, {}))
         node[parts[-1]] = value
     return out
 
@@ -66,9 +65,14 @@ def split_csv(text: str) -> list[str]:
     return [part.strip() for part in text.replace("\n", ",").split(",") if part.strip()]
 
 
-def default_values() -> dict[str, Any]:
+def default_values() -> dict[str, JsonValue]:
     """The values of a fresh config file (every option with its default)."""
-    return flatten(asdict(Config()))
+    return flatten(asdict(FileConfig()))
+
+
+def default_output_dir() -> Path:
+    """The output folder of a run when the user has not chosen one."""
+    return Path(_default_output_dir())
 
 
 def default_config_path(
@@ -99,7 +103,7 @@ def default_config_path(
     return (Path(xdg) if xdg else home / ".config") / "autoclip" / "config.json"
 
 
-def read_config(path: Path) -> dict[str, Any]:
+def read_config(path: Path) -> dict[str, JsonValue]:
     """The config file as a flat dict of option paths.
 
     Raises:
@@ -112,24 +116,25 @@ def read_config(path: Path) -> dict[str, Any]:
     return flatten(data)
 
 
-def write_config(path: Path, data: dict[str, Any]) -> None:
+def write_config(path: Path, data: dict[str, JsonValue]) -> None:
     """Write a config file (the folders are created when needed)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def check_config(data: dict[str, Any]) -> None:
+def check_config(data: dict[str, JsonValue]) -> None:
     """Check the data against the schema of the config file.
 
     Raises:
         ConfigError: if the data does not fit the schema.
     """
-    parse(Config, data)
+    parse(FileConfig, data)
 
 
 __all__ = [
     "check_config",
     "default_config_path",
+    "default_output_dir",
     "default_values",
     "flatten",
     "open_folder",
@@ -165,25 +170,32 @@ class _QueueHandler(logging.Handler):
 
 
 def _resolve_log_file(cfg: Config) -> Path | None:
-    lg = cfg.logging
-    if not lg.enabled:
+    """The log file of a run, or ``None`` when logging is disabled."""
+    if cfg.logging.level == "OFF":
         return None
-    from pathlib import Path as _P
+    from ..core.log import default_log_file
 
-    if lg.file:
-        return _P(lg.file)
-    return Path(cfg.output_dir) / "logs" / f"autoclip_{datetime.now():%Y%m%d_%H%M%S}.log"
+    return default_log_file(cfg.output_dir)
 
 
-def run_pipeline(config_path: Path, *, cancel: CancelToken, on_line: Callable[[str], None], consent: ConsentProvider | None = None) -> int:
+def run_pipeline(
+    config_path: Path,
+    *,
+    cancel: CancelToken,
+    on_line: Callable[[str], None],
+    consent: ConsentProvider | None = None,
+    output_dir: Path | str | None = None,
+) -> int:
     """Run one config file entirely in-process (no CLI subprocess).
 
     Reports every log line through ``on_line`` and returns the exit code (0 ok, 1 failed, 2 bad config).
+    ``output_dir`` is the app's own output-folder choice; it is never written to the config file.
     """
     import logging as _logging
 
     try:
-        cfg = load_config(config_path)
+        overrides = RuntimeOverrides(output_dir=str(output_dir)) if output_dir is not None else None
+        cfg = load_config(config_path, overrides)
     except ConfigError as e:
         on_line(f"error: {e}")
         return 2
@@ -276,11 +288,21 @@ def run_pipeline(config_path: Path, *, cancel: CancelToken, on_line: Callable[[s
         cancel=cancel,
     )
 
-    encoder = pick_encoder(cfg.video, cfg.quality, allow_gpu=cfg.compute.device != "cpu")
+    encoder = pick_encoder(cfg.video, cfg.quality, allow_gpu=True)
     from ..core.batch import run_batch
 
     try:
-        result = run_batch(cfg, downloader=downloader, encoder=encoder, log_file=log_file, report=reporter, cancel=cancel, consent=consent)
+        config_dir = config_path.resolve().parent
+        result = run_batch(
+            cfg,
+            config_dir=config_dir,
+            downloader=downloader,
+            encoder=encoder,
+            log_file=log_file,
+            report=reporter,
+            cancel=cancel,
+            consent=consent,
+        )
         on_line(f"finished: {result.clips_done} done, {result.clips_failed} failed")
         _cleanup_handlers(_LOG, (adapter,))
         on_line("")

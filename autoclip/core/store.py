@@ -38,6 +38,7 @@ class ClipRow(TypedDict):
     score: float | None
     llm_score: float | None
     title: str
+    caption: str
     text: str
     status: str
     file: str
@@ -54,7 +55,7 @@ CREATE TABLE IF NOT EXISTS segments(id INTEGER PRIMARY KEY, start REAL, end REAL
 CREATE TABLE IF NOT EXISTS words(start REAL, end REAL, text TEXT, pseudo INTEGER);
 CREATE INDEX IF NOT EXISTS ix_words_start ON words(start);
 CREATE TABLE IF NOT EXISTS clips(id INTEGER PRIMARY KEY, kind TEXT, scene TEXT, n INTEGER, start REAL, end REAL,
-                                 score REAL, llm_score REAL, title TEXT, text TEXT, status TEXT, file TEXT,
+                                 score REAL, llm_score REAL, title TEXT, caption TEXT, text TEXT, status TEXT, file TEXT,
                                  width INTEGER, height INTEGER, trimmed REAL, wall REAL, error TEXT);
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v BLOB NOT NULL, size INTEGER, atime REAL);
 CREATE INDEX IF NOT EXISTS ix_kv_atime ON kv(atime);
@@ -80,6 +81,7 @@ class Store:
             "synchronous=NORMAL",
             "temp_store=FILE",  # sorts / temp tables spill to disk, not RAM
             f"cache_size=-{cache_kb}",
+            "mmap_size=67108864",  # 64 MiB may use the OS page cache for the WAL sidecar, when the host allows it
             "busy_timeout=60000",
         ):
             self.conn.execute(f"PRAGMA {pragma}")
@@ -142,8 +144,9 @@ class Store:
     def save_moment(self, kind: str, scene: str, n: int, m: Moment) -> int:
         """Register a selected clip as ``pending`` and return its id."""
         cur = self.conn.execute(
-            "INSERT INTO clips(kind, scene, n, start, end, score, llm_score, title, text, status) VALUES (?,?,?,?,?,?,?,?,?, 'pending')",
-            (kind, scene, n, m.start, m.end, m.score, m.llm_score, m.title, m.text),
+            "INSERT INTO clips(kind, scene, n, start, end, score, llm_score, title, caption, text, status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?, 'pending')",
+            (kind, scene, n, m.start, m.end, m.score, m.llm_score, m.title, m.caption, m.text),
         )
         assert cur.lastrowid is not None
         return cur.lastrowid
@@ -184,13 +187,18 @@ class Store:
         self.conn.execute("INSERT OR REPLACE INTO kv(k, v, size, atime) VALUES (?,?,?,?)", (key, value, len(value), time.time()))
 
     def kv_evict(self, max_bytes: int) -> None:
-        """Delete least-recently-used blobs until the total size is at most ``max_bytes``."""
+        """Delete least-recently-used blobs until the total size is at most ``max_bytes``. Batched in one transaction."""
         excess = self.conn.execute("SELECT COALESCE(SUM(size), 0) - ? FROM kv", (max_bytes,)).fetchone()[0]
+        if excess <= 0:
+            return
+        doomed: list[tuple[str]] = []
         for row in self.conn.execute("SELECT k, size FROM kv ORDER BY atime").fetchall():
+            doomed.append((row["k"],))
+            excess -= row["size"]
             if excess <= 0:
                 break
-            self.conn.execute("DELETE FROM kv WHERE k=?", (row["k"],))
-            excess -= row["size"]
+        with self.transaction():
+            self.conn.executemany("DELETE FROM kv WHERE k=?", doomed)
 
 
 def is_boundary(text: str, gap_to_next: float | None) -> bool:
@@ -212,11 +220,11 @@ class MemoryLRU:
         self._items: OrderedDict[str, bytes] = OrderedDict()
 
     def get(self, key: str) -> bytes | None:
-        """The value, marked most recently used."""
-        value = self._items.get(key)
-        if value is not None:
+        """The value, marked most recently used. Empty values are first-class entries, so membership is used."""
+        if key in self._items:
             self._items.move_to_end(key)
-        return value
+            return self._items[key]
+        return None
 
     def put(self, key: str, value: bytes) -> None:
         """Insert ``value``; one larger than the whole budget is not kept."""
@@ -262,10 +270,10 @@ class Cache:
         blob = self.mem.get(key)
         if blob is None:
             blob = self.store.kv_get(key)
-        if blob is None:
-            buf = io.BytesIO()
-            np.save(buf, producer(), allow_pickle=False)
-            blob = zlib.compress(buf.getvalue(), 1)
-            self.store.kv_put(key, blob)
-        self.mem.put(key, blob)
+            if blob is None:
+                buf = io.BytesIO()
+                np.save(buf, producer(), allow_pickle=False)
+                blob = zlib.compress(buf.getvalue(), 1)
+                self.store.kv_put(key, blob)
+            self.mem.put(key, blob)
         return cast(NDArray[_DType], np.load(io.BytesIO(zlib.decompress(blob)), allow_pickle=False))

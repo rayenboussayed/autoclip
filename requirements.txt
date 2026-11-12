@@ -15,7 +15,6 @@ yt-dlp[default]>=2026.10.21
 pydub>=0.25.1   # downloading the http(s) URLs in `input` (lazy import: local runs never load it)
 tkinterdnd2>=0.7                  # drag and drop of video files (graceful fallback when it is unavailable)
 
-# optional: speech denoising, scene-cut snapping and speech enhancement (all degrade gracefully when absent)
+# optional: speech denoising and speech enhancement (both degrade gracefully when absent)
 noisereduce>=3.0
 sherpa-onnx>=1.13,<2
-scenedetect[opencv]>=0.7

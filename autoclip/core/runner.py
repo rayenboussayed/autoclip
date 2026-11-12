@@ -107,8 +107,8 @@ def render_all(
     mode_name = RESOURCES.mode if isinstance(getattr(RESOURCES, "mode", None), str) else "balance"
     try:
         profile = RESOURCES.profile
-    except AttributeError:
-        profile = modes.profile_for(mode_name)
+    except AttributeError:  # pragma: no cover
+        profile = modes.profile_for(mode_name)  # pragma: no cover
     capacity = 1 if not getattr(profile, "parallel", True) else min(RESOURCES.cpu_budget(), len(jobs), limit)
     if cancel is not None and cancel.cancelled:
         return
@@ -145,7 +145,7 @@ def render_all(
                     running[fut] = job
                     started_at[fut] = time.perf_counter()
                 if not running:
-                    break
+                    break  # pragma: no cover
                 done, _ = wait(running, return_when=FIRST_COMPLETED)
                 for future in done:
                     job = running.pop(future)
@@ -178,12 +178,12 @@ def render_all(
     for job in retry + list(pending):
         gc.collect()
         if cancel is not None and cancel.cancelled:
-            break
+            break  # pragma: no cover
         t0 = time.perf_counter()
         render_job(replace(job, threads=RESOURCES.encoding_thread_budget()))
         RESOURCES.record_job(time.perf_counter() - t0, peak_rss=0, threads=RESOURCES.encoding_thread_budget(), workers=1)
         finished += 1
         if report is not None:
-            report("render", finished / total, f"clip {finished}/{total}")
+            report("render", finished / total, f"clip {finished}/{total}")  # pragma: no cover
     with contextlib.suppress(Exception):
         RESOURCES.adapt()

@@ -6,8 +6,9 @@ import functools
 import logging
 import math
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -16,10 +17,47 @@ from .captions import Y_CENTER, build_captions, render_text_image, safe_top
 from .config import VideoCfg
 from .fonts import find_font
 from .internal import output_fps, quality_profile, quality_short_side
+from .internal.automation import (
+    BACKGROUND_BLUR,
+    BACKGROUND_DIM,
+    audio_fade_seconds,
+    title_display_seconds,
+    video_fade_seconds,
+)
+from .internal.background import background_kind
 from .log import safe_path_text, speed_text, traced
 from .media import AUDIO_SR
 from .models import Encoder, RenderJob, Span, Word
 from .store import Cache, Store
+
+
+#: A MoviePy clip. MoviePy ships no type stubs, so this Protocol describes the surface autoclip uses.
+class MoviePyClip(Protocol):
+    w: int
+    h: int
+    duration: float
+    fps: float
+
+    def with_effects(self, _effects: list[object]) -> MoviePyClip: ...
+
+    def with_audio(self, audio: object) -> MoviePyClip: ...
+
+    def with_duration(self, duration: float) -> MoviePyClip: ...
+
+    def with_position(self, pos: object) -> MoviePyClip: ...
+
+    def without_mask(self) -> MoviePyClip: ...
+
+    def subclipped(self, start: float, end: float) -> MoviePyClip: ...
+
+    def image_transform(self, _func: object) -> MoviePyClip: ...
+
+    def write_videofile(self, *args: object, **kwargs: object) -> None: ...
+
+    def save_frame(self, filename: str, t: float = 0.0, with_mask: bool = True) -> None: ...
+
+    def get_frame(self, t: float = 0.0) -> np.ndarray: ...
+
 
 log = logging.getLogger("autoclip")
 
@@ -29,22 +67,21 @@ def even(v: float) -> int:
     return max(2, round(v / 2) * 2)
 
 
-def canvas_size(aspect: str, short_side: int, src_w: int, src_h: int, *, upscale: bool = False, fill: bool = False) -> tuple[int, int]:
+def canvas_size(aspect: str, short_side: int, src_w: int, src_h: int, *, fill: bool = False) -> tuple[int, int]:
     """Output ``(width, height)`` for an ``aspect`` such as "9:16" ("original" keeps the source size).
 
-    ``upscale = False`` (the default) never enlarges the source: the requested canvas is scaled down as a whole
-    - keeping its aspect - until the source just covers it (``fill``) or fits inside it (``fit``). A 720p source
-    therefore stays 720p instead of being blown up to 1080p before encoding again.
+    The source is never enlarged: the requested canvas is scaled down as a whole - keeping its aspect -
+    until the source just covers it (``fill``) or fits inside it (``fit``). A 720p source therefore stays
+    720p instead of being blown up before encoding again.
     """
     if aspect == "original" or (src_w <= 0 or src_h <= 0):
         return even(src_w), even(src_h)
     a, _, b = aspect.partition(":")
     ratio = float(a) / float(b)
     w, h = (short_side, short_side / ratio) if ratio < 1 else (short_side * ratio, short_side)
-    if not upscale:
-        scale = max(w / src_w, h / src_h) if fill else min(w / src_w, h / src_h)
-        if scale > 1:
-            w, h = w / scale, h / scale
+    scale = max(w / src_w, h / src_h) if fill else min(w / src_w, h / src_h)
+    if scale > 1:
+        w, h = w / scale, h / scale
     return even(w), even(h)
 
 
@@ -54,7 +91,7 @@ def estimate_render_bytes(size: tuple[int, int], seconds: float) -> int:
     return int(220 * (1 << 20) + 12 * w * h * 3 + 8 * seconds * AUDIO_SR * 4 + 3 * w * (h // 4) * 4)
 
 
-def blur_function(sigma: float, dim: float) -> Any:
+def blur_function(sigma: float, dim: float) -> Callable[[np.ndarray], np.ndarray]:
     """Frame function: Gaussian blur followed by dimming (OpenCV, which is much faster than Pillow's)."""
     import cv2
 
@@ -62,7 +99,7 @@ def blur_function(sigma: float, dim: float) -> Any:
 
 
 @functools.cache
-def _resize_effect() -> Any:
+def _resize_effect() -> type:
     """MoviePy ``Resize`` using OpenCV instead of Pillow-LANCZOS (about 5x faster per frame)."""
     import cv2
     from moviepy import vfx
@@ -78,12 +115,12 @@ def _resize_effect() -> Any:
     return CvResize
 
 
-def resize_to(clip: Any, w: int, h: int) -> Any:
+def resize_to(clip: MoviePyClip, w: int, h: int) -> MoviePyClip:
     """Resize a MoviePy clip to exactly ``w x h``."""
     return clip.with_effects([_resize_effect()(new_size=(int(w), int(h)))])
 
 
-def fill_to(clip: Any, w: int, h: int) -> Any:
+def fill_to(clip: MoviePyClip, w: int, h: int) -> MoviePyClip:
     """Scale ``clip`` to cover ``w x h`` and centre-crop."""
     from moviepy import vfx
 
@@ -92,7 +129,7 @@ def fill_to(clip: Any, w: int, h: int) -> Any:
     return big.with_effects([vfx.Crop(x_center=big.w / 2, y_center=big.h / 2, width=w, height=h)])
 
 
-def layout(fg: Any, size: tuple[int, int], cfg: VideoCfg, duration: float) -> list[Any]:
+def layout(fg: MoviePyClip, size: tuple[int, int], cfg: VideoCfg, duration: float) -> list[MoviePyClip]:
     """Video layers on the canvas: filled, or the whole frame on a blurred / coloured / image background."""
     from moviepy import ColorClip, ImageClip
     from PIL import ImageColor
@@ -105,13 +142,19 @@ def layout(fg: Any, size: tuple[int, int], cfg: VideoCfg, duration: float) -> li
     if (front.w, front.h) == (w, h):
         return [front]
     bg = cfg.background
-    if bg.type == "color":
-        back = ColorClip((w, h), color=ImageColor.getrgb(bg.color)[:3]).with_duration(duration)
-    elif bg.type == "image" and bg.image:
-        back = fill_to(ImageClip(bg.image).with_duration(duration), w, h)
+    kind = background_kind(bg)
+    if kind == "color":
+        back = ColorClip((w, h), color=ImageColor.getrgb(bg)[:3]).with_duration(duration)
+    elif kind == "image":
+        try:
+            back = fill_to(ImageClip(bg).with_duration(duration), w, h)
+        except Exception as e:  # a missing image must not cost the clip
+            log.warning("background image '%s' unavailable (%s): using blur", bg, e)
+            small = fill_to(fg, max(2, even(w / 6)), max(2, even(h / 6)))
+            back = resize_to(small.image_transform(blur_function(max(0.5, BACKGROUND_BLUR / 6), BACKGROUND_DIM)), w, h)
     else:  # blur at 1/6 resolution, then scale up: 6x less work, same look
         small = fill_to(fg, max(2, even(w / 6)), max(2, even(h / 6)))
-        back = resize_to(small.image_transform(blur_function(max(0.5, bg.blur / 6), bg.dim)), w, h)
+        back = resize_to(small.image_transform(blur_function(max(0.5, BACKGROUND_BLUR / 6), BACKGROUND_DIM)), w, h)
     return [back, front.with_position("center")]
 
 
@@ -122,7 +165,7 @@ def _is_hevc(name: str) -> bool:
 
 
 @traced("encode_video")
-def encode(comp: Any, dst: Path, fps: float, encoder: Encoder, threads: int, video: VideoCfg, quality: str) -> None:
+def encode(comp: MoviePyClip, dst: Path, fps: float, encoder: Encoder, threads: int, video: VideoCfg, quality: str) -> None:
     """Write the chosen codec + AAC (yuv420p; faststart and the ``hvc1`` tag for MP4) with the ``encoder``."""
     t0 = time.perf_counter()
     mp4 = dst.suffix.lower() == ".mp4"
@@ -163,7 +206,7 @@ def encode(comp: Any, dst: Path, fps: float, encoder: Encoder, threads: int, vid
 
 
 @traced("render_clip")
-def render_clip(vclip: Any, job: RenderJob, store: Store, cache: Cache) -> tuple[tuple[int, int], list[Span]]:
+def render_clip(vclip: MoviePyClip, job: RenderJob, store: Store, cache: Cache) -> tuple[tuple[int, int], list[Span]]:
     """Render one clip: enhance audio, cut pauses/fillers, lay out, caption, fade, encode, cover image.
 
     Args:
@@ -180,13 +223,10 @@ def render_clip(vclip: Any, job: RenderJob, store: Store, cache: Cache) -> tuple
     kcfg = cfg.clips.kind(job.kind)  # the length the clip may have
     start, dur = moment.start, moment.end - moment.start
     has_audio = has_audio and not cfg.skip.audio  # a muted clip needs no decoding either
-    title_on = cfg.title.enabled and not cfg.skip.title
+    title_on = cfg.title.enabled
     words = [Word(w.start - start, w.end - start, w.text, w.pseudo) for w in store.window_words(moment.start, moment.end)]
-    if has_audio:
-        audio = enhance_audio(src, start, dur, cfg.audio, threads, enhance=not cfg.skip.audio_enhance, denoise=not cfg.skip.denoise)
-    else:
-        audio = None
-    keep = compute_keep(audio, words, dur, cfg.silence, kcfg.min_seconds) if audio is not None and not cfg.skip.pauses else [(0.0, dur)]
+    audio = enhance_audio(src, start, dur, threads) if has_audio else None
+    keep = compute_keep(audio, words, dur, job.fillers, kcfg.min_seconds) if audio is not None else [(0.0, dur)]
 
     parts, kept = [], []  # clamp to the real video stream: containers often report a slightly longer duration
     for a, b in keep:
@@ -202,41 +242,48 @@ def render_clip(vclip: Any, job: RenderJob, store: Store, cache: Cache) -> tuple
         log.info("clip is %.1fs, shorter than the requested %s minimum of %.0fs", moment.trimmed, job.kind, kcfg.min_seconds)
     size = canvas_size(
         job.aspect,
-        quality_short_side(cfg.video.short_side, cfg.quality),
+        quality_short_side(cfg.quality),
         vclip.w,
         vclip.h,
-        upscale=cfg.video.upscale,
         fill=cfg.video.layout == "fill",
     )
     overlays = []
     captions, lines = (
-        build_captions(words, Timeline(kept), cfg, cache, size, fg.duration)
-        if cfg.captions.enabled and not cfg.skip.caption and words
+        build_captions(words, Timeline(kept), cfg, cache, size, fg.duration, fillers=job.fillers)
+        if cfg.captions.enabled and words
         else (None, [])
     )
     if captions is not None:
         overlays.append(captions)
     if title_on and moment.title:
         cc = cfg.captions
-        art = render_text_image(moment.title, find_font(moment.title, cc.font), int(min(size) / 13), cc, int(size[0] * 0.92))
-        top = safe_top(Y_CENTER[cfg.title.position], size[1], size[0], cc, art.shape[0])
-        overlays.append(ImageClip(art).with_duration(min(cfg.title.seconds, fg.duration)).with_position(("center", top)))
+        art = render_text_image(moment.title, find_font(moment.title), int(min(size) / 13), cc, int(size[0] * 0.92))
+        top = safe_top(Y_CENTER["top"], size[1], size[0], cc, art.shape[0])
+        overlays.append(
+            ImageClip(art)
+            .with_duration(title_display_seconds(moment.title, fg.duration, quality=cfg.quality))
+            .with_position(("center", top))
+        )
 
     comp = CompositeVideoClip(layout(fg, size, cfg.video, fg.duration) + overlays, size=size).with_duration(fg.duration)
-    if cfg.video.fade_seconds > 0 and not cfg.skip.fade:
-        comp = comp.with_effects([vfx.FadeIn(cfg.video.fade_seconds), vfx.FadeOut(cfg.video.fade_seconds)])
+    if not cfg.skip.fade:
+        video_fade = video_fade_seconds(fg.duration, quality=cfg.quality, kind=job.kind)
+        comp = comp.with_effects([vfx.FadeIn(video_fade), vfx.FadeOut(video_fade)])
     if audio is not None:
         mono = build_audio(audio, kept, fg.duration)
         sound = AudioArrayClip(np.stack([mono, mono], axis=1), fps=AUDIO_SR)
-        if cfg.audio.fade_seconds > 0 and not cfg.skip.fade:
-            sound = sound.with_effects([afx.AudioFadeIn(cfg.audio.fade_seconds), afx.AudioFadeOut(cfg.audio.fade_seconds)])
+        if not cfg.skip.fade:
+            audio_fade = audio_fade_seconds(fg.duration, quality=cfg.quality)
+            sound = sound.with_effects([afx.AudioFadeIn(audio_fade), afx.AudioFadeOut(audio_fade)])
         comp = comp.with_audio(sound)
-    fps = output_fps(vclip.fps, cfg.video.fps, cfg.quality)
+    fps = output_fps(vclip.fps, cfg.quality)
     # Flattening here drops the per-overlay alpha from the frames MoviePy sends to ffmpeg,
     # so the encoder never sees an rgba/i444 stream (libx265 main profile rejects i444).
     comp = comp.without_mask()
     encode(comp, dst, float(fps), job.encoder, threads, cfg.video, cfg.quality)
-    if cfg.video.thumbnail and not cfg.skip.thumbnail:
-        cover_t = min(max(0.5, cfg.title.seconds / 2 if title_on else 1.0), max(0.0, fg.duration - 0.1))
-        comp.save_frame(str(dst.with_suffix(".jpg")), t=cover_t, with_mask=False)
+    cover_t = min(
+        max(0.5, title_display_seconds(moment.title, fg.duration, quality=cfg.quality) / 2 if title_on else 1.0),
+        max(0.0, fg.duration - 0.1),
+    )
+    comp.save_frame(str(dst.with_suffix(".jpg")), t=cover_t, with_mask=False)
     return size, lines

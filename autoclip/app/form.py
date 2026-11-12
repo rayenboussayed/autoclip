@@ -14,8 +14,8 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from tkinter import filedialog, ttk
-from typing import Any
 
+from ..core.config import JsonValue
 from .fields import Option
 from .session import flatten, split_csv, unflatten
 
@@ -25,12 +25,12 @@ except Exception:  # pragma: no cover - depends on the installed extras
     _DND_FILES = None
 
 #: A callback that receives the changed option path and its new value.
-Changed = Callable[[str, Any], None]
+Changed = Callable[[str, object], None]
 
 __all__ = ["Changed", "Field", "Form", "ScrollFrame", "flatten", "split_csv", "unflatten", "variable_value"]
 
 
-def variable_value(var: tk.Variable) -> Any:
+def variable_value(var: tk.Variable) -> object:
     """The value of a Tk variable (the type stubs do not describe ``Variable.get``)."""
     return var.get()  # type: ignore[no-untyped-call]
 
@@ -85,7 +85,7 @@ class Field:
     var: tk.Variable | None = None  # the variable behind the control
     text: tk.Text | None = None  # the text widget of a multi-line option
 
-    def value(self) -> Any:
+    def value(self) -> object:
         """The current value of the control, in the type the config expects."""
         kind = self.option.kind
         if kind == "bool":
@@ -120,17 +120,17 @@ class Field:
                     return text
         return text
 
-    def _json_value(self) -> Any:
+    def _json_value(self) -> JsonValue | str:
         """The object typed into a JSON field, or the text itself when it does not parse."""
         text = self.text.get("1.0", "end").strip() if self.text else ""
         if not text:
             return {}
         try:
-            return json.loads(text)
+            return json.loads(text)  # type: ignore[no-any-return]
         except json.JSONDecodeError:
             return text  # the config check reports it with the option path, which a silent {} would hide
 
-    def set(self, value: Any) -> None:
+    def set(self, value: JsonValue | str | bool | int | float | None) -> None:
         """Put a value into the control."""
         kind = self.option.kind
         if kind in ("lines", "json"):
@@ -141,7 +141,10 @@ class Field:
                 text = json.dumps(value, indent=2, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value or "{}")
                 self.text.insert("1.0", text)
             else:
-                self.text.insert("1.0", value if isinstance(value, str) else "\n".join(str(v) for v in value or []))
+                self.text.insert(
+                    "1.0",
+                    value if isinstance(value, str) else "\n".join(str(v) for v in (value if isinstance(value, (list, tuple)) else [])),
+                )
             return
         if self.var is None:
             return
@@ -149,7 +152,7 @@ class Field:
             if isinstance(value, str):
                 self.var.set(value)
             else:
-                self.var.set(", ".join(str(v) for v in value or []))
+                self.var.set(", ".join(str(v) for v in (value if isinstance(value, (list, tuple)) else [])))
         elif value is None:
             self.var.set("")
         else:
@@ -163,7 +166,7 @@ class Form(ttk.Frame):
         self,
         master: tk.Misc,
         options: tuple[Option, ...],
-        values: dict[str, Any],
+        values: dict[str, JsonValue],
         changed: Changed,
         wheel: Callable[[tk.Event], None] | None = None,
     ) -> None:
@@ -275,7 +278,7 @@ class Form(ttk.Frame):
     def _reporter(self, option: Option, var: tk.Variable) -> Callable[..., None]:
         """A callback that reports a changed value to the window."""
 
-        def report(*_args: Any) -> None:
+        def report(*_args: object) -> None:
             field = self.fields.get(option.path)
             self._changed(option.path, field.value() if field else variable_value(var))
 
@@ -290,7 +293,7 @@ class Form(ttk.Frame):
 
         return report
 
-    def _as_text(self, option: Option, value: Any) -> str:
+    def _as_text(self, option: Option, value: object) -> str:
         """The text an entry should show for a value."""
         if value is None:
             return ""
@@ -334,7 +337,7 @@ class Form(ttk.Frame):
             return
         bind("<<Drop>>", self._on_drop_videos)
 
-    def _on_drop_videos(self, event: Any) -> str | None:
+    def _on_drop_videos(self, event: tk.Event) -> str | None:
         """Add the files from a drag-and-drop operation to the input list (de-duplicated)."""
         data = getattr(event, "data", "")
         try:
@@ -350,7 +353,7 @@ class Form(ttk.Frame):
     def _add_videos(self, paths: list[str]) -> None:
         """Merge new video paths into the input list without duplicates."""
         field = self.fields.get("input")
-        current = list(self._values.get("input") or [])
+        current = list(self._values.get("input") or [])  # type: ignore[arg-type]
         merged = list(current)
         changed = False
         for path in paths:

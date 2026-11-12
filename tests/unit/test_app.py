@@ -24,7 +24,7 @@ pytest.importorskip("tkinter")
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from autoclip.app.fields import KINDS, OPTIONS, SECTIONS, option_paths
+from autoclip.app.fields import KINDS, OPTIONS, SECTIONS, Option, option_paths
 from autoclip.app.session import (
     check_config,
     default_config_path,
@@ -36,13 +36,13 @@ from autoclip.app.session import (
     unflatten,
     write_config,
 )
-from autoclip.core.config import Config
+from autoclip.core.config import FileConfig, JsonValue
 from autoclip.core.errors import ConfigError
 
 pytest.importorskip("tkinter", reason="the desktop app needs tkinter")
 
 
-def config_paths(cls: Any = Config, prefix: str = "") -> set[str]:
+def config_paths(cls: Any = FileConfig, prefix: str = "") -> set[str]:
     """Every option path of the config dataclasses (``clips.short.count`` and so on)."""
     paths: set[str] = set()
     for name, hint in get_type_hints(cls).items():
@@ -58,6 +58,15 @@ def config_paths(cls: Any = Config, prefix: str = "") -> set[str]:
         else:
             paths.add(path)
     return paths
+
+
+#: Options of a kind the seven-key file does not need: the form still has to build and read them.
+INT_OPTION = Option("test.count", "Count", "int", "A number.", "To test the form.", "In this test.")
+JSON_OPTION = Option("test.data", "Data", "json", "An object.", "To test the form.", "In this test.")
+PATH_OPTION = Option("test.file", "File", "path", "A file.", "To test the form.", "In this test.")
+DIR_OPTION = Option("test.folder", "Folder", "dir", "A folder.", "To test the form.", "In this test.")
+MODE_OPTION = Option("test.mode", "Mode", "choice", "A choice.", "To test the form.", "In this test.", choices=("a", "b"))
+RANGES_OPTION = Option("test.ranges", "Ranges", "lines", "Lines.", "To test the form.", "In this test.", visible_when="test.mode=b")
 
 
 def has_display() -> bool:
@@ -84,6 +93,14 @@ def test_every_config_option_is_in_the_app() -> None:
     assert set(option_paths()) == config_paths()
 
 
+def test_every_visible_when_points_at_a_defined_option() -> None:
+    """A typo in ``visible_when`` leaves the field hidden forever."""
+    for path, option in OPTIONS.items():
+        if option.visible_when:
+            other, _value = option.visible_when.split("=", 1)
+            assert other in OPTIONS, (path, option.visible_when)
+
+
 def test_every_option_is_explained() -> None:
     """Every option says what it does, why you would change it and when."""
     for path, option in OPTIONS.items():
@@ -92,6 +109,19 @@ def test_every_option_is_explained() -> None:
         assert option.why.strip(), path
         assert option.when.strip(), path
         assert option.kind in KINDS, path
+
+
+def test_the_options_reference_is_current() -> None:
+    """The generated reference must match the option catalogue."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("export_options", "tools/export_options.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    from pathlib import Path
+
+    assert Path("docs/options-reference.md").read_text(encoding="utf-8") == module.render()
 
 
 def test_the_sections_cover_every_option_exactly_once() -> None:
@@ -105,17 +135,14 @@ def test_the_sections_cover_every_option_exactly_once() -> None:
 
 def test_the_choices_are_the_ones_the_config_accepts() -> None:
     """A choice must offer exactly the values the config accepts for that option."""
-    from autoclip.core.config import ClipsCfg, ComputeCfg, TranscriptCfg, VideoCfg
+    from autoclip.core.config import FileClipsCfg
 
     expected = {
-        "compute.device": ComputeCfg.__dataclass_fields__["device"].default,
-        "clips.mode": ClipsCfg.__dataclass_fields__["mode"].default,
-        "transcript.mode": TranscriptCfg.__dataclass_fields__["mode"].default,
-        "video.gpu": VideoCfg.__dataclass_fields__["gpu"].default,
+        "clips.preset": FileClipsCfg.__dataclass_fields__["preset"].default,
     }
     for path, default in expected.items():
         assert default in OPTIONS[path].choices, path
-    assert OPTIONS["video.layout"].choices == ("fit", "fill")
+    assert OPTIONS["clips.preset"].choices == ("both", "shorts", "long")
 
 
 # -- the behaviour (no display needed) --------------------------------------------------------
@@ -123,9 +150,9 @@ def test_the_choices_are_the_ones_the_config_accepts() -> None:
 
 def test_flatten_and_unflatten_round_trip() -> None:
     """The form works with flat paths, the config file with nested dicts."""
-    data = {"clips": {"short": {"count": 3}, "kinds": ["short"]}, "input": ["a.mp4"], "output_dir": "out"}
-    flat = flatten(data)
-    assert flat == {"clips.short.count": 3, "clips.kinds": ["short"], "input": ["a.mp4"], "output_dir": "out"}
+    data = {"clips": {"preset": "shorts", "ranges": ["0:04-0:10"]}, "input": ["a.mp4"]}
+    flat = flatten(cast(dict[str, JsonValue], data))
+    assert flat == {"clips.preset": "shorts", "clips.ranges": ["0:04-0:10"], "input": ["a.mp4"]}
     assert unflatten(flat) == data
 
 
@@ -145,9 +172,9 @@ def test_the_defaults_cover_every_option() -> None:
 def test_read_config_reads_the_option_paths(tmp_path: Path) -> None:
     """A config file is read into the flat paths the form uses."""
     path = tmp_path / "config.json"
-    path.write_text(json.dumps({"clips": {"short": {"count": 7}}, "input": ["a.mp4"]}), encoding="utf-8")
+    path.write_text(json.dumps({"clips": {"preset": "long"}, "input": ["a.mp4"]}), encoding="utf-8")
     values = read_config(path)
-    assert values["clips.short.count"] == 7 and values["input"] == ["a.mp4"]
+    assert values["clips.preset"] == "long" and values["input"] == ["a.mp4"]
 
 
 def test_read_config_rejects_a_file_that_is_not_an_object(tmp_path: Path) -> None:
@@ -161,15 +188,15 @@ def test_read_config_rejects_a_file_that_is_not_an_object(tmp_path: Path) -> Non
 def test_write_config_writes_a_file_the_app_can_read(tmp_path: Path) -> None:
     """What the app writes is what it reads back."""
     path = tmp_path / "nested" / "config.json"
-    write_config(path, unflatten({"clips.short.count": 4, "input": ["a.mp4"]}))
-    assert read_config(path)["clips.short.count"] == 4
+    write_config(path, unflatten({"clips.preset": "shorts", "input": ["a.mp4"]}))
+    assert read_config(path)["clips.preset"] == "shorts"
 
 
 def test_check_config_accepts_the_defaults_and_rejects_a_broken_one() -> None:
     """The form is checked against the schema before a run starts."""
     check_config(unflatten(default_values()))
     with pytest.raises(ConfigError):
-        check_config(unflatten({"clips.short.count": 0}))
+        check_config(unflatten({"not_an_option": True}))
 
 
 def test_the_pipeline_runs_the_command_line(tmp_path: Path) -> None:
@@ -184,7 +211,7 @@ def test_the_pipeline_runs_the_command_line(tmp_path: Path) -> None:
 def test_start_pipeline_runs_the_cli(tmp_path: Path) -> None:
     """The child process is the command line, with the project on the path."""
     config = tmp_path / "config.json"
-    config.write_text(json.dumps({"input": [], "clips": {"kinds": []}}), encoding="utf-8")
+    config.write_text(json.dumps({"input": ["missing.mp4"]}), encoding="utf-8")
     process = start_pipeline(config)
     try:
         assert process.stdout is not None
@@ -197,7 +224,7 @@ def test_start_pipeline_runs_the_cli(tmp_path: Path) -> None:
 def test_stop_pipeline_terminates_the_process(tmp_path: Path) -> None:
     """Stopping the app stops the pipeline (the whole process group)."""
     config = tmp_path / "config.json"
-    config.write_text(json.dumps({"input": [], "clips": {"kinds": []}}), encoding="utf-8")
+    config.write_text(json.dumps({"input": ["missing.mp4"]}), encoding="utf-8")
     process = start_pipeline(config)
     stop_pipeline(process)
     assert process.wait(timeout=60) != 0 or process.poll() is not None
@@ -314,10 +341,10 @@ def test_the_window_shows_every_option_and_saves_a_valid_config(tmp_path: Path) 
         assert app.title().startswith("autoclip")
         shown = {path for form in app._forms for path in form.fields}
         assert shown == set(option_paths())
-        set_option(app, "clips.short.count", 7)
+        set_option(app, "clips.preset", "shorts")
         check_config(app._config_data())  # the form produces a config the core accepts
         app._save_to(tmp_path / "config.json")
-        assert (tmp_path / "config.json").exists()
+        assert json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))["clips"]["preset"] == "shorts"
     finally:
         app.destroy()
 
@@ -481,13 +508,13 @@ def test_the_window_loads_a_config_and_resets_to_the_defaults(tmp_path: Path) ->
     from autoclip.app.window import AutoclipApp
 
     path = tmp_path / "config.json"
-    path.write_text(json.dumps({"clips": {"short": {"count": 9}}}), encoding="utf-8")
+    path.write_text(json.dumps({"clips": {"preset": "shorts"}}), encoding="utf-8")
     app = AutoclipApp(path)
     try:
         app._read_config(path)
-        assert app.values["clips.short.count"] == 9
+        assert app.values["clips.preset"] == "shorts"
         app._reset()
-        assert app.values["clips.short.count"] == default_values()["clips.short.count"]
+        assert app.values["clips.preset"] == default_values()["clips.preset"]
     finally:
         app.destroy()
 
@@ -501,7 +528,7 @@ def test_an_invalid_config_is_reported_and_nothing_runs(tmp_path: Path, monkeypa
     monkeypatch.setattr(messagebox, "showerror", lambda title, text: errors.append(text))
     app = AutoclipApp(tmp_path / "config.json")
     try:
-        set_option(app, "clips.short.count", 0)
+        set_option(app, "clips.scenes", "nope")
         app._run()
         assert app._process is None
         assert errors and "not valid" in errors[0]
@@ -516,7 +543,7 @@ def test_running_starts_the_pipeline_and_shows_its_log(tmp_path: Path, monkeypat
     from autoclip.app import window
     from autoclip.app.window import AutoclipApp
 
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None) -> None:
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None, output_dir: Any = None) -> None:
         on_line("all done")
         on_line("")
 
@@ -547,7 +574,7 @@ def test_stopping_the_pipeline_is_possible(tmp_path: Path, monkeypatch: pytest.M
 
     stopped: list[object] = []
 
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None) -> None:
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None, output_dir: Any = None) -> None:
         on_line("")
 
     monkeypatch.setattr(window, "run_pipeline", _fake)
@@ -572,8 +599,8 @@ def test_the_details_panel_explains_the_focused_option(tmp_path: Path) -> None:
 
     app = AutoclipApp(tmp_path / "config.json")
     try:
-        app.show_details(OPTIONS["clips.short.target_seconds"])
-        assert "preference" in app.what_label.cget("text").lower()
+        app.show_details(OPTIONS["download.platforms.allow"])
+        assert "platform" in app.what_label.cget("text").lower()
         assert app.why_label.cget("text").strip()
         assert app.when_label.cget("text").strip()
     finally:
@@ -589,10 +616,10 @@ def test_the_reference_window_lists_and_filters_the_options(tmp_path: Path) -> N
     try:
         window = ReferenceWindow(app)
         assert len(window.tree.get_children()) == len(option_paths())
-        window._query.set("funny")
+        window._query.set("platform")
         window._filter()
         assert 0 < len(window.tree.get_children()) < len(option_paths())
-        window.tree.selection_set("clips.scenes")
+        window.tree.selection_set("download.platforms.allow")
         window._show()
         assert "WHAT" in window.text.get("1.0", "end")
     finally:
@@ -688,8 +715,8 @@ def test_the_controls_read_and_write_every_kind_of_option() -> None:
     kinds: dict[str, Any] = {}
     for option in OPTIONS.values():
         kinds.setdefault(option.kind, option)
-    values = {path: None for path in (o.path for o in kinds.values())}
-    changed: list[tuple[str, Any]] = []
+    values = cast(dict[str, JsonValue], {path: None for path in (o.path for o in kinds.values())})
+    changed: list[tuple[str, object]] = []
     root = tk.Tk()
     root.withdraw()
     try:
@@ -730,6 +757,69 @@ def test_the_controls_read_and_write_every_kind_of_option() -> None:
 
 
 @needs_display
+def test_output_folder_picker_and_relative_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import tkinter as tk
+    from tkinter import filedialog
+
+    from autoclip.app.window import AutoclipApp
+
+    app = AutoclipApp(tmp_path / "config.json")
+    try:
+        monkeypatch.setattr(filedialog, "askdirectory", lambda **k: str(tmp_path / "chosen"))
+        app._choose_output()
+        assert app.output_dir == tmp_path / "chosen"
+        monkeypatch.setattr(filedialog, "askdirectory", lambda **k: "")
+        app._choose_output()  # cancelled: keeps the previous choice
+        assert app.output_dir == tmp_path / "chosen"
+        opened: list[Path] = []
+        monkeypatch.setattr("autoclip.app.window.open_folder", opened.append)
+        app._output_var.set("relative-out")
+        app._open_output()
+        assert opened and opened[0].is_absolute()
+    finally:
+        app.destroy()
+        assert tk  # keep the tkinter import used
+
+
+@needs_display
+def test_advanced_options_and_value_edge_cases() -> None:
+    """The advanced group toggles, and every control handles empty/invalid values."""
+    import tkinter as tk
+
+    from autoclip.app.form import Form
+
+    bool_opt = Option("x.flag", "Flag", "bool", "w", "y", "z")
+    num_opt = Option("x.count", "Count", "str", "w", "y", "z", numeric=True)
+    text_opt = Option("x.text", "Text", "str", "w", "y", "z")
+    json_opt = Option("x.json", "JSON", "json", "w", "y", "z")
+    adv_opt = Option("x.advanced", "Advanced", "str", "w", "y", "z", advanced=True)
+    hidden_opt = Option("x.hidden", "Hidden", "str", "w", "y", "z", visible_when="x.flag=true")
+    values = cast(dict[str, JsonValue], {"x.flag": False, "x.count": None, "x.text": "", "x.json": {}, "x.hidden": ""})
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        form = Form(root, (bool_opt, num_opt, text_opt, json_opt, adv_opt, hidden_opt), values, lambda *a: None)
+        assert form.fields["x.flag"].value() is False
+        assert form.fields["x.count"].value() is None
+        assert form.fields["x.text"].value() is None
+        form.fields["x.count"].set("not-a-number")
+        assert form.fields["x.count"].value() == "not-a-number"
+        form.fields["x.json"].set(["one", "two"])
+        assert form.fields["x.json"].value() == ["one", "two"]
+        form.fields["x.text"].set(None)
+        assert form.fields["x.text"].value() is None
+        form._toggle_advanced()
+        assert form._advanced_shown is True
+        form._set_advanced_visible(False)
+        assert form._advanced_shown is False
+        form.refresh_visibility()  # the hidden option stays hidden
+        plain = Form(root, (text_opt,), {"x.text": ""}, lambda *a: None)
+        plain._toggle_advanced()  # no advanced button: must not raise
+    finally:
+        root.destroy()
+
+
+@needs_display
 def test_a_control_that_holds_nothing_is_none() -> None:
     """An empty number field means "not set", not zero."""
     import tkinter as tk
@@ -739,8 +829,8 @@ def test_a_control_that_holds_nothing_is_none() -> None:
     root = tk.Tk()
     root.withdraw()
     try:
-        form = Form(root, (OPTIONS["clips.short.count"],), {"clips.short.count": 5}, lambda path, value: None)
-        field = form.fields["clips.short.count"]
+        form = Form(root, (INT_OPTION,), {"test.count": 5}, lambda path, value: None)
+        field = form.fields["test.count"]
         field.set("")
         assert field.value() is None
         field.set("not a number")
@@ -759,8 +849,8 @@ def test_an_empty_json_control_is_an_empty_object_and_invalid_json_is_kept_as_te
     root = tk.Tk()
     root.withdraw()
     try:
-        form = Form(root, (OPTIONS["download.platforms.groups"],), {}, lambda path, value: None)
-        field = form.fields["download.platforms.groups"]
+        form = Form(root, (JSON_OPTION,), {}, lambda path, value: None)
+        field = form.fields["test.data"]
         assert field.text is not None
         field.text.delete("1.0", "end")
         assert field.value() == {}
@@ -772,27 +862,20 @@ def test_an_empty_json_control_is_an_empty_object_and_invalid_json_is_kept_as_te
 
 @needs_display
 def test_the_options_that_do_not_apply_are_hidden(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The ranges are only shown in ranges mode, the split length only in split mode."""
+    """An option whose ``visible_when`` does not match stays hidden until it does."""
     import tkinter as tk
 
     from autoclip.app.form import Form
 
-    values = {"clips.mode": "highlights", "clips.short.ranges": [], "clips.split_seconds": 600}
+    values: dict[str, Any] = {"test.mode": "a", "test.ranges": []}
     root = tk.Tk()
     root.withdraw()
     try:
-        form = Form(
-            root,
-            (OPTIONS["clips.mode"], OPTIONS["clips.short.ranges"], OPTIONS["clips.split_seconds"]),
-            values,
-            lambda path, value: values.update({path: value}),
-        )
-        assert not form.fields["clips.short.ranges"].holder.winfo_manager()
-        assert not form.fields["clips.split_seconds"].holder.winfo_manager()
-        form.fields["clips.mode"].set("ranges")
+        form = Form(root, (MODE_OPTION, RANGES_OPTION), values, lambda path, value: values.update({path: value}))
+        assert not form.fields["test.ranges"].holder.winfo_manager()
+        form.fields["test.mode"].set("b")
         form.refresh_visibility()
-        assert form.fields["clips.short.ranges"].holder.winfo_manager() == "grid"
-        assert not form.fields["clips.split_seconds"].holder.winfo_manager()
+        assert form.fields["test.ranges"].holder.winfo_manager() == "grid"
     finally:
         root.destroy()
 
@@ -808,20 +891,15 @@ def test_browsing_fills_the_path_fields_and_the_video_list(monkeypatch: pytest.M
     monkeypatch.setattr(filedialog, "askopenfilename", lambda **kw: "/tmp/picked.srt")
     monkeypatch.setattr(filedialog, "askdirectory", lambda **kw: "/tmp/picked-folder")
     monkeypatch.setattr(filedialog, "askopenfilenames", lambda **kw: ("/tmp/one.mp4", "/tmp/two.mp4"))
-    values: dict[str, Any] = {"transcript.file": "", "output_dir": "", "input": []}
+    values: dict[str, Any] = {"test.file": "", "test.folder": "", "input": []}
     root = tk.Tk()
     root.withdraw()
     try:
-        form = Form(
-            root,
-            (OPTIONS["transcript.file"], OPTIONS["output_dir"], OPTIONS["input"]),
-            values,
-            lambda path, value: values.update({path: value}),
-        )
-        form._browse(OPTIONS["transcript.file"])
-        assert values["transcript.file"] == "/tmp/picked.srt"
-        form._browse(OPTIONS["output_dir"])
-        assert values["output_dir"] == "/tmp/picked-folder"
+        form = Form(root, (PATH_OPTION, DIR_OPTION, OPTIONS["input"]), values, lambda path, value: values.update({path: value}))
+        form._browse(PATH_OPTION)
+        assert values["test.file"] == "/tmp/picked.srt"
+        form._browse(DIR_OPTION)
+        assert values["test.folder"] == "/tmp/picked-folder"
         form._browse_videos()
         assert values["input"] == ["/tmp/one.mp4", "/tmp/two.mp4"]
     finally:
@@ -860,14 +938,14 @@ def test_the_file_dialogs_pick_and_save_the_config(tmp_path: Path, monkeypatch: 
     from autoclip.app.window import AutoclipApp
 
     picked = tmp_path / "picked.json"
-    picked.write_text(json.dumps({"clips": {"short": {"count": 3}}}), encoding="utf-8")
+    picked.write_text(json.dumps({"clips": {"preset": "long"}}), encoding="utf-8")
     monkeypatch.setattr(filedialog, "askopenfilename", lambda **kw: str(picked))
     monkeypatch.setattr(filedialog, "asksaveasfilename", lambda **kw: str(tmp_path / "other.json"))
     app = AutoclipApp(tmp_path / "config.json")
     try:
         app._choose_config()
         assert app.config_path == picked
-        assert app.values["clips.short.count"] == 3
+        assert app.values["clips.preset"] == "long"
         app._save_as()
         assert (tmp_path / "other.json").exists()
         app._load()
@@ -899,11 +977,11 @@ def test_a_valid_config_is_loaded_at_startup(tmp_path: Path) -> None:
     from autoclip.app.window import AutoclipApp
 
     path = tmp_path / "config.json"
-    path.write_text(json.dumps({"clips": {"short": {"count": 9}}}), encoding="utf-8")
+    path.write_text(json.dumps({"clips": {"preset": "shorts"}}), encoding="utf-8")
     app = AutoclipApp(path)
     try:
-        assert app.values["clips.short.count"] == 9
-        assert app.values["clips.long.count"] == default_values()["clips.long.count"]
+        assert app.values["clips.preset"] == "shorts"
+        assert app.values["clips.scenes"] == default_values()["clips.scenes"]
         assert app.status.cget("text") == "Loaded config.json"
     finally:
         app.destroy()
@@ -911,7 +989,7 @@ def test_a_valid_config_is_loaded_at_startup(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "content",
-    ["{broken", '{"clips": {"short": {"count": 0}}}', '{"not_an_option": true}'],
+    ["{broken", '{"not_an_option": true}', '{"another_unknown": true}'],
     ids=["invalid-json", "invalid-value", "unknown-option"],
 )
 @needs_display
@@ -938,13 +1016,13 @@ def test_a_config_in_the_default_folder_is_loaded_at_startup(tmp_path: Path, mon
 
     path = tmp_path / "config" / "config.json"
     path.parent.mkdir()
-    path.write_text(json.dumps({"clips": {"short": {"count": 9}}}), encoding="utf-8")
+    path.write_text(json.dumps({"clips": {"preset": "long"}}), encoding="utf-8")
     monkeypatch.setattr(window, "default_config_path", lambda: path)
     monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: pytest.fail("asked to save"))
     monkeypatch.setattr(filedialog, "asksaveasfilename", lambda **kw: pytest.fail("asked for a folder"))
     app = AutoclipApp()
     try:
-        assert app.values["clips.short.count"] == 9
+        assert app.values["clips.preset"] == "long"
         assert app.status.cget("text") == "Loaded config.json"
     finally:
         app.destroy()
@@ -1119,7 +1197,7 @@ def test_closing_the_window_stops_the_pipeline(tmp_path: Path, monkeypatch: pyte
 
     stopped: list[object] = []
 
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None) -> None:
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None, output_dir: Any = None) -> None:
         on_line("")
 
     monkeypatch.setattr(window, "run_pipeline", _fake)
@@ -1255,7 +1333,7 @@ def test_a_run_without_a_writable_config_does_not_start(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(messagebox, "showerror", lambda *a, **k: None)
 
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None) -> None:
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None, output_dir: Any = None) -> None:
         pytest.fail("started without a config")
 
     monkeypatch.setattr(window, "run_pipeline", _fake)
@@ -1280,7 +1358,7 @@ def test_the_pipeline_cannot_be_started_twice(tmp_path: Path, monkeypatch: pytes
     from autoclip.app import window
     from autoclip.app.window import AutoclipApp
 
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None) -> None:
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None, output_dir: Any = None) -> None:
         on_line("")
 
     monkeypatch.setattr(window, "run_pipeline", _fake)
@@ -1359,19 +1437,14 @@ def test_cancelling_the_file_dialogs_changes_nothing(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(filedialog, "askopenfilename", lambda **kw: "")
     monkeypatch.setattr(filedialog, "askopenfilenames", lambda **kw: ())
-    values: dict[str, Any] = {"transcript.file": "", "input": []}
+    values: dict[str, Any] = {"test.file": "", "input": []}
     root = tk.Tk()
     root.withdraw()
     try:
-        form = Form(
-            root,
-            (OPTIONS["transcript.file"], OPTIONS["input"]),
-            values,
-            lambda path, value: values.update({path: value}),
-        )
-        form._browse(OPTIONS["transcript.file"])
+        form = Form(root, (PATH_OPTION, OPTIONS["input"]), values, lambda path, value: values.update({path: value}))
+        form._browse(PATH_OPTION)
         form._browse_videos()
-        assert values["transcript.file"] == "" and values["input"] == []
+        assert values["test.file"] == "" and values["input"] == []
     finally:
         root.destroy()
 
@@ -1386,7 +1459,7 @@ def test_a_field_without_a_control_ignores_its_value() -> None:
     root = tk.Tk()
     root.withdraw()
     try:
-        option = OPTIONS["clips.short.count"]
+        option = INT_OPTION
         empty = Field(option, 0, ttk.Label(root), ttk.Frame(root), ttk.Label(root), ttk.Frame(root), None, None)
         empty.set("5")
         assert empty.value() is None
@@ -1402,10 +1475,10 @@ def test_focusing_an_option_tells_the_window(tmp_path: Path) -> None:
 
     app = AutoclipApp(tmp_path / "config.json")
     try:
-        form = Form(app, (OPTIONS["clips.short.count"],), app.values, app._on_change)
-        form._focused(OPTIONS["clips.short.count"])
-        assert app.what_label.cget("text") == OPTIONS["clips.short.count"].what
-        assert app.why_label.cget("text") == OPTIONS["clips.short.count"].why
+        form = Form(app, (OPTIONS["input"],), app.values, app._on_change)
+        form._focused(OPTIONS["input"])
+        assert app.what_label.cget("text") == OPTIONS["input"].what
+        assert app.why_label.cget("text") == OPTIONS["input"].why
     finally:
         app.destroy()
 
@@ -1466,7 +1539,7 @@ def test_an_absolute_output_folder_is_used_as_it_is(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(window, "open_folder", opened.append)
     app = AutoclipApp(tmp_path / "config.json")
     try:
-        set_option(app, "output_dir", str(tmp_path / "elsewhere"))
+        app._output_var.set(str(tmp_path / "elsewhere"))
         app._open_output()
         assert opened == [tmp_path / "elsewhere"]
     finally:
@@ -1495,7 +1568,7 @@ def test_process_setter_and_consent_path(tmp_path: Path, monkeypatch: pytest.Mon
 
     monkeypatch.setattr(mb, "askyesno", lambda *a, **k: True)
 
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None) -> None:
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None, output_dir: Any = None) -> None:
         if consent is not None:
             consent("autoclip", "download?")
         on_line("all done")
@@ -1579,7 +1652,7 @@ def test_a_multi_line_field_without_a_control_ignores_its_value() -> None:
     root = tk.Tk()
     root.withdraw()
     try:
-        option = OPTIONS["clips.short.ranges"]
+        option = OPTIONS["input"]
         empty = Field(option, 0, ttk.Label(root), ttk.Frame(root), ttk.Label(root), ttk.Frame(root), None, None)
         empty.set("00:00-00:10")
         assert empty.value() == []  # there is no control to read
@@ -1672,7 +1745,7 @@ def test_adding_videos_dedupes_and_a_drop_event_is_accepted(tmp_path: Path) -> N
 
         # An unknown platform leaves the feature disabled instead of crashing.
         event = _DropEvent("first.mp4 second.mp4")
-        videos_form._on_drop_videos(event)
+        videos_form._on_drop_videos(cast(tk.Event, event))
         assert "first.mp4" in videos_form._values["input"] or "second.mp4" in videos_form._values["input"]
     finally:
         app.destroy()
@@ -1727,6 +1800,6 @@ def test_drop_helpers_work_without_an_input_field(tmp_path: Path) -> None:
     try:
         form = next(form for form in app._forms if "input" not in form.fields)
         form._add_videos(["missing-field.mp4"])
-        form._on_drop_videos(_DropEvent("dropped.mp4"))
+        form._on_drop_videos(cast(tk.Event, _DropEvent("dropped.mp4")))
     finally:
         app.destroy()

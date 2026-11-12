@@ -7,9 +7,9 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
-from typing import Any
 
-from ..core.config import _DOWNLOAD_QUALITY_BY_OUTPUT, Config, parse
+from ..core.config import Config, FileConfig, JsonValue, RuntimeOverrides, parse
+from ..core.events import Progress
 from ..core.process import pipeline_command
 from .config import get_settings
 from .progress import progress_manager
@@ -33,20 +33,27 @@ def _publish(job: Job, step: str, message: str, percent: float, state: str | Non
     )
 
 
-def prepare_config(job: Job, custom: dict[str, Any] | None) -> Config:
+def prepare_config(job: Job, custom: dict[str, JsonValue] | None) -> Config:
+    """The runtime configuration of a job: the uploaded file config plus the server's own input/output.
+
+    The server owns the input and the output folder, so a user config can never point the job at
+    another file or write outside its own job folder.
+    """
     get_settings()
-    base: dict[str, Any] = {}
-    if custom:
-        base.update(custom)
-    # server jobs are always about the uploaded file
-    base.pop("input", None)
-    base.pop("output_dir", None)
-    cfg = parse(Config, base) if base else Config()
-    if cfg.download.quality is None:
-        cfg.download.quality = _DOWNLOAD_QUALITY_BY_OUTPUT[cfg.quality]
+    file_cfg = parse(FileConfig, dict(custom or {}))
+    cfg = file_cfg.to_config(RuntimeOverrides(input=[str(job.input_path)], output_dir=str(job.output_dir)))
     cfg.input = [str(job.input_path)]
     cfg.output_dir = str(job.output_dir)
     return cfg
+
+
+def _file_config(job: Job, custom: dict[str, JsonValue] | None) -> dict[str, JsonValue]:
+    """The seven-key config the child process reads (the input is the uploaded file)."""
+    from dataclasses import asdict
+
+    data = asdict(parse(FileConfig, dict(custom or {})))
+    data["input"] = [str(job.input_path)]
+    return data
 
 
 def _run_job_inprocess(job: Job, cfg: Config) -> None:
@@ -59,14 +66,14 @@ def _run_job_inprocess(job: Job, cfg: Config) -> None:
     job.work_dir.mkdir(parents=True, exist_ok=True)
     job.process = None
 
-    def _sink(p: Any) -> None:
+    def _sink(p: Progress) -> None:
         _publish(job, p.stage, p.message, p.percent)
 
     reporter = Reporter(_sink)
     _publish(job, "probing", "Probing media", 5.0)
-    encoder = pick_encoder(cfg.video, cfg.quality, allow_gpu=cfg.compute.device != "cpu")
+    encoder = pick_encoder(cfg.video, cfg.quality, allow_gpu=True)
     _publish(job, "transcribing", "Transcription ready", 12.0)
-    result = run_batch(cfg, downloader=None, encoder=encoder, log_file=None, report=reporter)
+    result = run_batch(cfg, downloader=None, encoder=encoder, log_file=None, report=reporter, config_dir=job.output_dir)
     # collect outputs
     _publish(job, "packaging", "Collecting outputs", 90.0)
     outs: list[Path] = []
@@ -105,7 +112,8 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
         _publish(job, "validating", "Validating configuration", 2.0)
         if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
             job.cancel_requested = True
-        cfg = prepare_config(job, job.config.get("_custom"))
+        _custom = job.config.get("_custom")
+        cfg = prepare_config(job, _custom if isinstance(_custom, dict) else None)
         if job.cancel_requested:
             job.update(state=JobState.cancelled, error="cancelled")
             _publish(job, "cancelled", "Cancelled", 100.0, state="cancelled")
@@ -113,19 +121,14 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
         if os.environ.get("AUTOCLIP_SERVER_INPROCESS") == "1":
             return _run_job_inprocess(job, cfg)
         config_path = job.work_dir / "config.json"
-        try:
-            from dataclasses import asdict
-
-            config_path.write_text(json.dumps(asdict(cfg), default=str, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            if hasattr(cfg, "model_dump"):
-                config_path.write_text(json.dumps(cfg.model_dump(), default=str, ensure_ascii=False, indent=2), encoding="utf-8")
-            else:
-                raise
+        config_path.write_text(
+            json.dumps(_file_config(job, _custom if isinstance(_custom, dict) else None), default=str, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
         job.output_dir.mkdir(parents=True, exist_ok=True)
-        # launch subprocess with NDJSON events
-        cmd = [*pipeline_command(config_path), "--events", "jsonl"]
+        # launch subprocess with NDJSON events; the output folder is a runtime override, not a file key
+        cmd = [*pipeline_command(config_path), "--output-dir", str(job.output_dir), "--events", "jsonl"]
         env = dict(os.environ)
         if not getattr(sys, "frozen", False):
             from pathlib import Path
@@ -239,10 +242,7 @@ def zip_outputs(job: Job) -> Path:
     zip_path = settings.cache_dir / f"{job.job_id}.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(job.output_dir.rglob("*")):
-            try:
-                relative = path.relative_to(job.output_dir)
-            except ValueError:
-                continue
+            relative = path.relative_to(job.output_dir)
             if path.is_file() and ".work" not in relative.parts:
                 try:
                     zf.write(path, arcname=str(relative))

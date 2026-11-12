@@ -20,6 +20,7 @@ from PIL import Image, ImageColor, ImageDraw, ImageFont, features
 from .audio import Timeline, is_filler
 from .config import CaptionsCfg, Config
 from .fonts import dominant_script, find_font, has_rtl
+from .internal.automation import CAPTION_MAX_SECONDS, DEFAULT_FILLERS
 from .log import traced
 from .media import F32
 from .models import Span, Word
@@ -74,7 +75,7 @@ def make_chunks(words: Sequence[Word], cfg: CaptionsCfg, width: int = 1080) -> l
     for w in words:
         if current and (
             len(join_tokens([x.text for x in current] + [w.text])) > char_limit
-            or w.end - current[0].start > cfg.max_seconds
+            or w.end - current[0].start > CAPTION_MAX_SECONDS
             or w.start - current[-1].end > 0.8
         ):
             flush()
@@ -314,19 +315,21 @@ def without_fillers(words: Sequence[Word], fillers: set[str]) -> list[Word]:
 
 @traced("build_captions")
 def build_captions(
-    words: Sequence[Word], tl: Timeline, cfg: Config, cache: Cache, size: tuple[int, int], duration: float
+    words: Sequence[Word],
+    tl: Timeline,
+    cfg: Config,
+    cache: Cache,
+    size: tuple[int, int],
+    duration: float,
+    fillers: frozenset[str] | set[str] | None = None,
 ) -> tuple[Any | None, list[Span]]:
-    """Render the caption sprites into the cache.
-
-    Returns:
-        The positioned caption clip (``None`` if there is nothing to show) and the caption lines on the trimmed
-        timeline (for the ``.srt`` sidecar).
-    """
+    """Render the caption sprites into the cache."""
     W, H = size
     cc = cfg.captions
-    if cfg.silence.remove and cfg.silence.remove_fillers:
-        words = without_fillers(words, {f.lower() for f in cfg.silence.fillers})
-    font_size, max_w = cc.size or int(min(W, H) / 15), int(W * 0.9)
+    if fillers is None:
+        fillers = frozenset(DEFAULT_FILLERS)
+    words = without_fillers(words, {f.lower() for f in fillers})
+    font_size, max_w = int(min(W, H) / 15), int(W * 0.9)
     sprites: list[Sprite] = []
     lines: list[Span] = []
 
@@ -339,9 +342,9 @@ def build_captions(
         if span is None or span[1] - span[0] < 0.08:
             continue
         text = chunk.text.upper() if cc.uppercase else chunk.text
-        font = find_font(text, cc.font)
+        font = find_font(text)
         lines.append(Span(round(span[0], 2), round(span[1], 2), text))
-        if cc.highlight and can_highlight(text) and len(text.split()) == len(chunk.words) and not any(w.pseudo for w in chunk.words):
+        if can_highlight(text) and len(text.split()) == len(chunk.words) and not any(w.pseudo for w in chunk.words):
             for k, w in enumerate(chunk.words):
                 nxt = chunk.words[k + 1].start if k + 1 < len(chunk.words) else chunk.end
                 if (part := tl.map_range(w.start, max(nxt, w.start + 0.05))) and part[1] - part[0] >= 0.03:

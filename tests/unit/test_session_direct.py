@@ -9,7 +9,7 @@ import pytest
 
 from autoclip.app.session import PipelineHandle, cancel_pipeline, run_pipeline
 from autoclip.core.events import CancelToken
-from tests.support import install_stub_whisper, make_cfg
+from tests.support import install_stub_whisper, make_cfg, write_config
 
 
 def test_run_pipeline_success(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -58,29 +58,64 @@ def test_queue_handler_init() -> None:
     assert handler.queue is not None
 
 
+def test_run_pipeline_and_stop_without_a_cancel_token(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.app.session import stop_pipeline
+    from autoclip.core.events import CancelToken
+
+    install_stub_whisper(monkeypatch, media, {}, cuda=0)
+    monkeypatch.setenv("AUTOCLIP_OUTPUT_DIR", str(tmp_path / "out-off"))
+    monkeypatch.setenv("AUTOCLIP_LOG_LEVEL", "OFF")
+    path = write_config(tmp_path, media, inputs=[str(media.video)])
+    assert run_pipeline(path, cancel=CancelToken(), on_line=lambda line: None) == 0
+
+    class NoCancel:
+        pass
+
+    from typing import cast
+
+    from autoclip.app.session import PipelineHandle
+
+    stop_pipeline(cast(PipelineHandle, NoCancel()))  # nothing to cancel: must not raise
+
+
+def test_resolve_log_file_is_none_when_logging_is_off(tmp_path: Path) -> None:
+    from autoclip.app.session import _resolve_log_file
+    from autoclip.core.config import Config
+
+    cfg = Config(output_dir=str(tmp_path))
+    cfg.logging.level = "OFF"
+    assert _resolve_log_file(cfg) is None
+
+
+def test_resolve_log_file_returns_a_path_when_enabled(tmp_path: Path) -> None:
+    from autoclip.app.session import _resolve_log_file
+    from autoclip.core.config import Config
+
+    cfg = Config(output_dir=str(tmp_path))
+    cfg.logging.level = "INFO"
+    path = _resolve_log_file(cfg)
+    assert path is not None and path.parent.name == "logs"
+
+
 def test_resolve_log_file_enabled(tmp_path: Path) -> None:
     from autoclip.app.session import _resolve_log_file
     from autoclip.core.config import Config
 
     cfg = Config(output_dir=str(tmp_path))
-    cfg.logging.enabled = True
-    # path without explicit file uses output_dir/logs
+    cfg.logging.level = "INFO"
     result = _resolve_log_file(cfg)
     assert result is not None and "logs" in str(result)
-    cfg.logging.file = str(tmp_path / "custom.log")
     result2 = _resolve_log_file(cfg)
-    assert result2 == Path(tmp_path / "custom.log")
+    assert result2 is not None and str(result2).endswith(".log")
 
 
 def test_run_pipeline_logging_enabled(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
     lines: list[str] = []
-    cfg = dataclasses.asdict(
-        make_cfg(media, tmp_path / "out3", clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
-    )
-    cfg["logging"] = {"enabled": True, "level": "INFO", "console_level": "ERROR", "file": None}
-    path = tmp_path / "cfg3.json"
-    path.write_text(json.dumps(cfg), encoding="utf-8")
+    monkeypatch.setenv("AUTOCLIP_OUTPUT_DIR", str(tmp_path / "out3"))
+    monkeypatch.setenv("AUTOCLIP_TRANSCRIPT", str(tmp_path / "subs" / "{stem}.json"))
+    monkeypatch.setenv("AUTOCLIP_LOG_LEVEL", "INFO")
+    path = write_config(tmp_path, media, inputs=[str(media.video)])
     code = run_pipeline(path, cancel=CancelToken(), on_line=lines.append)
     assert code == 0
 
@@ -88,16 +123,14 @@ def test_run_pipeline_logging_enabled(media: Any, tmp_path: Path, monkeypatch: p
 def test_app_lines_and_log_file_are_in_sync(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """One run: every decorator print must appear in the app pane AND in the .log file (same records)."""
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
+    monkeypatch.setenv("AUTOCLIP_OUTPUT_DIR", str(tmp_path / "out-sync"))
+    monkeypatch.setenv("AUTOCLIP_TRANSCRIPT", str(tmp_path / "subs" / "{stem}.json"))
+    monkeypatch.setenv("AUTOCLIP_LOG_LEVEL", "INFO")
     lines: list[str] = []
-    cfg = dataclasses.asdict(
-        make_cfg(media, tmp_path / "out-sync", clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 1, "max_seconds": 10}})
-    )
-    cfg["logging"] = {"enabled": True, "level": "INFO", "console_level": "WARNING", "file": str(tmp_path / "run-sync.log")}
-    path = tmp_path / "cfg-sync.json"
-    path.write_text(json.dumps(cfg), encoding="utf-8")
+    path = write_config(tmp_path, media, inputs=[str(media.video)])
     code = run_pipeline(path, cancel=CancelToken(), on_line=lines.append)
     assert code == 0
-    log_text = (tmp_path / "run-sync.log").read_text(encoding="utf-8")
+    log_text = max((tmp_path / "out-sync" / "logs").glob("autoclip_*.log"), key=lambda p: p.name).read_text(encoding="utf-8")
     pane_proc = [line for line in lines if "[START] process_video" in line]
     assert pane_proc, lines
     assert "[START] process_video" in log_text

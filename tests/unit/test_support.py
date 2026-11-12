@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from autoclip.core.config import Config, load_config, parse
+from autoclip.core.config import Config, RuntimeOverrides, load_config, parse
 from autoclip.core.errors import ConfigError
 
 from ..support import (
@@ -26,18 +26,19 @@ from ..support import (
     load_manifest,
     make_cfg,
     merge,
+    run_args,
     write_config,
 )
 
 
 def test_merge_recurses_without_mutating_the_inputs() -> None:
     base: dict[str, Any] = {"clips": {"kinds": ["short"], "short": {"count": 1, "min_seconds": 6}}, "output_dir": "out"}
-    over: dict[str, Any] = {"clips": {"short": {"count": 3}}, "logging": {"enabled": False}}
+    over: dict[str, Any] = {"clips": {"short": {"count": 3}}, "logging": {"level": "OFF"}}
     merged = merge(base, over)
     assert merged == {
         "clips": {"kinds": ["short"], "short": {"count": 3, "min_seconds": 6}},
         "output_dir": "out",
-        "logging": {"enabled": False},
+        "logging": {"level": "OFF"},
     }
     assert base["clips"]["short"]["count"] == 1 and "logging" not in base
     assert over["clips"]["short"] == {"count": 3}
@@ -55,9 +56,9 @@ def test_make_cfg_uses_fast_defaults_and_merges_nested_sections(media: Media, tm
     assert cfg.output_dir == str(tmp_path / "out")
     assert cfg.clips.kinds == ["short"]
     assert (cfg.clips.short.count, cfg.clips.short.min_seconds, cfg.clips.short.max_seconds) == (3, 6, 12)
-    assert cfg.transcript.mode == "file" and cfg.transcript.file == str(media.transcript)
-    assert (cfg.video.short_side, cfg.quality, cfg.video.thumbnail, cfg.video.gpu) == (720, "lowest", False, "off")
-    assert cfg.logging.enabled is False and cfg.logging.console_level == "ERROR"
+    assert cfg.transcript.file == str(media.transcript)
+    assert (cfg.quality, cfg.video.codec, cfg.video.layout) == ("lowest", "h264", "fit")
+    assert cfg.logging.level == "OFF"
 
 
 def test_make_cfg_accepts_another_source(media: Media, tmp_path: Path) -> None:
@@ -71,17 +72,32 @@ def test_make_cfg_rejects_an_unknown_option(media: Media, tmp_path: Path) -> Non
 
 
 def test_write_config_writes_the_three_subtitle_files_and_a_loadable_config(media: Media, tmp_path: Path) -> None:
-    path = write_config(tmp_path, media, clips={"kinds": ["short", "long"]})
+    path = write_config(tmp_path, media)
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["input"] == [str(media.video), str(media.silent)]
-    assert data["output_dir"] == str(tmp_path / "out")
-    assert data["clips"]["kinds"] == ["short", "long"]
-    assert data["clips"]["short"]["count"] == BASE_CONFIG["clips"]["short"]["count"]
+    assert data["clips"] == BASE_CONFIG["clips"]
+    assert "output_dir" not in data and "transcript" not in data  # runtime overrides, never file keys
     for stem in ("talk", "silent", "broken"):
         assert (tmp_path / "subs" / f"{stem}.json").read_text(encoding="utf-8") == media.transcript.read_text(encoding="utf-8")
-    loaded = load_config(path)
+    loaded = load_config(path, RuntimeOverrides(output_dir=str(tmp_path / "out")))
     assert loaded.input == [str(media.video.resolve()), str(media.silent.resolve())]
     assert loaded.output_dir == str((tmp_path / "out").resolve())
+
+
+def test_run_args_carries_the_runtime_overrides(tmp_path: Path) -> None:
+    config = tmp_path / "config.json"
+    assert run_args(config) == [
+        str(config),
+        "--output-dir",
+        str(tmp_path / "out"),
+        "--quality",
+        "lowest",
+        "--log-level",
+        "OFF",
+        "--transcript",
+        str(tmp_path / "subs" / "{stem}.json"),
+    ]
+    assert run_args(config, transcript=False, log_level="INFO", extra=["--split"])[-3:] == ["--log-level", "INFO", "--split"]
 
 
 def test_segments_cover_the_fixture_with_word_timings() -> None:

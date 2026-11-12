@@ -1,19 +1,47 @@
 """Choosing a concrete yt-dlp format id from the formats of an extracted URL.
 
 The policy is deliberately separate from yt-dlp's own sorting: autoclip wants a *short side*
-quality (a 1080x1920 vertical video is "1080"), a codec preference and a container, and it has
-to return an explicit ``<video>+<audio>`` id because yt-dlp does not merge a callable selector.
+quality (a 1080x1920 vertical video is "1080"), and it has to return an explicit
+``<video>+<audio>`` id because yt-dlp does not merge a callable selector.
+
+The quality target is derived from the run's quality tier (``internal.quality.download_quality_for``);
+the only user preference left is the audio language.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TypedDict
 
-from .config import DownloadCfg
 from .errors import DownloadError
 
-#: Video codec -> preference rank (the ``auto`` order).
+
+class YtFormat(TypedDict, total=False):
+    """One entry of yt-dlp's ``formats`` list (every field is optional)."""
+
+    format_id: str | int | None
+    vcodec: str | None
+    acodec: str | None
+    width: float | int | None
+    height: float | int | None
+    fps: float | int | None
+    tbr: float | int | None
+    abr: float | int | None
+    protocol: str | None
+    ext: str | None
+    filesize: int | None
+    language: str | None
+    has_drm: bool
+
+
+class YtInfo(TypedDict, total=False):
+    """The ``extract_info(..., download=False)`` result, as far as autoclip reads it."""
+
+    formats: list[YtFormat]
+    language: str | None
+
+
+#: Video codec -> preference rank (h264 merges and decodes everywhere, h265 least of all).
 CODEC_RANK = {"h264": 0, "vp9": 1, "av1": 2, "h265": 3}
 #: Prefixes yt-dlp uses for each codec family.
 CODEC_PATTERNS = {
@@ -22,8 +50,14 @@ CODEC_PATTERNS = {
     "vp9": ("vp9", "vp09"),
     "av1": ("av01", "av1"),
 }
-#: Extensions that belong to a requested container.
-CONTAINER_EXT = {"mp4": ("mp4", "m4v"), "webm": ("webm",), "mkv": (), "auto": ()}
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadPrefs:
+    """What the format chooser needs to know about the run."""
+
+    quality: int  # target short side in pixels
+    audio_language: str | None = None  # None = the video's original language
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,15 +69,15 @@ class Choice:
     has_video: bool = True  # False when the URL only offers audio (the pipeline needs a video stream)
 
 
-def _num(value: Any) -> float:
+def _num(value: object) -> float:
     """A numeric field of a format dict (missing or malformed -> 0)."""
     try:
-        return float(value)
+        return float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return 0.0
 
 
-def _short_side(fmt: dict[str, Any]) -> float:
+def _short_side(fmt: YtFormat) -> float:
     """The smaller dimension (the "quality" of a vertical and a horizontal video alike)."""
     width, height = _num(fmt.get("width")), _num(fmt.get("height"))
     if width and height:
@@ -51,7 +85,7 @@ def _short_side(fmt: dict[str, Any]) -> float:
     return height or width
 
 
-def _codec(fmt: dict[str, Any]) -> str:
+def _codec(fmt: YtFormat) -> str:
     """The codec family of a format (``other`` when yt-dlp reports something unusual)."""
     vcodec = str(fmt.get("vcodec") or "").lower()
     for name, prefixes in CODEC_PATTERNS.items():
@@ -60,7 +94,7 @@ def _codec(fmt: dict[str, Any]) -> str:
     return "other"
 
 
-def _video_formats(formats: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _video_formats(formats: list[YtFormat]) -> list[YtFormat]:
     """Formats that contain a usable video stream.
 
     ``vcodec`` is ``None`` (not the string ``"none"``) for a direct media URL the generic
@@ -72,7 +106,7 @@ def _video_formats(formats: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _audio_formats(formats: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _audio_formats(formats: list[YtFormat]) -> list[YtFormat]:
     """Audio-only formats (a progressive format is handled as a video format)."""
     return [
         f
@@ -84,82 +118,39 @@ def _audio_formats(formats: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _quality_key(fmt: dict[str, Any], cfg: DownloadCfg) -> tuple[float, ...]:
-    """Sort key for the quality preference (smaller is better)."""
+def _quality_key(fmt: YtFormat, target: int) -> tuple[float, ...]:
+    """Sort key for the quality preference (smaller is better): closest, then the lower size."""
     quality = _short_side(fmt)
-    target = cfg.quality
     if quality <= 0:  # unknown dimensions always lose to a known format
-        return (2, 0)
-    if target in ("best", "worst"):
-        return (0, -quality) if target == "best" else (0, quality)
-    if target is None:
-        return (0, 0)
-    wanted = float(target)
-    if cfg.prefer == "at_most":
-        return (0, -quality) if quality <= wanted else (1, quality)
-    if cfg.prefer == "at_least":
-        return (0, quality) if quality >= wanted else (1, -quality)
-    return (0, abs(quality - wanted), quality)  # closest; equal distances prefer the lower quality
+        return (1, 0.0, 0.0)
+    return (0, abs(quality - target), quality)
 
 
-def _fps_key(fmt: dict[str, Any], cfg: DownloadCfg) -> tuple[float, ...]:
-    """Sort key for the fps preference (smaller is better; unknown fps loses)."""
-    if cfg.fps is None:
-        if cfg.quality == "best" or cfg.quality is None:  # best quality also means the smoothest of two otherwise equal formats
-            fps = _num(fmt.get("fps"))
-            return (0, -fps) if fps else (1, 0)
-        return (0,)
-    fps = _num(fmt.get("fps"))
-    if not fps:
-        return (2, 0)
-    wanted = cfg.fps
-    if cfg.prefer == "at_most":
-        return (0, -fps) if fps <= wanted else (1, fps)
-    if cfg.prefer == "at_least":
-        return (0, fps) if fps >= wanted else (1, -fps)
-    return (0, abs(fps - wanted), fps)
-
-
-def _container_rank(fmt: dict[str, Any], container: str) -> int:
-    """0 when the format already has the requested container, 1 otherwise."""
-    if container in ("auto", "mkv"):
-        return 0
-    return 0 if str(fmt.get("ext") or "").lower() in CONTAINER_EXT[container] else 1
-
-
-def _protocol_rank(fmt: dict[str, Any]) -> int:
+def _protocol_rank(fmt: YtFormat) -> int:
     """0 for a direct download, 1 for a segmented one (HLS/DASH).
 
     YouTube hands out an m3u8 variant next to the direct one for the same resolution. The segmented
     variant reports an inflated bitrate (the fragments' peak) and throttles badly on a range download,
-    so a direct URL wins whenever quality and fps are equal.
+    so a direct URL wins whenever the quality is equal.
     """
     protocol = str(fmt.get("protocol") or "").lower()
     return 1 if any(part in protocol for part in ("m3u8", "dash", "frag")) else 0
 
 
-def _audio_rank(fmt: dict[str, Any], cfg: DownloadCfg) -> tuple[float, int, str]:
-    """Sort key for an audio format (smaller is better)."""
+def _audio_rank(fmt: YtFormat) -> tuple[float, str]:
+    """Sort key for an audio format (smaller is better): the highest bitrate wins."""
     bitrate = _num(fmt.get("abr") or fmt.get("tbr"))
-    container = cfg.container
-    ext = str(fmt.get("ext") or "").lower()
-    if container == "mp4":
-        container_rank = 0 if ext in ("m4a", "mp4") else 1
-    elif container == "webm":
-        container_rank = 0 if ext in ("webm", "opus") else 1
-    else:
-        container_rank = 0
-    return (-bitrate if cfg.audio_quality == "best" else bitrate, container_rank, str(fmt.get("format_id") or ""))
+    return (-bitrate, str(fmt.get("format_id") or ""))
 
 
-def _language_matches(fmt: dict[str, Any], language: str) -> bool:
+def _language_matches(fmt: YtFormat, language: str) -> bool:
     """Whether an audio format is in ``language`` (``en`` matches ``en-US``)."""
     value = str(fmt.get("language") or "").lower()
     return bool(value) and (value == language or value.startswith((language + "-", language + "_")))
 
 
-def _pick_audio(formats: list[dict[str, Any]], cfg: DownloadCfg, language: str) -> tuple[dict[str, Any] | None, list[str]]:
-    """The best (or worst) audio-only format, preferring the requested or original language.
+def _pick_audio(formats: list[YtFormat], prefs: DownloadPrefs, language: str) -> tuple[YtFormat | None, list[str]]:
+    """The best audio-only format, preferring the requested or original language.
 
     ``language`` is the original audio language of the video (``info["language"]``). It is only a
     fallback for when ``audio_language`` is not set: a dubbed track must never win merely because
@@ -169,89 +160,49 @@ def _pick_audio(formats: list[dict[str, Any]], cfg: DownloadCfg, language: str) 
     if not audios:
         return None, []
     warnings: list[str] = []
-    wanted = (cfg.audio_language or "").strip().lower()
+    wanted = (prefs.audio_language or "").strip().lower()
     preferred = wanted or language
     if preferred:
         matching = [f for f in audios if _language_matches(f, preferred)]
         if matching:
             audios = matching
         elif wanted:
-            warnings.append(f"no audio track in language {cfg.audio_language!r}; using the default")
-    return min(audios, key=lambda f: _audio_rank(f, cfg)), warnings
+            warnings.append(f"no audio track in language {prefs.audio_language!r}; using the default")
+    return min(audios, key=_audio_rank), warnings
 
 
-def _quality_warnings(fmt: dict[str, Any], cfg: DownloadCfg) -> list[str]:
-    """Warn when an at_most/at_least quality preference had to be broken."""
-    quality_download = cfg.quality
-    if quality_download in ("best", "worst"):
-        return []
-    if quality_download is None:
-        return []
-    quality = _short_side(fmt)
-    wanted = float(quality_download)
-    shown = f"{quality:.0f}p" if quality else "an unknown resolution"
-    if cfg.prefer == "at_most" and quality > wanted:
-        return [f"no format at or below {wanted:.0f}p; using {shown}"]
-    if cfg.prefer == "at_least" and quality < wanted:
-        return [f"no format at or above {wanted:.0f}p; using {shown}"]
-    return []
-
-
-def _fps_warnings(fmt: dict[str, Any], cfg: DownloadCfg) -> list[str]:
-    """Warn when an at_most/at_least fps preference had to be broken."""
-    if cfg.fps is None:
-        return []
-    fps = _num(fmt.get("fps"))
-    if not fps:
-        return ["the chosen format has no fps information"]
-    if cfg.prefer == "at_most" and fps > cfg.fps:
-        return [f"no format at or below {cfg.fps:g} fps; using {fps:g} fps"]
-    if cfg.prefer == "at_least" and fps < cfg.fps:
-        return [f"no format at or above {cfg.fps:g} fps; using {fps:g} fps"]
-    return []
-
-
-def choose(info: dict[str, Any], cfg: DownloadCfg) -> Choice:
+def choose(info: YtInfo, prefs: DownloadPrefs) -> Choice:
     """Pick the format id for one extracted URL.
 
     Args:
         info: the ``extract_info(..., download=False)`` result (its ``formats`` list is used).
-        cfg: the effective download settings for the platform.
+        prefs: the derived quality target and the requested audio language.
 
     Raises:
-        DownloadError: if there is nothing downloadable or the requested codec is absent.
+        DownloadError: if there is nothing downloadable.
     """
     formats = [f for f in info.get("formats") or [] if isinstance(f, dict)]
     videos = _video_formats(formats)
     language = str(info.get("language") or "").strip().lower()
     warnings: list[str] = []
     if not videos:
-        audio, audio_warnings = _pick_audio(formats, cfg, language)
+        audio, audio_warnings = _pick_audio(formats, prefs, language)
         if audio is None:
             raise DownloadError("the URL offers no downloadable video or audio format")
         return Choice(str(audio.get("format_id") or "best"), tuple(audio_warnings), has_video=False)
-    if cfg.codec != "auto":
-        videos = [f for f in videos if _codec(f) == cfg.codec]
-        if not videos:
-            available = sorted({_codec(f) for f in _video_formats(formats)})
-            raise DownloadError(f"no {cfg.codec} video format; available: {', '.join(available) or 'none'}")
     best = min(
         videos,
         key=lambda f: (
-            *_quality_key(f, cfg),
-            *_fps_key(f, cfg),
+            *_quality_key(f, prefs.quality),
             _protocol_rank(f),
-            CODEC_RANK.get(_codec(f), 4) if cfg.codec == "auto" else 0,
-            _container_rank(f, cfg.container),
+            CODEC_RANK.get(_codec(f), 4),
             -_num(f.get("tbr")),
             str(f.get("format_id") or ""),
         ),
     )
-    warnings.extend(_quality_warnings(best, cfg))
-    warnings.extend(_fps_warnings(best, cfg))
     format_id = str(best.get("format_id") or "best")
     if str(best.get("acodec") or "").lower() == "none":
-        audio, audio_warnings = _pick_audio(formats, cfg, language)
+        audio, audio_warnings = _pick_audio(formats, prefs, language)
         warnings.extend(audio_warnings)
         if audio is None:
             warnings.append("the chosen video format has no audio track")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -8,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..core.config import JsonValue
 from .schemas import JobState
 
 
@@ -17,7 +19,7 @@ class Job:
     filename: str
     input_path: Path
     output_dir: Path
-    config: dict[str, Any]
+    config: dict[str, JsonValue]
     created_at: float = field(default_factory=time.time)
     state: JobState = JobState.queued
     step: str = "queued"
@@ -27,7 +29,7 @@ class Job:
     finished_at: float | None = None
     outputs: list[Path] = field(default_factory=list)
     work_dir: Path | None = None
-    process: Any = None
+    process: subprocess.Popen[str] | None = None
     cancel_requested: bool = False
 
     def update(
@@ -52,7 +54,7 @@ class Job:
         if state in (JobState.completed, JobState.failed, JobState.cancelled):
             self.finished_at = time.time()
 
-    def to_status(self) -> dict[str, Any]:
+    def to_status(self) -> dict[str, object]:
         return {
             "job_id": self.job_id,
             "state": self.state.value,

@@ -13,8 +13,9 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
+from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, ParamSpec, Protocol, TypeVar, cast, overload
+from typing import TYPE_CHECKING, ParamSpec, Protocol, TextIO, TypeVar, cast, overload
 
 if TYPE_CHECKING:
     from .resources import ResourceMonitor
@@ -29,8 +30,8 @@ def _resources() -> ResourceMonitor | None:
     """Try to import the shared resource monitor without breaking bootstrap imports."""
     try:
         from .resources import RESOURCES
-    except ImportError:
-        return None
+    except ImportError:  # pragma: no cover
+        return None  # pragma: no cover
     return RESOURCES
 
 
@@ -106,9 +107,13 @@ class _StdoutTee(io.TextIOBase):
     neither this tee nor the logger recurses.
     """
 
-    def __init__(self, mirror: io.TextIOBase | None, logger: logging.Logger) -> None:
+    def __init__(self, mirror: TextIO | None, logger: logging.Logger, console: TextIO | None = None) -> None:
         self._mirror = mirror
         self._logger = logger
+        # The stream console log records go to. A reconfiguration (`main` runs twice in one process, the
+        # desktop app starts several pipelines) must not hand the previous tee back to a StreamHandler:
+        # the tee would emit the record to the logger again and recurse.
+        self._console = console if console is not None else mirror
         self._buffer = ""
 
     def write(self, s: str) -> int:
@@ -143,6 +148,11 @@ class _StdoutTee(io.TextIOBase):
             return False
 
 
+def default_log_file(output_dir: str | Path) -> Path:
+    """The log file of a run: ``{output_dir}/logs/autoclip_<timestamp>.log`` (one file per run)."""
+    return Path(output_dir) / "logs" / f"autoclip_{datetime.now():%Y%m%d_%H%M%S}.log"
+
+
 def setup_logging(log_file: Path | None, file_level: str, console_level: str | None) -> None:
     """(Re)configure the ``autoclip`` logger.
 
@@ -157,6 +167,12 @@ def setup_logging(log_file: Path | None, file_level: str, console_level: str | N
         LOG.removeHandler(handler)
         handler.close()
     orig_stdout = sys.stdout
+    if isinstance(orig_stdout, _StdoutTee) and orig_stdout._console is not None:
+        orig_stdout = orig_stdout._console
+    if file_level == "OFF":
+        log_file = None
+    if console_level == "OFF":
+        console_level = None
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         fh = _SharedFileHandler(log_file, encoding="utf-8")
@@ -173,7 +189,7 @@ def setup_logging(log_file: Path | None, file_level: str, console_level: str | N
         sh.setFormatter(logging.Formatter("%(asctime)s | %(message)s", "%H:%M:%S"))
         LOG.addHandler(sh)
     if log_file is not None:
-        tee = _StdoutTee(None, LOG)
+        tee = _StdoutTee(None, LOG, console=orig_stdout)
         sys.stdout = tee
     if not LOG.handlers:
         LOG.addHandler(logging.NullHandler())
@@ -312,8 +328,8 @@ def system_profile(
 
     try:
         from .resources import MB, RESOURCES, cgroup_memory_available
-    except ImportError:
-        return "system profile unavailable during bootstrap"
+    except ImportError:  # pragma: no cover
+        return "system profile unavailable during bootstrap"  # pragma: no cover
 
     snap = RESOURCES.snapshot()
     mb_total = snap.mem_total // MB
@@ -334,33 +350,36 @@ def system_profile(
         try:
             for root in cache_roots:
                 parts.append(f"cache_root={safe_path_text(Path(str(root)))}")
-        except Exception as exc:
-            LOG.debug("could not add cache root %s: %s", root, exc)
+        except Exception as exc:  # pragma: no cover
+            LOG.debug("could not add cache root %s: %s", root, exc)  # pragma: no cover
     cgroup = cgroup_memory_available()
     if cgroup is not None:
         parts.append(f"cgroup_free={cgroup // MB}MB")
     return " | ".join(parts)
 
 
+def _bootstrap_health(label: str) -> str:
+    """A health line for when the resources module cannot be imported yet (best effort)."""
+    import psutil  # pragma: no cover
+
+    memory = psutil.virtual_memory()  # pragma: no cover
+    cpus = psutil.cpu_count(logical=True) or 1  # pragma: no cover
+    return f"health {label}: bootstrap | ram_total={memory.total // (1024 * 1024)}MB | cpus={cpus}"  # pragma: no cover
+
+
 def health_check(label: str = "step") -> str:
     """A compact, secret-free system health record (before steps/hooks)."""
     try:
         from .resources import MB, RESOURCES, cgroup_memory_available
-    except ImportError:
-        import psutil
-
-        memory = psutil.virtual_memory()
-        return f"health {label}: bootstrap | ram_total={memory.total // (1024 * 1024)}MB | cpus={psutil.cpu_count(logical=True) or 1}"
+    except ImportError:  # pragma: no cover
+        return _bootstrap_health(label)  # pragma: no cover
 
     try:
         snap = RESOURCES.snapshot()
         available = max(0, snap.mem_available // MB - RESOURCES.memory_reserve_mb)
         cgroup = cgroup_memory_available()
-    except ImportError:
-        import psutil
-
-        memory = psutil.virtual_memory()
-        return f"health {label}: bootstrap | ram_total={memory.total // (1024 * 1024)}MB | cpus={psutil.cpu_count(logical=True) or 1}"
+    except ImportError:  # pragma: no cover
+        return _bootstrap_health(label)  # pragma: no cover
     parts = [
         f"health {label}: cpus={RESOURCES.cpus}",
         f"cpu_budget={RESOURCES.cpu_budget()}",

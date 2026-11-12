@@ -47,7 +47,7 @@ LEDGER_NAME = "levels.json"
 LADDER_CLIPS: dict[str, Any] = {
     "kinds": ["short", "long"],
     "scenes": ["best"],
-    "short": {"count": 1, "min_seconds": 15, "target_seconds": 25, "max_seconds": 45, "aspect": "9:16"},
+    "short": {"count": 1, "min_seconds": 15, "max_seconds": 45, "aspect": "9:16"},
     "long": {"count": 1, "min_seconds": 180, "max_seconds": 600, "aspect": "16:9"},
 }
 
@@ -393,7 +393,6 @@ def download_config(output_dir: Path, url: str, *, time_range: str | None = None
     download: dict[str, Any] = {
         "quality": "best",
         "subtitles": {"enabled": True, "languages": ["en"], "use_as_transcript": "always"},
-        "metadata": {"info_json": True},
     }
     if time_range:
         download["time_range"] = time_range
@@ -408,7 +407,7 @@ def download_config(output_dir: Path, url: str, *, time_range: str | None = None
         "mode": "balance",
         "quality": "lowest",
         "download": download,
-        "logging": {"enabled": True, "file": "logs/autoclip.log", "level": "INFO", "console_level": "INFO"},
+        "logging": {"level": "INFO"},
         "compute": {"device": "cpu"},
     }
 
@@ -423,13 +422,12 @@ def pipeline_config(output_dir: Path, source: Path, transcript: Path, clips: dic
         "clips": {
             "kinds": ["short"],
             "scenes": ["best"],
-            "short": {"count": 1, "min_seconds": 15, "target_seconds": 25, "max_seconds": 45},
+            "short": {"count": 1, "min_seconds": 15, "max_seconds": 45},
         },
         "transcript": {"mode": "file", "file": str(transcript)},
-        "video": {"short_side": 720, "gpu": "off", "thumbnail": True},
-        "audio": {"denoise": "none"},
+        "video": {"short_side": 720, "gpu": "off"},
         "compute": {"device": "cpu"},
-        "logging": {"enabled": True, "file": "logs/autoclip.log", "level": "INFO", "console_level": "INFO"},
+        "logging": {"level": "INFO"},
     }
     data["clips"] = merge(data["clips"], clips or {})
     return data

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autoclip"
-version = "3.0.11"
+version = "4.0.0"
 description = "Cut long videos into the best short clips (TikTok / Reels / Shorts). Free, local, cross-platform."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,9 +18,9 @@ dependencies = [
 gui = ["tkinterdnd2>=0.7"]
 denoise = ["noisereduce>=3.0"]
 enhance = ["sherpa-onnx>=1.13,<2"]
-scenes = ["scenedetect[opencv]>=0.7"]
 server = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "jinja2>=3.1", "python-multipart>=0.0.9", "pydantic-settings>=2.4", "opentelemetry-api>=1.26", "opentelemetry-sdk>=1.26", "opentelemetry-instrumentation-fastapi>=0.47b0", "opentelemetry-exporter-otlp>=1.26", "aiofiles>=23"]
-dev = ["pytest>=8", "pytest-cov>=5", "mypy>=1.8", "ruff>=0.5", "vulture>=2.14", "deptry>=0.20", "noisereduce>=3.0", "sherpa-onnx>=1.13,<2", "scenedetect[opencv]>=0.7", "fastapi>=0.115", "uvicorn[standard]>=0.30", "websockets>=12", "jinja2>=3.1", "python-multipart>=0.0.9", "pydantic-settings>=2.4", "opentelemetry-api>=1.26", "opentelemetry-sdk>=1.26", "opentelemetry-instrumentation-fastapi>=0.47b0", "opentelemetry-exporter-otlp>=1.26", "aiofiles>=23", "httpx>=0.27", "tkinterdnd2>=0.7"]
+ai = ["ollama>=0.4", "torch>=2.0", "diffusers>=0.30", "pillow>=12.0"]
+dev = ["pytest>=8", "pytest-cov>=5", "mypy>=1.8", "ruff>=0.5", "vulture>=2.14", "deptry>=0.20", "noisereduce>=3.0", "sherpa-onnx>=1.13,<2", "fastapi>=0.115", "uvicorn[standard]>=0.30", "websockets>=12", "jinja2>=3.1", "python-multipart>=0.0.9", "pydantic-settings>=2.4", "opentelemetry-api>=1.26", "opentelemetry-sdk>=1.26", "opentelemetry-instrumentation-fastapi>=0.47b0", "opentelemetry-exporter-otlp>=1.26", "aiofiles>=23", "httpx>=0.27", "tkinterdnd2>=0.7"]
 
 [project.scripts]
 autoclip = "autoclip.cli:main"
@@ -59,7 +59,7 @@ markers = [
 # written straight to a file descriptor, so sys capture loses nothing.
 # Keep the 100% thresholds from the JavaScript setup mirrored here, even though pytest
 # checks the gate before the coverage report is written on a full run.
-addopts = "-q --capture=sys --cov=autoclip --cov-report=term --cov-report=term-missing --cov-report=json --cov-fail-under=95"
+addopts = "-q --capture=sys --cov=autoclip --cov-report=term --cov-report=term-missing --cov-report=json --cov-fail-under=100"
 filterwarnings = [
   "ignore:Setting the shape on a NumPy array has been deprecated:DeprecationWarning:moviepy.video.io.ffmpeg_reader",
   "error::DeprecationWarning:autoclip",
@@ -75,7 +75,7 @@ sigterm = true
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 95
+fail_under = 100
 precision = 2
 exclude_also = ["if __name__ == .__main__.:"]
 
@@ -104,7 +104,6 @@ Pillow = "PIL"
 fonttools = "fontTools"
 "python-bidi" = "bidi"
 "sherpa-onnx" = "sherpa_onnx"
-scenedetect = "scenedetect"
 ctranslate2 = "ctranslate2"
 "imageio-ffmpeg" = "imageio_ffmpeg"
 pydub = "pydub"

@@ -4,9 +4,13 @@ import asyncio
 import contextlib
 import json
 from collections import defaultdict
-from typing import Any
+from typing import Protocol
 
-from fastapi import WebSocket
+
+class SocketLike(Protocol):
+    async def accept(self) -> None: ...
+
+    async def send_text(self, data: str) -> None: ...
 
 
 class ProgressManager:
@@ -14,23 +18,23 @@ class ProgressManager:
 
     def __init__(self) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._sockets: dict[str, set[WebSocket]] = defaultdict(set)
+        self._sockets: dict[str, set[SocketLike]] = defaultdict(set)
         self._tasks: set[asyncio.Task[None]] = set()
         self._lock = asyncio.Lock()
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop | None) -> None:
         self._loop = loop
 
-    async def register(self, job_id: str, ws: Any) -> None:
+    async def register(self, job_id: str, ws: SocketLike) -> None:
         await ws.accept()
         async with self._lock:
             self._sockets[job_id].add(ws)
 
-    async def unregister(self, job_id: str, ws: Any) -> None:
+    async def unregister(self, job_id: str, ws: SocketLike) -> None:
         async with self._lock:
             self._sockets[job_id].discard(ws)
 
-    async def broadcast(self, job_id: str, payload: dict[str, Any]) -> None:
+    async def broadcast(self, job_id: str, payload: dict[str, object]) -> None:
         async with self._lock:
             targets = list(self._sockets.get(job_id, ()))
         for ws in targets:
@@ -39,7 +43,7 @@ class ProgressManager:
             except Exception:
                 await self.unregister(job_id, ws)
 
-    def publish(self, job_id: str, payload: dict[str, Any]) -> None:
+    def publish(self, job_id: str, payload: dict[str, object]) -> None:
         """Thread-safe publish from background workers."""
         loop = self._loop
         if loop is None:
@@ -49,7 +53,7 @@ class ProgressManager:
         with contextlib.suppress(RuntimeError):
             loop.call_soon_threadsafe(self._start_broadcast, job_id, payload)
 
-    def _start_broadcast(self, job_id: str, payload: dict[str, Any]) -> None:
+    def _start_broadcast(self, job_id: str, payload: dict[str, object]) -> None:
         task = asyncio.ensure_future(self.broadcast(job_id, payload))
         # Keep a strong reference: the event loop only holds weak ones, so an unreferenced
         # task can be garbage-collected mid-flight.

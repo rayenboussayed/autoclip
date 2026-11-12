@@ -7,22 +7,36 @@ and expands ``input`` globs into the list of videos to process.
 
 from __future__ import annotations
 
+import contextvars
 import json
+import logging
+import os
+import platform
 import re
+import typing
+from collections.abc import Mapping
 from dataclasses import asdict, field
 from glob import glob
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeVar
+from typing import Annotated, Literal, TypeVar
 from urllib.parse import urlsplit
 
 from pydantic import ConfigDict, Field, Strict, StringConstraints, TypeAdapter, ValidationError, model_validator
 from pydantic.dataclasses import dataclass
 
 from .errors import ConfigError
+from .internal.automation import COOKIE_BROWSERS
+from .internal.background import background_kind, resolve_background
+from .internal.content import load_lexicon
 from .platforms import BUILTIN_GROUPS, canonical, deep_merge
 from .styles import STYLES
 
-Level = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
+log = logging.getLogger("autoclip")
+
+#: A value that can appear in a JSON document (used instead of ``Any`` for config-shaped data).
+JsonValue = dict[str, "JsonValue"] | list["JsonValue"] | str | int | float | bool | None
+
+Level = Literal["DEBUG", "INFO", "WARNING", "ERROR", "OFF"]
 Position = Literal["top", "center", "lower", "bottom"]
 
 #: The schema: an unknown key is an error, a value keeps the type the JSON gave it.
@@ -55,7 +69,7 @@ class Section:
 
     @model_validator(mode="before")
     @classmethod
-    def _drop_comments(cls, data: Any) -> Any:
+    def _drop_comments(cls, data: JsonValue) -> JsonValue:
         """Comments in the config file are keys starting with an underscore - they are not options."""
         if isinstance(data, dict):
             return {k: v for k, v in data.items() if not k.startswith("_")}
@@ -64,22 +78,19 @@ class Section:
 
 @dataclass(config=SCHEMA)
 class KindCfg(Section):
-    """One kind of output clip ("short" or "long"): the length range and the recommended length."""
+    """One kind of output clip ("short" or "long"): the length range."""
 
     count: Annotated[Int, Field(ge=1)] = 5  # clips per scene type
     min_seconds: Annotated[Float, Field(gt=0)] = 20  # a clip is never shorter than this
-    target_seconds: Float | None = None  # the recommended length (a preference, not a limit)
     max_seconds: Annotated[Float, Field(gt=0)] = 60  # a clip is never longer than this
     aspect: Aspect = "9:16"  # 9:16 | 1:1 | 4:5 | 16:9 | original
     ranges: list[Range] = field(default_factory=list)  # clips.mode = "ranges", e.g. ["00:01:00-00:01:45"]
 
     @model_validator(mode="after")
     def _lengths_fit(self) -> KindCfg:
-        """The three lengths have to make sense together."""
+        """The length range has to make sense."""
         if self.min_seconds > self.max_seconds:
             raise ConfigError("min_seconds must be <= max_seconds")
-        if self.target_seconds is not None and not self.min_seconds <= self.target_seconds <= self.max_seconds:
-            raise ConfigError("target_seconds must be between min_seconds and max_seconds")
         return self
 
 
@@ -93,12 +104,6 @@ class ClipsCfg(Section):
     short: KindCfg = field(default_factory=KindCfg)
     long: KindCfg = field(default_factory=lambda: KindCfg(count=2, min_seconds=180, max_seconds=600, aspect="16:9"))
     keywords: list[str] = field(default_factory=list)  # extra words/phrases (any language) that boost a moment
-    lexicon_file: str | None = None  # JSON {"funny": [...], ...} extending the built-in English lexicons
-    skip_intro_seconds: Float = 0
-    snap_to_cuts: Bool = False  # snap cut points to shot changes (needs scenedetect)
-    pad_start: Float = 0.15
-    pad_end: Float = 0.30
-    split_seconds: Annotated[Float, Field(gt=0)] = 600  # mode=split
 
     def scene_list(self) -> list[str]:
         """The scene types to generate, in order (``"all"`` expands to every type)."""
@@ -122,108 +127,36 @@ class ClipsCfg(Section):
 
 
 @dataclass(config=SCHEMA)
-class EnhanceCfg(Section):
-    """Speech enhancement applied to the audio before it is transcribed."""
-
-    enabled: Bool = True  # denoise the audio so the ASR model hears clear words
-    backend: Literal["sherpa", "noisereduce"] = "sherpa"  # ONNX denoiser or spectral gating
-    model: Literal["gtcrn", "dpdfnet_baseline", "dpdfnet2", "dpdfnet4", "dpdfnet8"] = "gtcrn"
-    attenuation_limit_db: Annotated[Float, Field(ge=0, le=100)] = 12.0  # how much noise may be removed (0 = off, 100 = no suppression)
-    denoise_strength: Annotated[Float, Field(ge=0, le=1)] = 0.75  # only used by the noisereduce backend
-    snr_threshold_db: Annotated[Float, Field(gt=0)] | None = 20.0  # only enhance below this speech-to-noise ratio (null = always)
-    model_dir: str | None = None  # where the ONNX model is kept; default <output_dir>/.work/models
-
-    def fingerprint(self) -> dict[str, Any]:
-        """The settings that change the transcript (part of the on-disk cache key)."""
-        return {
-            "enabled": self.enabled,
-            "backend": self.backend,
-            "model": self.model,
-            "attenuation_limit_db": self.attenuation_limit_db,
-            "denoise_strength": self.denoise_strength,
-            "snr_threshold_db": self.snr_threshold_db,
-        }
-
-
-def _default_transcript_model() -> str:
-    """Large-v3 on CUDA (fast enough to matter), small otherwise."""
-    try:
-        import ctranslate2
-
-        if int(ctranslate2.get_cuda_device_count()) > 0:
-            return "large-v3"
-    except Exception:  # noqa: S110
-        pass
-    return "small"
-
-
-@dataclass(config=SCHEMA)
 class TranscriptCfg(Section):
-    """Where the transcript comes from."""
+    """Where the transcript comes from (a platform subtitle or the disk cache are tried before Whisper)."""
 
-    mode: Literal["auto", "whisper", "file", "off"] = "auto"
     file: str | None = None  # .srt/.json; '{stem}' is replaced by the video's file name without extension
-    cache: Bool = True  # reuse <video_dir>/<name>.transcript.json while input, model and language are unchanged
-    model: str | None = None  # tiny base small medium large-v3 (multilingual, NOT *.en); None = auto (large-v3 on CUDA, small otherwise)
-    model_dir: str | None = None  # where Whisper models are cached; None = the default HuggingFace cache
-    offline: Bool = False  # never download a model; fail fast if it is not cached
     consent: Literal["ask", "auto", "never"] = "ask"  # ask = prompt (TTY/GUI), auto = download without asking, never = fail fast
-    auto_downgrade: Bool = True  # pick a smaller model when free RAM cannot hold the chosen one
     language: str | None = None  # None = auto-detect
-    multilingual: Bool = True  # detect the language per segment (mixed-language audio)
-    device: Literal["auto", "cpu", "cuda"] = "auto"
-    word_timestamps: Bool = True
-    enhance: EnhanceCfg = field(default_factory=EnhanceCfg)
-
-    @model_validator(mode="after")
-    def _resolve_default_model(self) -> TranscriptCfg:
-        if self.model is None:
-            try:
-                import ctranslate2
-
-                self.model = "large-v3" if int(ctranslate2.get_cuda_device_count()) > 0 else "small"
-            except Exception:
-                self.model = "small"
-        return self
 
 
 @dataclass(config=SCHEMA)
 class LlmCfg(Section):
     """Optional local re-ranking (Ollama or any OpenAI-compatible server)."""
 
-    enabled: Bool = False
     base_url: Url = "http://localhost:11434"
     model: str = "llama3.2"
     api_key: str | None = field(default=None, repr=False)
-    top_k: Int = 12
-    timeout: Float = 180
-
-
-@dataclass(config=SCHEMA)
-class BackgroundCfg(Section):
-    """Background behind a letter-boxed video."""
-
-    type: Literal["blur", "color", "image"] = "blur"
-    blur: Float = 28
-    dim: Float = 0.35  # 0 = untouched, 1 = black
-    color: str = "#101010"
-    image: str | None = None
 
 
 @dataclass(config=SCHEMA)
 class VideoCfg(Section):
     """Output encoding (the canvas shape comes from each clip kind's ``aspect``)."""
 
-    short_side: Int = 1080  # 1080 -> 1080x1920 for 9:16 and 1920x1080 for 16:9
-    upscale: Bool = False  # False = never enlarge the source (a 720p source stays 720p)
-    fps: Float | None = None  # None = source fps
     layout: Literal["fit", "fill"] = "fit"  # fit = whole frame on a background, fill = crop to fill
-    background: BackgroundCfg = field(default_factory=BackgroundCfg)
-    fade_seconds: Float = 0.2
+    background: str = "blur"  # "blur", a #RGB/#RRGGBB colour or an image file (relative to the config file)
     codec: Literal["h264", "h265"] = "h264"
-    gpu: Literal["auto", "off", "nvenc", "videotoolbox", "qsv", "amf"] = "auto"  # GPU encoder if one really works
-    container: Literal["mp4", "mkv"] = "mp4"  # mkv = no faststart; needed for some H.265/audio combinations
-    thumbnail: Bool = True  # also write <clip>.jpg
+
+    @model_validator(mode="after")
+    def _background_is_usable(self) -> VideoCfg:
+        """``blur``, a colour or a path; a malformed ``#`` value is rejected here rather than at render time."""
+        background_kind(self.background)
+        return self
 
 
 @dataclass(config=SCHEMA)
@@ -231,18 +164,19 @@ class CaptionsCfg(Section):
     """Burned-in captions."""
 
     enabled: Bool = True
-    font: str = "auto"  # "auto" = a system font covering the script, or a font file / name
-    size: Int | None = None  # None = derived from the resolution
-    color: str = "#FFFFFF"
-    bg_color: str = "#000000"
-    bg_opacity: Float = 0.6  # 0 = no box
-    stroke_width: Int = 0
-    stroke_color: str = "#000000"
-    highlight: Bool = True  # colour the spoken word (spaced left-to-right scripts only)
-    highlight_color: str = "#FFD400"
+    theme: Literal["social", "plain", "outline", "no_box"] = "social"  # colour and box as one preset
     position: Position = "lower"
-    max_seconds: Float = 2.6
     uppercase: Bool = False
+
+    def __post_init__(self) -> None:
+        style = {
+            "social": ("#FFFFFF", "#000000", 0.6, 0, "#000000", "#FFD400"),
+            "plain": ("#FFFFFF", "#000000", 0.0, 0, "#000000", "#FFFFFF"),
+            "outline": ("#FFFFFF", "#000000", 0.0, 3, "#000000", "#FFFFFF"),
+            "no_box": ("#FFFFFF", "#000000", 0.0, 0, "#000000", "#FFFFFF"),
+            "blur": ("#FFFFFF", "#000000", 0.6, 0, "#000000", "#FFD400"),
+        }[self.theme]
+        self.color, self.bg_color, self.bg_opacity, self.stroke_width, self.stroke_color, self.highlight_color = style
 
 
 @dataclass(config=SCHEMA)
@@ -250,53 +184,13 @@ class TitleCfg(Section):
     """Optional hook title shown at the start of each clip."""
 
     enabled: Bool = False
-    seconds: Float = 3.0
-    position: Position = "top"
-
-
-@dataclass(config=SCHEMA)
-class AudioCfg(Section):
-    """Speech clean-up."""
-
-    enhance: Bool = True
-    denoise: Literal["auto", "noisereduce", "ffmpeg", "none"] = "auto"
-    denoise_strength: Float = 0.75
-    highpass_hz: Float = 80
-    target_dbfs: Float = -16  # speech loudness target (about -14 LUFS)
-    fade_seconds: Float = 0.12
-
-
-@dataclass(config=SCHEMA)
-class UnsilenceCfg(Section):
-    """Pre-preprocessing that removes silent spans before transcription and clipping."""
-
-    enabled: Bool = True
-    silence_threshold_db: Float = -40.0
-    min_silence_ms: Annotated[Int, Field(ge=0)] = 500
-    keep_silence_ms: Annotated[Int, Field(ge=0)] = 120
-    min_segment_seconds: Annotated[Float, Field(ge=0.05)] = 0.25
-
-
-@dataclass(config=SCHEMA)
-class SilenceCfg(Section):
-    """Pause and filler-word removal."""
-
-    remove: Bool = True
-    min_silence: Float = 0.5  # pauses longer than this are shortened
-    keep_padding: Float = 0.12  # seconds of pause kept on each side
-    threshold_db: Float | Literal["auto"] = "auto"
-    remove_fillers: Bool = True  # needs word timestamps
-    fillers: list[str] = field(default_factory=lambda: ["um", "uh", "umm", "uhh", "uhm", "erm", "hmm", "mmm"])
 
 
 @dataclass(config=SCHEMA)
 class LoggingCfg(Section):
     """Log file and console verbosity."""
 
-    enabled: Bool = True
-    level: Level = "INFO"  # written to the log file; DEBUG logs every small step
-    console_level: Level = "INFO"
-    file: str | None = None  # None = <output_dir>/logs/autoclip_<timestamp>.log
+    level: Level = "INFO"  # written to the log file and the console; OFF disables both
 
 
 @dataclass(config=SCHEMA)
@@ -304,65 +198,50 @@ class SkipCfg(Section):
     """Leave individual pipeline steps out (nothing is skipped by default)."""
 
     stt: Bool = False  # no Whisper; an explicit, downloaded or cached transcript is still used
-    denoise: Bool = False  # no speech enhancement before Whisper and no noise reduction of the clip audio
-    audio_enhance: Bool = False  # keep the raw audio (no high-pass, loudness normalisation or limiter)
+    denoise: Bool = False  # transcribe raw audio, without the speech enhancer
+    audio_enhance: Bool = False  # keep the clip audio untouched (no denoise/loudness/limiter)
     audio: Bool = False  # mute the clips (and skip audio decoding, so pauses cannot be removed)
-    pauses: Bool = False  # keep pauses and filler words in the clip audio
+    pauses: Bool = False  # keep long pauses and filler sounds in the clips
     caption: Bool = False  # no burned-in captions
-    title: Bool = False  # no hook title
+    title: Bool = False  # no overlay title, even when the model generated one
     fade: Bool = False  # no video or audio fades
-    thumbnail: Bool = False  # no .jpg cover next to each clip
-    llm: Bool = False  # no LLM re-ranking (even when llm.enabled is true)
-    snap: Bool = False  # no snapping of cut points to shot changes
+    thumbnail: Bool = False  # keep the frame JPEG instead of generating an AI thumbnail
+    llm: Bool = False  # no Ollama calls (ranking, titles, social captions)
+    snap: Bool = False  # do not snap cut points to shot changes
 
 
-@dataclass(config=SCHEMA)
-class ComputeCfg(Section):
-    """Where the heavy work runs."""
-
-    device: Literal["cpu", "gpu", "auto"] = "auto"  # "cpu" never touches the GPU, "gpu" prefers it
-
-
-@dataclass(config=SCHEMA)
-class MetadataCfg(Section):
-    """Extra files saved next to a downloaded original."""
-
-    info_json: Bool = True  # <title> [<id>].info.json (the metadata yt-dlp found)
-    thumbnail: Bool = False  # <title> [<id>].webp/.jpg
-    description: Bool = False  # <title> [<id>].description
+SkipName = Literal["stt", "denoise", "audio_enhance", "audio", "pauses", "caption", "title", "fade", "thumbnail", "llm", "snap"]
+SKIP_NAMES: tuple[SkipName, ...] = (
+    "stt",
+    "denoise",
+    "audio_enhance",
+    "audio",
+    "pauses",
+    "caption",
+    "title",
+    "fade",
+    "thumbnail",
+    "llm",
+    "snap",
+)
 
 
 @dataclass(config=SCHEMA)
 class SubtitlesCfg(Section):
-    """Subtitles downloaded from the platform."""
+    """Subtitles downloaded from the platform (a manual track is preferred over automatic captions)."""
 
-    enabled: Bool = False  # download the subtitles the platform offers
-    languages: list[str] = field(default_factory=lambda: ["en"])  # language codes, e.g. ["en", "ar"]
-    use_as_transcript: Literal["never", "manual", "always"] = "never"
-    # never = keep the files only; manual = human-made subtitles may replace Whisper; always = auto-generated too
+    enabled: Bool = True  # download the subtitles the platform offers; they are used before Whisper
+    languages: list[str] = field(default_factory=list)  # empty = follow the video's original language, then en
 
     @model_validator(mode="after")
-    def _languages_when_enabled(self) -> SubtitlesCfg:
-        """A download with no language has nothing to request, and was never asked for."""
-        if self.enabled and not self.languages:
-            raise ConfigError("download.subtitles.languages must not be empty when subtitles are enabled")
-        if self.use_as_transcript != "never" and not self.enabled:
-            raise ConfigError("download.subtitles.use_as_transcript needs download.subtitles.enabled: true")
-        return self
-
-
-@dataclass(config=SCHEMA)
-class CookiesCfg(Section):
-    """Where yt-dlp takes cookies from (some platforms need a signed-in session)."""
-
-    from_browser: str | None = None  # chrome, firefox, edge, ... (the browser's cookie store is read locally)
-    file: str | None = None  # a Netscape-format cookies.txt
-
-    @model_validator(mode="after")
-    def _one_source(self) -> CookiesCfg:
-        """One cookie source is enough and two would be ambiguous."""
-        if self.from_browser and self.file:
-            raise ConfigError("download.cookies: set either from_browser or file, not both")
+    def _languages_are_names(self) -> SubtitlesCfg:
+        """Language codes are normalized to lower-case and de-duplicated."""
+        cleaned = []
+        for value in self.languages:
+            if not isinstance(value, str) or not value.strip():
+                raise ConfigError("download.subtitles.languages must contain non-empty language codes")
+            cleaned.append(value.strip().lower())
+        self.languages = list(dict.fromkeys(cleaned))
         return self
 
 
@@ -371,26 +250,6 @@ class NetworkCfg(Section):
     """Network behaviour of the downloader."""
 
     proxy: Proxy | None = None
-    rate_limit_mbps: Annotated[Float, Field(gt=0)] | None = None  # None = no cap
-    retries: Annotated[Int, Field(ge=0, le=20)] = 3
-    socket_timeout: Annotated[Float, Field(gt=0, le=300)] = 20
-    sleep_between_seconds: Annotated[Float, Field(ge=0, le=60)] = 0  # pause between playlist entries
-
-
-@dataclass(config=SCHEMA)
-class JsRuntimeCfg(Section):
-    """JavaScript runtime for YouTube's signature challenges (yt-dlp's EJS support)."""
-
-    name: Literal["auto", "deno", "node", "bun", "quickjs"] = "auto"  # auto = find one on PATH
-    path: str | None = None  # an explicit binary; only with a named runtime
-    remote_components: Literal["none", "ejs"] = "none"  # "ejs" lets yt-dlp fetch the EJS challenge solver
-
-    @model_validator(mode="after")
-    def _path_needs_a_name(self) -> JsRuntimeCfg:
-        """``auto`` finds a runtime itself, so a path would be ignored."""
-        if self.path and self.name == "auto":
-            raise ConfigError("download.js_runtime.path needs download.js_runtime.name (auto cannot use a path)")
-        return self
 
 
 @dataclass(config=SCHEMA)
@@ -400,8 +259,7 @@ class PlatformsCfg(Section):
     allow: list[str] = field(default_factory=lambda: ["@popular"])  # families or @groups that may be used
     deny: list[str] = field(default_factory=list)  # families or @groups that never may (deny wins)
     groups: dict[str, list[str]] = field(default_factory=dict)  # user groups: {"@news": ["youtube", ...]}
-    settings: dict[str, dict[str, Any]] = field(default_factory=dict)  # partial download settings per family/@group
-    group_by_platform: Bool = False  # download to .work/downloads/<platform>/...
+    settings: dict[str, dict[str, object]] = field(default_factory=dict)  # partial download settings per family/@group
 
     @model_validator(mode="after")
     def _names_and_groups(self) -> PlatformsCfg:
@@ -460,23 +318,11 @@ class PlatformsCfg(Section):
 class DownloadCfg(Section):
     """Downloading the http(s) URLs found in ``input`` with yt-dlp."""
 
-    quality: Annotated[Int, Field(ge=144, le=4320)] | Literal["best", "worst"] | None = None  # short side or best/worst
-    fps: Annotated[Float, Field(gt=0, le=240)] | None = None  # None = any
-    prefer: Literal["closest", "at_most", "at_least"] = "closest"  # how quality/fps are matched
-    codec: Literal["auto", "h264", "vp9", "av1", "h265"] = "auto"  # auto = h264, then vp9, av1, h265, other
-    container: Literal["auto", "mp4", "mkv", "webm"] = "auto"  # auto = the format's own container
-    audio_quality: Literal["best", "worst"] = "best"
     audio_language: str | None = None  # e.g. "en"; None = the video's original language
-    original_dir: str | None = None  # None = <output_dir>/.work/downloads
-    metadata: MetadataCfg = field(default_factory=MetadataCfg)
     subtitles: SubtitlesCfg = field(default_factory=SubtitlesCfg)
-    playlist: Literal["single", "all"] = "single"  # single = the one video; all = every entry, up to max_videos
-    max_videos: Annotated[Int, Field(ge=1)] = 50
-    cache: Bool = True  # reuse the cached originals of an identical URL/settings without any network call
     time_range: Range | None = None  # "MM:SS-MM:SS" / "HH:MM:SS-HH:MM:SS"
-    cookies: CookiesCfg = field(default_factory=CookiesCfg)
+    cookies: str | None = None  # a browser name (chrome, firefox, ...) or a Netscape-format cookies.txt
     network: NetworkCfg = field(default_factory=NetworkCfg)
-    js_runtime: JsRuntimeCfg = field(default_factory=JsRuntimeCfg)
     platforms: PlatformsCfg = field(default_factory=PlatformsCfg)
 
     @model_validator(mode="after")
@@ -491,10 +337,9 @@ class DownloadCfg(Section):
                 raise ConfigError("download.time_range must end after it starts")
         base = asdict(self)
         base.pop("platforms")
-        base.pop("js_runtime")
         for name, entry in self.platforms.settings.items():
-            if "platforms" in entry or "js_runtime" in entry:
-                raise ConfigError(f"download.platforms.settings.{name}: platforms and js_runtime cannot be overridden per platform")
+            if "platforms" in entry:
+                raise ConfigError(f"download.platforms.settings.{name}: platforms cannot be overridden per platform")
             try:
                 parse(DownloadCfg, deep_merge(base, entry))
             except ConfigError as e:
@@ -502,23 +347,46 @@ class DownloadCfg(Section):
         return self
 
 
-def _default_output_dir() -> str:
-    """The output folder when none is given: the operating system's Videos folder."""
-    return str(Path.home() / "Videos" / "clips")
-
-
-_DOWNLOAD_QUALITY_BY_OUTPUT = {"highest": 1080, "high": 720, "medium": 480, "low": 360, "lowest": 240}
+def _default_output_dir(system: str | None = None, env: Mapping[str, str] | None = None, home: Path | None = None) -> str:
+    """The output folder when none is given: the platform's Videos/Movies folder plus ``clips``."""
+    system = system or platform.system()
+    env = os.environ if env is None else env
+    home = Path.home() if home is None else home
+    if system == "Darwin":
+        return str(home / "Movies" / "clips")
+    if system == "Windows":
+        return str(home / "Videos" / "clips")
+    videos = env.get("XDG_VIDEOS_DIR")
+    return str((Path(videos).expanduser() if videos else home / "Videos") / "clips")
 
 
 @dataclass(config=SCHEMA)
 class Config(Section):
     """The whole configuration file."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalise_mode(cls, data: JsonValue) -> JsonValue:
+        """An unknown or empty ``mode`` quietly falls back to ``balance`` instead of failing validation."""
+        if isinstance(data, dict) and "mode" in data:
+            mode = data["mode"]
+            if mode not in ("performance", "resources", "balance"):
+                data = {**data, "mode": "balance"}
+        return data
+
+    @model_validator(mode="after")
+    def _mode_is_valid(self) -> Config:
+        """Keep the runtime choice consistent: ``profile_for`` never raises on a misconfigured value."""
+        if self.mode not in ("performance", "resources", "balance"):
+            self.mode = "balance"  # pragma: no cover
+        return self
+
     input: list[str] = field(default_factory=lambda: ["input.mp4"])  # files, glob patterns or http(s) URLs
     output_dir: str = field(default_factory=_default_output_dir)  # one sub-folder per video is created inside
     mode: Literal["performance", "resources", "balance"] = "balance"  # performance/resource/balance policy
     quality: Literal["highest", "high", "medium", "low", "lowest"] = "high"  # encode resolution/fps/audio quality
-    compute: ComputeCfg = field(default_factory=ComputeCfg)
+    device: Literal["auto", "cpu", "gpu"] = "auto"  # runtime override (automatic unless the user forces one)
+    offline: Bool = False  # runtime override: forbid downloads and AI network calls
     download: DownloadCfg = field(default_factory=DownloadCfg)
     clips: ClipsCfg = field(default_factory=ClipsCfg)
     transcript: TranscriptCfg = field(default_factory=TranscriptCfg)
@@ -526,43 +394,376 @@ class Config(Section):
     video: VideoCfg = field(default_factory=VideoCfg)
     captions: CaptionsCfg = field(default_factory=CaptionsCfg)
     title: TitleCfg = field(default_factory=TitleCfg)
-    audio: AudioCfg = field(default_factory=AudioCfg)
-    silence: SilenceCfg = field(default_factory=SilenceCfg)
-    unsilence: UnsilenceCfg = field(default_factory=UnsilenceCfg)
     skip: SkipCfg = field(default_factory=SkipCfg)
     logging: LoggingCfg = field(default_factory=LoggingCfg)
 
-    @model_validator(mode="after")
-    def _skip_is_possible(self) -> Config:
-        """Skipping Whisper while forcing it would leave nothing to transcribe with."""
-        if self.skip.stt and self.transcript.mode == "whisper":
-            raise ConfigError("skip.stt cannot be combined with transcript.mode: 'whisper' (nothing would transcribe)")
-        return self
+
+@dataclass(config=SCHEMA)
+class FileClipsCfg(Section):
+    """The four clip options that are worth asking about."""
+
+    preset: Literal["both", "shorts", "long"] = "both"  # which families of clips to render
+    scenes: str | list[str] = "best"  # "all", one scene type or a list
+    keywords: list[str] = field(default_factory=list)  # extra words/phrases that boost a moment
+    ranges: list[Range] = field(default_factory=list)  # exact cuts: ["00:01:00-00:01:45"]
+
+    def scene_list(self) -> list[str]:
+        """The scene types to generate, in order (``"all"`` expands to every type)."""
+        if self.scenes == "all":
+            return list(STYLES)
+        return [self.scenes] if isinstance(self.scenes, str) else self.scenes
 
     @model_validator(mode="after")
-    def _auto_download_quality(self) -> Config:
-        """A user who leaves ``download.quality`` unset gets it from the top-level quality level."""
-        if self.download.quality is None:
-            self.download.quality = _DOWNLOAD_QUALITY_BY_OUTPUT[self.quality]
+    def _scenes_exist(self) -> FileClipsCfg:
+        """The scene types must exist (``"all"`` expands to every type)."""
+        bad = [s for s in self.scene_list() if s not in STYLES]
+        if bad:
+            raise ConfigError(f"unknown clips.scenes {bad}; valid: 'all' or {', '.join(STYLES)}")
         return self
+
+
+@dataclass(config=SCHEMA)
+class FilePlatformsCfg(Section):
+    """The only download policy a user ever needs to write down."""
+
+    allow: list[str] = field(default_factory=lambda: ["@popular"])
+    deny: list[str] = field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _names(self) -> FilePlatformsCfg:
+        """No empty names and no unknown built-in groups (families are checked against yt-dlp at run time)."""
+        if not self.allow:
+            raise ConfigError("download.platforms.allow must name at least one platform or group")
+        for name in (*self.allow, *self.deny):
+            if not name.strip():
+                raise ConfigError("download.platforms.allow/deny must not contain empty names")
+            if name.startswith("@") and name not in BUILTIN_GROUPS:
+                raise ConfigError(f"download.platforms: unknown group {name}")
+        return self
+
+
+@dataclass(config=SCHEMA)
+class FileDownloadCfg(Section):
+    """Downloading URLs found in ``input`` (everything else follows the platform's own conventions)."""
+
+    platforms: FilePlatformsCfg = field(default_factory=FilePlatformsCfg)
+
+
+#: Keys older versions accepted, with the replacement to use instead. A removed *section* covers its children.
+REMOVED_KEYS: dict[str, str] = {
+    "output_dir": "set AUTOCLIP_OUTPUT_DIR, pass --output-dir, or choose the folder in the app",
+    "mode": "pass --mode performance|resources|balance",
+    "quality": "pass --quality highest|high|medium|low|lowest",
+    "logging": "pass --log-level DEBUG|INFO|WARNING|ERROR|OFF",
+    "clips.mode": "clips.preset chooses shorts/long/both; use clips.ranges for exact cuts or pass --split",
+    "clips.kinds": "use clips.preset",
+    "clips.short": "use clips.preset (the short profile is built in)",
+    "clips.long": "use clips.preset (the long profile is built in)",
+    "clips.lexicon_file": "drop a lexicon.json next to the config file instead",
+    "clips.skip_intro_seconds": "no longer configurable",
+    "clips.snap_to_cuts": "shot-change snapping is automatic",
+    "clips.pad_start": "padding is chosen automatically",
+    "clips.pad_end": "padding is chosen automatically",
+    "clips.split_seconds": "pass --split",
+    "transcript": "pass --transcript PATH and AUTOCLIP_OFFLINE=1 (consent is automatic)",
+    "llm": "pass --llm-model (or AUTOCLIP_LLM_MODEL/AUTOCLIP_LLM_URL); a local Ollama is detected automatically",
+    "compute": "pass --device cpu|gpu|auto (or AUTOCLIP_CPU=1)",
+    "device": "pass --device cpu|gpu|auto (or AUTOCLIP_CPU=1)",
+    "offline": "pass --offline or AUTOCLIP_OFFLINE=1",
+    "video": "the output stack (layout, background, codec, fps) is chosen automatically",
+    "captions": "captions use the automatic social style; pass --skip caption to disable",
+    "title": "titles follow the LLM/kind policy; pass --skip title to disable",
+    "audio": "audio processing is automatic; pass --skip audio_enhance to disable",
+    "unsilence": "silence removal is automatic",
+    "silence": "silence removal is automatic",
+    "skip": "pass --skip NAME (see `autoclip run --help`)",
+    "metadata": "metadata sidecars are always written",
+    "cookies": "pass --cookies BROWSER|FILE or AUTOCLIP_COOKIES",
+    "js_runtime": "the JavaScript runtime is probed automatically",
+    "network": "pass --proxy URL or AUTOCLIP_PROXY",
+    "download.quality": "the best matching format is chosen automatically",
+    "download.fps": "the best matching format is chosen automatically",
+    "download.prefer": "the best matching format is chosen automatically",
+    "download.codec": "the best matching format is chosen automatically",
+    "download.container": "the best matching format is chosen automatically",
+    "download.audio_quality": "the best audio track is chosen automatically",
+    "download.audio_language": "the video's original audio track is kept",
+    "download.original_dir": "originals live in <output>/.work/downloads",
+    "download.metadata": "metadata sidecars are always written",
+    "download.subtitles": "a downloaded subtitle is used when it exists (pass --skip stt to forbid Whisper)",
+    "download.playlist": "the URL shape decides: one video, or the whole playlist/channel (max 50)",
+    "download.max_videos": "playlists are capped at 50 entries",
+    "download.time_range": "cut the source beforehand or use clips.ranges",
+    "download.cookies": "pass --cookies BROWSER|FILE or AUTOCLIP_COOKIES",
+    "download.network": "pass --proxy URL or AUTOCLIP_PROXY",
+    "download.js_runtime": "the JavaScript runtime is probed automatically",
+    "download.cache": "originals are always cached",
+    "download.platforms.groups": "name families directly in download.platforms.allow/deny",
+    "download.platforms.settings": "per-platform settings are chosen automatically",
+}
+
+#: Sections whose children are walked when looking for removed keys.
+_REMOVED_CONTAINERS: frozenset[str] = frozenset(
+    prefix for path in REMOVED_KEYS for prefix in (".".join(path.split(".")[:i]) for i in range(1, path.count(".") + 1))
+) | {"clips", "download", "download.platforms"}
+
+
+def _warn_removed(path: str, hint: str) -> None:
+    """Warn once per removed key, in the ``parse`` call that saw it."""
+    seen = _removed_seen.get()
+    if seen is not None:
+        if path in seen:
+            return
+        seen.add(path)
+    log.warning("config: '%s' is no longer an option; %s", path, hint)
+
+
+def _strip_removed(data: JsonValue, prefix: str = "") -> JsonValue:
+    """Drop keys older versions accepted (with a warning) so an old config file still loads."""
+    if not isinstance(data, dict):
+        return data
+    out: dict[str, JsonValue] = {}
+    for key, raw in data.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if path in REMOVED_KEYS:
+            _warn_removed(path, REMOVED_KEYS[path])
+            continue
+        value = _strip_removed(raw, path) if isinstance(raw, dict) and (not prefix or path in _REMOVED_CONTAINERS) else raw
+        out[key] = value
+    return out
+
+
+@dataclass(config=SCHEMA)
+class RuntimeOverrides(Section):
+    """Options a front end sets outside the file: the command line, the environment, the app, the server."""
+
+    input: list[str] | None = None
+    output_dir: str | None = None
+    transcript: str | None = None  # explicit .srt/.json transcript (overrides the file key, which does not exist)
+    cookies: str | None = None  # a browser name or a Netscape cookies file
+    proxy: Proxy | None = None
+    log_level: Level | None = None
+    device: Literal["auto", "cpu", "gpu"] | None = None
+    skip: list[SkipName] | None = None
+    llm_base_url: Url | None = None
+    llm_model: str | None = None
+    offline: Bool | None = None
+    split: Bool | None = None
+    mode: Literal["performance", "resources", "balance"] | None = None
+    quality: Literal["highest", "high", "medium", "low", "lowest"] | None = None
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> RuntimeOverrides:
+        """The overrides carried by ``AUTOCLIP_*`` environment variables (invalid values are ignored)."""
+        env = os.environ if env is None else env
+        data: dict[str, JsonValue] = {}
+        names = {
+            "AUTOCLIP_OUTPUT_DIR": "output_dir",
+            "AUTOCLIP_TRANSCRIPT": "transcript",
+            "AUTOCLIP_COOKIES": "cookies",
+            "AUTOCLIP_PROXY": "proxy",
+            "AUTOCLIP_LOG_LEVEL": "log_level",
+            "AUTOCLIP_LLM_URL": "llm_base_url",
+            "AUTOCLIP_LLM_MODEL": "llm_model",
+            "AUTOCLIP_DEVICE": "device",
+            "AUTOCLIP_MODE": "mode",
+            "AUTOCLIP_QUALITY": "quality",
+        }
+        for variable, field_name in names.items():
+            value = env.get(variable, "").strip()
+            if value:
+                data[field_name] = value
+        if env.get("AUTOCLIP_CPU", "").strip().lower() in ("1", "true", "yes", "on"):
+            data["device"] = "cpu"
+        if env.get("AUTOCLIP_OFFLINE", "").strip().lower() in ("1", "true", "yes", "on"):
+            data["offline"] = True
+        skips = [name.strip() for name in env.get("AUTOCLIP_SKIP", "").split(",") if name.strip()]
+        if skips:
+            data["skip"] = skips  # type: ignore[assignment]
+        try:
+            return parse(cls, data)
+        except ConfigError as e:
+            log.warning("config: ignoring invalid environment overrides: %s", e)
+            return cls()
+
+    @classmethod
+    def combined(cls, explicit: RuntimeOverrides | None, env: Mapping[str, str] | None = None) -> RuntimeOverrides:
+        """Environment values first, then explicit overrides field by field (an explicit value always wins)."""
+        base = cls.from_env(env)
+        if explicit is None:
+            return base
+        data = asdict(base)
+        for name, value in asdict(explicit).items():
+            if value is not None:
+                data[name] = value
+        return parse(cls, data)
+
+
+#: Which kinds a preset renders.
+PRESET_KINDS: dict[str, tuple[str, ...]] = {
+    "both": ("short", "long"),
+    "shorts": ("short",),
+    "long": ("long",),
+}
+
+
+@dataclass(config=SCHEMA)
+class FileConfig(Section):
+    """The whole configuration file: seven keys, everything else is derived at run time."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_removed(cls, data: JsonValue) -> JsonValue:
+        """An old config file still loads: removed keys warn and are ignored."""
+        return _strip_removed(data)
+
+    input: list[str] = field(default_factory=lambda: ["input.mp4"])  # files, glob patterns or http(s) URLs
+    clips: FileClipsCfg = field(default_factory=FileClipsCfg)
+    download: FileDownloadCfg = field(default_factory=FileDownloadCfg)
+
+    def to_config(self, overrides: RuntimeOverrides | None = None) -> Config:
+        """Derive the complete runtime configuration from these few choices.
+
+        Raises:
+            ConfigError: if ``--split`` is combined with explicit ``clips.ranges``.
+        """
+        ov = overrides or RuntimeOverrides()
+        skip = SkipCfg()
+        for name in ov.skip or ():
+            setattr(skip, name, True)
+        ranges = list(self.clips.ranges)
+        if ov.split and ranges:
+            raise ConfigError("--split cannot be combined with clips.ranges")
+        mode: Literal["highlights", "ranges", "split"] = "split" if ov.split else ("ranges" if ranges else "highlights")
+        short = KindCfg(count=5, min_seconds=20, max_seconds=60, aspect="9:16", ranges=ranges)
+        long = KindCfg(count=2, min_seconds=180, max_seconds=600, aspect="16:9", ranges=ranges)
+        clips = ClipsCfg(
+            mode=mode,
+            kinds=list(PRESET_KINDS[self.clips.preset]),  # type: ignore[arg-type]
+            scenes=self.clips.scenes,
+            short=short,
+            long=long,
+            keywords=list(self.clips.keywords),
+        )
+        download = DownloadCfg(
+            cookies=ov.cookies,
+            network=NetworkCfg(proxy=ov.proxy),
+            platforms=PlatformsCfg(allow=list(self.download.platforms.allow), deny=list(self.download.platforms.deny)),
+        )
+        return Config(
+            input=list(self.input if ov.input is None else ov.input),
+            output_dir=ov.output_dir or _default_output_dir(),
+            mode=ov.mode or "balance",
+            quality=ov.quality or "high",
+            device=ov.device or "auto",
+            offline=bool(ov.offline),
+            download=download,
+            clips=clips,
+            transcript=TranscriptCfg(file=ov.transcript, consent="auto"),
+            llm=LlmCfg(base_url=ov.llm_base_url or "http://localhost:11434", model=ov.llm_model or "llama3.2"),
+            video=VideoCfg(),
+            captions=CaptionsCfg(enabled=not skip.caption),
+            title=TitleCfg(enabled=not skip.title),
+            skip=skip,
+            logging=LoggingCfg(level=ov.log_level or "INFO"),
+        )
+
+
+def _field_default(cls: type, name: str) -> JsonValue:
+    """The default value of a dataclass field, evaluating factories lazily."""
+    field = getattr(cls, "__dataclass_fields__", {}).get(name)
+    if field is None:
+        return None  # pragma: no cover
+    from dataclasses import MISSING
+
+    if field.default is not MISSING:
+        import copy
+
+        try:
+            return copy.deepcopy(field.default)  # type: ignore[no-any-return]
+        except Exception:  # pragma: no cover
+            return field.default  # type: ignore[no-any-return]  # pragma: no cover
+    if field.default_factory is not MISSING:
+        factory = field.default_factory
+        try:
+            return factory()  # type: ignore[no-any-return]
+        except TypeError:  # pragma: no cover
+            return factory  # type: ignore[no-any-return]  # pragma: no cover
+    return None  # pragma: no cover
+
+
+def _coerce_defaults(cls: type, data: JsonValue, prefix: str = "") -> JsonValue:
+    """Replace values that fail validation with the field defaults, recursively."""
+    if not isinstance(data, dict):
+        return data
+    try:
+        hints = typing.get_type_hints(cls, globalns=globals())
+    except Exception:  # pragma: no cover
+        return data  # pragma: no cover
+    result = dict(data)
+    for name in list(result):
+        fields = getattr(cls, "__dataclass_fields__", {})
+        if name not in fields:
+            continue  # keep unknown keys so they still raise "extra_forbidden"
+        hint = hints.get(name)
+        if hint is None:
+            continue  # pragma: no cover
+        path = f"{prefix}.{name}" if prefix else name
+        value = result[name]
+        # try nested coercion first
+        try:
+            origin = typing.get_origin(hint)
+            target = origin if origin is not None else hint
+            if isinstance(target, type) and issubclass(target, Section) and isinstance(value, dict):
+                value = _coerce_defaults(target, value, path)
+                result[name] = value
+        except Exception as _exc:  # pragma: no cover
+            _ = str(_exc)
+        try:
+            TypeAdapter(hint).validate_python(value)
+        except Exception:
+            log.warning("config: invalid value for %s; falling back to default", path)
+            result[name] = _field_default(cls, name)
+    return result
 
 
 T = TypeVar("T")
+#: Removed keys already warned about in the current ``parse`` call (each path warns once).
+_removed_seen: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar("autoclip_removed_keys", default=None)
 
 
-def parse(cls: type[T], data: dict[str, Any]) -> T:
+def parse(cls: type[T], data: dict[str, JsonValue]) -> T:
     """Validate ``data`` against the schema of the config dataclass ``cls``.
 
-    Pydantic does the work: unknown keys, wrong types and out-of-range values raise ``ConfigError``.
+    Unknown keys, wrong types and out-of-range values would normally raise ``ConfigError``; this loader
+    now falls back to each field's default for values that do not fit the schema, while still rejecting
+    genuinely unknown keys. Nested sections are coerced field by field.
 
     Raises:
-        ConfigError: if the data does not fit the schema.
+        ConfigError: if the data contains unknown keys or still cannot be validated after coercion.
     """
+    if isinstance(data, dict):
+        data = {k: v for k, v in data.items() if not (isinstance(k, str) and k.startswith("_"))}
     adapter: TypeAdapter[T] = TypeAdapter(cls)
+    token = _removed_seen.set(set()) if _removed_seen.get() is None else None
     try:
-        return adapter.validate_python(data)
-    except ValidationError as e:
-        raise _config_error(e) from e
+        try:
+            return adapter.validate_python(data)
+        except ValidationError as e:
+            if any(
+                str(err.get("type", "")).endswith(("extra_forbidden", "unexpected_keyword_argument"))
+                or "Unexpected keyword" in str(err.get("msg", ""))
+                for err in e.errors()
+            ):
+                raise _config_error(e) from e
+            coerced = _coerce_defaults(cls, data) if isinstance(data, dict) else data
+            try:
+                return adapter.validate_python(coerced)
+            except ValidationError as e2:
+                raise _config_error(e2) from e2
+    finally:
+        if token is not None:
+            _removed_seen.reset(token)
 
 
 def _config_error(exc: ValidationError) -> ConfigError:
@@ -574,6 +775,11 @@ def _abs(base: Path, value: str) -> str:
     """``value`` as an absolute path string (relative paths are taken from the config's folder)."""
     p = Path(value).expanduser()
     return str(p if p.is_absolute() else base / p)
+
+
+def _cookie_source(base: Path, value: str) -> str:
+    """A browser name stays a browser name; anything else is a cookies.txt path from the config's folder."""
+    return value if value in COOKIE_BROWSERS else _abs(base, value)
 
 
 def is_url(value: str) -> bool:
@@ -607,11 +813,12 @@ def expand_inputs(patterns: list[str], base: Path) -> list[str]:
     return list(items)
 
 
-def load_config(path: str | Path) -> Config:
-    """Read, validate and resolve a JSON config file.
+def load_config(path: str | Path, overrides: RuntimeOverrides | None = None) -> Config:
+    """Read, validate and resolve a JSON config file, then derive the complete runtime configuration.
 
     All relative paths are resolved against the config file's folder, and ``input`` becomes the final
-    list of absolute video paths (a plain string is accepted for a single video).
+    list of absolute video paths (a plain string is accepted for a single video). ``overrides`` (and the
+    ``AUTOCLIP_*`` environment variables) replace the removed per-run keys.
     """
     p = Path(path)
     try:
@@ -624,36 +831,17 @@ def load_config(path: str | Path) -> Config:
         raise ConfigError(f"{p} must contain a JSON object")
     if isinstance(raw.get("input"), str):
         raw["input"] = [raw["input"]]
-    cfg = parse(Config, raw)
     base = p.resolve().parent
-    if cfg.download.quality is None:
-        cfg.download.quality = _DOWNLOAD_QUALITY_BY_OUTPUT[cfg.quality]
+    file_cfg = parse(FileConfig, raw)
+    cfg = file_cfg.to_config(RuntimeOverrides.combined(overrides, os.environ))
     cfg.input = expand_inputs(cfg.input, base)
     cfg.output_dir = _abs(Path.cwd(), cfg.output_dir)  # independent of where the config file lives
-    if cfg.logging.file:
-        cfg.logging.file = _abs(base, cfg.logging.file)
     if cfg.transcript.file:
         cfg.transcript.file = _abs(base, cfg.transcript.file)
         if len(cfg.input) > 1 and "{stem}" not in cfg.transcript.file:
             raise ConfigError("with several videos transcript.file must contain '{stem}' (e.g. 'subs/{stem}.srt')")
-    if cfg.transcript.enhance.model_dir:
-        cfg.transcript.enhance.model_dir = _abs(base, cfg.transcript.enhance.model_dir)
-    if cfg.transcript.model_dir:
-        cfg.transcript.model_dir = _abs(base, cfg.transcript.model_dir)
-    if cfg.clips.lexicon_file:
-        cfg.clips.lexicon_file = _abs(base, cfg.clips.lexicon_file)
-    if cfg.video.background.image:
-        cfg.video.background.image = _abs(base, cfg.video.background.image)
-    if cfg.download.original_dir:
-        cfg.download.original_dir = _abs(base, cfg.download.original_dir)
-    if cfg.download.cookies.file:
-        cfg.download.cookies.file = _abs(base, cfg.download.cookies.file)
-    if cfg.download.js_runtime.path:
-        cfg.download.js_runtime.path = _abs(base, cfg.download.js_runtime.path)
-    for entry in cfg.download.platforms.settings.values():
-        if entry.get("original_dir"):
-            entry["original_dir"] = _abs(base, entry["original_dir"])
-        cookies = entry.get("cookies")
-        if isinstance(cookies, dict) and cookies.get("file"):
-            cookies["file"] = _abs(base, cookies["file"])
+    if cfg.download.cookies:
+        cfg.download.cookies = _cookie_source(base, cfg.download.cookies)
+    cfg.video.background = resolve_background(cfg.video.background, base)
+    load_lexicon(base)  # validate <config-dir>/lexicon.json early; moments reloads it at run time
     return cfg

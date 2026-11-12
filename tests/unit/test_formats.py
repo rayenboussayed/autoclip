@@ -1,14 +1,13 @@
-"""Format choice: short-side quality, fps, codec, container, audio and explicit stream merging."""
+"""Format choice: closest short-side quality, protocol, codec, bitrate and audio language."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
-from autoclip.core.config import DownloadCfg
 from autoclip.core.errors import DownloadError
-from autoclip.core.formats import Choice, choose
+from autoclip.core.formats import Choice, DownloadPrefs, YtInfo, choose
 
 
 def video(
@@ -54,9 +53,9 @@ def audio(
     return fmt
 
 
-def pick(formats: list[dict[str, Any]], **settings: Any) -> Choice:
-    """Run the chooser over a format list with non-default download settings."""
-    return choose({"formats": formats}, DownloadCfg(**settings))
+def pick(formats: list[dict[str, Any]], quality: int = 1080, **prefs: Any) -> Choice:
+    """Run the chooser over a format list with a derived quality target."""
+    return choose(cast(YtInfo, {"formats": formats}), DownloadPrefs(quality=quality, **prefs))
 
 
 def test_closest_quality_uses_the_short_side() -> None:
@@ -69,55 +68,17 @@ def test_closest_quality_prefers_the_lower_format_on_a_tie() -> None:
     assert pick([video("v900", 1600, 900), video("v1100", 1920, 1100)], quality=1000).format_id == "v900"
 
 
-def test_at_most_and_at_least() -> None:
-    formats = [video("v720", 1280, 720), video("v1440", 2560, 1440)]
-    assert pick(formats, quality=1080, prefer="at_most").format_id == "v720"
-    at_least = pick([video("v720", 1280, 720)], quality=1080, prefer="at_least")
-    assert at_least.format_id == "v720" and "at or above 1080p" in at_least.warnings[0]
-    at_most = pick([video("v1440", 2560, 1440)], quality=1080, prefer="at_most")
-    assert at_most.format_id == "v1440" and "at or below 1080p" in at_most.warnings[0]
-
-
-def test_best_and_worst_ignore_the_quality_number() -> None:
-    formats = [video("v720", 1280, 720), video("v1080", 1920, 1080), video("v1440", 2560, 1440)]
-    assert pick(formats, quality="best").format_id == "v1440"
-    assert pick(formats, quality="worst").format_id == "v720"
-
-
 def test_unknown_resolution_loses_to_a_known_one() -> None:
     formats = [video("unknown", None, None), video("v720", 1280, 720)]
-    assert pick(formats, quality="best").format_id == "v720"
-    assert pick(formats, quality="worst").format_id == "v720"
+    assert pick(formats, quality=1440).format_id == "v720"
+    assert pick(formats, quality=360).format_id == "v720"
 
 
 def test_width_only_is_a_usable_quality() -> None:
     assert pick([video("wide", 1920, None)]).format_id == "wide"
 
 
-def test_fps_preference() -> None:
-    formats = [video("v30", 1920, 1080, fps=30), video("v60", 1920, 1080, fps=60)]
-    assert pick(formats, fps=60).format_id == "v60"
-    assert pick(formats, fps=30).format_id == "v30"
-    assert pick(formats, fps=120, prefer="at_most").format_id == "v60"
-    at_least = pick([video("v30", 1920, 1080, fps=30)], fps=60, prefer="at_least")
-    assert at_least.format_id == "v30" and "at or above 60 fps" in at_least.warnings[0]
-    at_most = pick([video("v60", 1920, 1080, fps=60)], fps=30, prefer="at_most")
-    assert at_most.format_id == "v60" and "at or below 30 fps" in at_most.warnings[0]
-
-
-def test_fps_unknown_is_reported() -> None:
-    choice = pick([video("v", 1920, 1080, fps=None)], fps=60)
-    assert choice.format_id == "v" and "no fps information" in choice.warnings[0]
-
-
-def test_best_quality_also_prefers_the_higher_frame_rate() -> None:
-    formats = [video("v30", 1920, 1080, fps=30), video("v60", 1920, 1080, fps=60)]
-    assert pick(formats).format_id == "v60"  # quality "best" with no fps preference
-    assert pick(formats, quality=1080).format_id == "v30"  # an explicit size leaves fps alone
-    assert pick([video("unknown", 1920, 1080, fps=None), video("v30", 1920, 1080, fps=30)]).format_id == "v30"
-
-
-def test_auto_codec_prefers_h264_then_vp9_then_av1_then_h265() -> None:
+def test_codec_order_is_h264_then_vp9_then_av1_then_h265() -> None:
     formats = [
         video("av1", 1920, 1080, vcodec="av01.0.08M.08"),
         video("h265", 1920, 1080, vcodec="hev1.1.6.L93.B0"),
@@ -129,29 +90,14 @@ def test_auto_codec_prefers_h264_then_vp9_then_av1_then_h265() -> None:
     assert pick([f for f in formats if f["format_id"] in ("av1", "h265")]).format_id == "av1"
 
 
-def test_an_explicit_codec_filters_the_others() -> None:
-    formats = [video("h264", 1920, 1080), video("vp9", 1920, 1080, vcodec="vp09.00.10.08")]
-    assert pick(formats, codec="vp9").format_id == "vp9"
-    with pytest.raises(DownloadError, match="no av1 video format; available: h264, vp9"):
-        pick(formats, codec="av1")
+def test_a_higher_bitrate_breaks_a_codec_tie() -> None:
+    formats = [video("low", 1920, 1080, tbr=1000), video("high", 1920, 1080, tbr=2000)]
+    assert pick(formats).format_id == "high"
 
 
-def test_container_preference_breaks_a_codec_tie() -> None:
-    formats = [
-        video("mp4", 1920, 1080, vcodec="vp09.00.10.08", ext="mp4"),
-        video("webm", 1920, 1080, vcodec="vp09.00.10.08", ext="webm"),
-    ]
-    assert pick(formats, container="mp4").format_id == "mp4"
-    assert pick(formats, container="webm").format_id == "webm"
-
-
-def test_audio_quality_and_container() -> None:
+def test_audio_picks_the_highest_bitrate() -> None:
     formats = [video("v", 1920, 1080), audio("a128", abr=128), audio("a256", abr=256, ext="webm")]
     assert pick(formats).format_id == "v+a256"
-    assert pick(formats, audio_quality="worst").format_id == "v+a128"
-    equal = [video("v", 1920, 1080), audio("m4a", abr=128, ext="m4a"), audio("opus", abr=128, ext="webm")]
-    assert pick(equal, container="mp4").format_id == "v+m4a"
-    assert pick(equal, container="webm").format_id == "v+opus"
 
 
 def test_audio_language_preference_and_fallback() -> None:
@@ -171,11 +117,11 @@ def test_the_original_language_beats_a_higher_bitrate_dub() -> None:
         audio("en", abr=128, language="en"),
         audio("ms", abr=142, language="ms"),
     ]
-    choice = choose({"formats": formats, "language": "en"}, DownloadCfg())
+    choice = choose(cast(YtInfo, {"formats": formats, "language": "en"}), DownloadPrefs(quality=1080))
     assert choice.format_id == "v+en"
     assert choice.warnings == ()
     # An explicit request still wins over the original language.
-    assert choose({"formats": formats, "language": "en"}, DownloadCfg(audio_language="ms")).format_id == "v+ms"
+    assert choose(cast(YtInfo, {"formats": formats, "language": "en"}), DownloadPrefs(1080, "ms")).format_id == "v+ms"
 
 
 def test_an_unknown_original_language_falls_back_without_a_warning() -> None:
@@ -184,7 +130,7 @@ def test_an_unknown_original_language_falls_back_without_a_warning() -> None:
         audio("en", abr=128, language="en"),
         audio("fr", abr=256, language="fr"),
     ]
-    choice = choose({"formats": formats, "language": "ja"}, DownloadCfg())
+    choice = choose(cast(YtInfo, {"formats": formats, "language": "ja"}), DownloadPrefs(quality=1080))
     assert choice.format_id == "v+fr" and choice.warnings == ()
 
 
@@ -195,10 +141,10 @@ def test_a_direct_format_beats_a_segmented_one_at_equal_quality() -> None:
         video("dash", 1920, 1080, protocol="http_dash_segments", tbr=3000),
         video("frag", 1920, 1080, protocol="websocket_frag", tbr=3000),
     ]
-    assert pick(formats, quality="best").format_id == "direct"
+    assert pick(formats, quality=1080).format_id == "direct"
     # The protocol only breaks a tie: a better resolution still wins.
-    formats.append(video("4k-hls", 3840, 2160, protocol="m3u8_native"))
-    assert pick(formats, quality="best").format_id == "4k-hls"
+    formats.append(video("8k-hls", 7680, 4320, protocol="m3u8_native"))
+    assert pick(formats, quality=4320).format_id == "8k-hls"
 
 
 def test_audio_bitrate_falls_back_to_tbr() -> None:
@@ -209,7 +155,7 @@ def test_audio_bitrate_falls_back_to_tbr() -> None:
 
 def test_a_progressive_format_is_not_merged() -> None:
     progressive = video("18", 640, 360, acodec="mp4a.40.2")
-    assert pick([progressive], quality="worst").format_id == "18"
+    assert pick([progressive], quality=360).format_id == "18"
 
 
 def test_video_without_any_audio_is_reported() -> None:
@@ -234,7 +180,7 @@ def test_drm_and_storyboard_formats_are_ignored() -> None:
         video("story", 160, 90, vcodec="none", ext="mhtml"),
         video("v720", 1280, 720),
     ]
-    assert pick(formats, quality="best").format_id == "v720"
+    assert pick(formats, quality=2160).format_id == "v720"
 
 
 def test_nothing_downloadable_is_an_error() -> None:
@@ -249,11 +195,4 @@ def test_a_direct_media_format_without_codec_or_size_is_usable() -> None:
     direct = {"format_id": "0", "ext": "mp4", "vcodec": None, "acodec": None, "height": None}
     choice = pick([direct])
     assert choice.format_id == "0" and choice.warnings == ()
-    assert pick([direct, video("v720", 1280, 720)], quality="best").format_id == "v720"
-    assert pick([direct, video("v720", 1280, 720)], quality="worst").format_id == "v720"
-
-
-def test_an_unknown_codec_never_satisfies_an_explicit_request() -> None:
-    direct = {"format_id": "0", "ext": "mp4", "vcodec": None, "acodec": None}
-    with pytest.raises(DownloadError, match="no h264 video format; available: other"):
-        pick([direct], codec="h264")
+    assert pick([direct, video("v720", 1280, 720)], quality=720).format_id == "v720"

@@ -11,3 +11,7 @@ class ConfigError(AutoclipError):
 
 class DownloadError(AutoclipError):
     """A URL cannot be downloaded (platform policy, missing yt-dlp, extraction or format failure)."""
+
+
+class RateLimitError(DownloadError):
+    """The platform is rate-limiting requests: skip this URL and continue with the next input."""

@@ -182,9 +182,9 @@ def test_config_default_model_exception(monkeypatch: pytest.MonkeyPatch) -> None
     import sys
 
     monkeypatch.setitem(sys.modules, "ctranslate2", None)
-    from autoclip.core.config import _default_transcript_model
+    from autoclip.core.internal.runtime import default_transcript_model
 
-    assert _default_transcript_model() == "small"
+    assert default_transcript_model() == "small"
 
 
 def test_config_resolve_default_model_exception(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -192,23 +192,11 @@ def test_config_resolve_default_model_exception(monkeypatch: pytest.MonkeyPatch)
 
     original = ctranslate2.get_cuda_device_count
     monkeypatch.setattr(ctranslate2, "get_cuda_device_count", lambda: (_ for _ in ()).throw(RuntimeError()))
-    from autoclip.core.config import TranscriptCfg
 
-    cfg = TranscriptCfg(model=None)
-    assert cfg.model == "small"
+    from autoclip.core.internal.runtime import transcript_model_for
+
+    assert transcript_model_for("high", "cpu") == "small"
     ctranslate2.get_cuda_device_count = original
-
-
-def test_config_model_dir_abs(media: Any, tmp_path: Path) -> None:
-    import json as _json
-
-    from autoclip.core.config import load_config
-
-    cfg = {"input": [str(media.video)], "output_dir": str(tmp_path / "out"), "transcript": {"model_dir": "models", "model": "tiny"}}
-    p = tmp_path / "cfg.json"
-    p.write_text(_json.dumps(cfg), encoding="utf-8")
-    loaded = load_config(p)
-    assert (tmp_path / "out" / "models").as_posix() in str(loaded.transcript.model_dir) or loaded.transcript.model_dir is not None
 
 
 def test_unique_name_duplicate2() -> None:
@@ -256,8 +244,7 @@ def _transcribe_without_consent(media: Any, tmp_path: Path, monkeypatch: pytest.
     install_stub_whisper(monkeypatch, media, {}, cuda=0, download_model=_missing_model_downloader)
     monkeypatch.setenv("AUTOCLIP_ASSUME_YES", "0")
     monkeypatch.setattr("builtins.input", answer, raising=False)
-    cfg = make_cfg(media, tmp_path / "o", transcript={"model": "small"})
-    cfg.transcript.offline = False
+    cfg = make_cfg(media, tmp_path / "o", transcript={"file": None})
     with pytest.raises(AutoclipError, match="not cached"):
         transcript.transcribe(media.video, cfg, probe(media.video), np.zeros(10, dtype=np.float32), None)
 
@@ -297,9 +284,9 @@ def test_config_default_model_cpu_branch(monkeypatch: pytest.MonkeyPatch) -> Non
     import ctranslate2
 
     monkeypatch.setattr(ctranslate2, "get_cuda_device_count", lambda: 0)
-    from autoclip.core.config import _default_transcript_model
+    from autoclip.core.internal.runtime import default_transcript_model
 
-    assert _default_transcript_model() == "small"
+    assert default_transcript_model() == "small"
 
 
 def test_unique_name_no_conflict() -> None:

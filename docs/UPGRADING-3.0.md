@@ -1,7 +1,8 @@
-# Upgrading from 2.x to 3.0
+# Upgrading from 2.x to 3.0 (historical)
 
-> Current documentation target: 3.0.11. See `../CHANGELOG.md` for the full release history, and
-> `logging.md` for the logging architecture shipped with 3.0.11.
+> This note covers the 2.x → 3.0 changes and is kept as history. The current release is 4.0.0;
+> see `UPGRADING-4.0.md` for the 3.x → 4.0 changes, `../CHANGELOG.md` for the full release history,
+> and `logging.md` for the logging architecture.
 
 - Python floor is now 3.11 (`requires-python = ">=3.11"`). Python 3.10 is no longer supported.
 - The default transcription model is `large-v3` on a CUDA GPU, `small` otherwise. Set
@@ -22,5 +23,5 @@
   `video.maxrate_mbps` and `video.audio_bitrate_kbps` were removed; replace them with `video.quality`.
 - The `processing`, `resources` and `storage` config sections were removed. CPU affinity and container
   quotas, free RAM, chunking, cache budgets and worker plans are now derived automatically.
-  Add `compute.mode` (`performance`, `resources`, or the default `balance`) to choose the speed-versus-
+  Add `mode` (`performance`, `resources`, or the default `balance`) to choose the speed-versus-
   resource trade-off; remove the old keys to keep the configuration valid.

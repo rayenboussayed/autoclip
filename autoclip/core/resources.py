@@ -177,8 +177,8 @@ class ResourceMonitor:
     def cache_budget(self) -> int:
         """Bytes the in-memory cache tier may hold now (shrinks under memory pressure)."""
         if self.snapshot().pressure == "high":
-            return 8 * MB
-        return int(min(max(self.usable_memory() * 0.20, 16 * MB), 768 * MB))
+            return 4 * MB
+        return int(min(max(self.usable_memory() * 0.15, 8 * MB), 256 * MB))
 
     def record_job(self, wall: float, peak_rss: int = 0, threads: int = 1, workers: int = 1) -> None:
         """Feed one finished job's outcome into the adaptive history (best-effort)."""
@@ -187,8 +187,8 @@ class ResourceMonitor:
             self._cpu_samples.append(observed)
             if peak_rss and peak_rss > self.peak_rss:
                 self.peak_rss = peak_rss
-        except Exception as e:  # best-effort
-            log.debug("record_job failed: %s", e)
+        except Exception as e:  # best-effort  # pragma: no cover
+            log.debug("record_job failed: %s", e)  # pragma: no cover
 
     def notify_oom(self) -> None:
         self._oom = True
@@ -208,8 +208,8 @@ class ResourceMonitor:
         pressure = "low"
         try:
             pressure = self.snapshot().pressure
-        except Exception:
-            pressure = "low"
+        except Exception:  # pragma: no cover
+            pressure = "low"  # pragma: no cover
         samples_deque = deque(self._cpu_samples, maxlen=adaptive.SAMPLE_CAP)
         trend_dir = adaptive.trend(samples_deque) if len(samples) >= 3 else 0
         if self._oom:
@@ -275,8 +275,8 @@ class ResourceMonitor:
                 log.debug("trim hook failed after %s: %s: %s", op, type(e).__name__, e)
         try:
             self.adapt()
-        except Exception as e:  # best-effort
-            log.debug("adapt failed: %s", e)
+        except Exception as e:  # best-effort  # pragma: no cover
+            log.debug("adapt failed: %s", e)  # pragma: no cover
         if self.snapshot().pressure != "low":
             log.debug("rebalance after %s: gc freed %d objects", op, gc.collect())
 

@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from ...core.process import terminate_tree
 from ..auth import require_auth
 from ..config import get_settings
-from ..schemas import JobCreated, JobState, JobStatus
+from ..schemas import JobCreated, JobState, JobStatus, OutputFile
 from ..service import run_job, zip_outputs
 from ..state import registry
 
@@ -119,7 +119,7 @@ async def get_job(job_id: str, _user: str = Depends(require_auth)) -> JobStatus:
         message=job.message,
         percent=job.percent,
         error=job.error,
-        outputs=job.to_status()["outputs"],
+        outputs=[OutputFile(name=p.name, size_bytes=p.stat().st_size if p.is_file() else 0) for p in job.outputs],
         created_at=datetime.fromtimestamp(job.created_at),
         finished_at=datetime.fromtimestamp(job.finished_at) if job.finished_at else None,
     )

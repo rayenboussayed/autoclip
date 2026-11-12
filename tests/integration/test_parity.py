@@ -1,58 +1,58 @@
 """Integration checks: the CLI pipeline and the server job must agree on clips.json."""
 
-import dataclasses
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 
+from autoclip.core.config import Config, FileConfig, JsonValue, RuntimeOverrides, parse
+from autoclip.core.hardware import pick_encoder
+from autoclip.core.pipeline import process_video
 from autoclip.server.service import run_job
 from autoclip.server.state import Job
-from tests.support import install_stub_whisper, make_cfg
+from tests.support import Media, install_stub_whisper
 
 
 @pytest.mark.parametrize("mode", ["highlights", "ranges"])
-def test_parity_process_video_vs_server_job(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+def test_parity_process_video_vs_server_job(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
     monkeypatch.setenv("AUTOCLIP_SERVER_INPROCESS", "1")
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
+    monkeypatch.setattr("autoclip.core.ai.llm_available", lambda *a, **k: False)
 
-    from autoclip.core.config import Config, parse
-    from autoclip.core.hardware import pick_encoder
-    from autoclip.core.pipeline import process_video
+    # Both entry points must derive their runtime configuration from the same seven-key file config;
+    # shrink what is derived (one cheap clip, no LLM) so the two runs stay fast and deterministic.
+    original = FileConfig.to_config
 
-    # direct
+    def fast_to_config(self: FileConfig, overrides: RuntimeOverrides | None = None) -> Config:
+        cfg = original(self, overrides)
+        cfg.quality = "lowest"
+        cfg.clips.short.count = 1
+        return cfg
+
+    monkeypatch.setattr(FileConfig, "to_config", fast_to_config)
+
+    clips: dict[str, JsonValue] = {"preset": "shorts", "scenes": "best"}
+    if mode == "ranges":
+        clips["ranges"] = ["2-12"]
+    file_data: dict[str, JsonValue] = {"clips": clips}
+
+    # direct pipeline run
     out_direct = tmp_path / "direct"
     out_direct.mkdir()
-    extra = {"ranges": ["2-12"]} if mode == "ranges" else {}
-    cfg_data = dataclasses.asdict(
-        make_cfg(
-            media, out_direct, clips={"mode": mode, "kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10, **extra}}
-        )
-    )
-    cfg = parse(Config, cfg_data)
-    cfg.input = [str(media.video)]
-    cfg.output_dir = str(out_direct)
+    file_cfg = parse(FileConfig, file_data)
+    cfg = file_cfg.to_config(RuntimeOverrides(input=[str(media.video)], output_dir=str(out_direct)))
     encoder = pick_encoder(cfg.video, cfg.quality, allow_gpu=False)
     process_video(media.video, cfg, None, encoder, name=media.video.stem)
 
-    # server
+    # the same file config uploaded to a server job
     out_srv = tmp_path / "srv"
     out_srv.mkdir()
-    extra = {"ranges": ["2-12"]} if mode == "ranges" else {}
-    custom = dataclasses.asdict(
-        make_cfg(
-            media, out_srv, clips={"mode": mode, "kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10, **extra}}
-        )
-    )
-    custom.pop("input", None)
-    custom.pop("output_dir", None)
     job = Job(
         job_id="p",
         filename=media.video.name,
         input_path=media.video,
         output_dir=out_srv,
-        config={"_custom": custom},
+        config={"_custom": file_data},
         work_dir=out_srv / ".work" / media.video.stem,
     )
     run_job(job)
@@ -74,4 +74,5 @@ def test_parity_process_video_vs_server_job(media: Any, tmp_path: Path, monkeypa
     for r in a + b:
         r.pop("wall", None)
         r.pop("file", None)
+    assert a
     assert a == b

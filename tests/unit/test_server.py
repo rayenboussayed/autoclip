@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import sys
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -14,6 +15,7 @@ fastapi = pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from autoclip import __version__  # noqa: E402
+from autoclip.core.config import JsonValue  # noqa: E402
 from autoclip.server import config as server_config  # noqa: E402
 from autoclip.server.main import create_app  # noqa: E402
 
@@ -74,7 +76,7 @@ def test_upload_rejects_invalid_config(client: TestClient) -> None:
 
 def test_upload_config_file_and_config_json(client: TestClient, tmp_path: Path) -> None:
     # upload a separate config file
-    (tmp_path / "cfg.json").write_text(json.dumps({"logging": {"enabled": False}}), encoding="utf-8")
+    (tmp_path / "cfg.json").write_text(json.dumps({"logging": {"level": "OFF"}}), encoding="utf-8")
     from io import BytesIO
 
     resp = client.post(
@@ -133,7 +135,7 @@ def test_state_to_status_directory_size(client: TestClient, tmp_path: Path) -> N
     job = Job(job_id="x", filename="f", input_path=tmp_path / "f", output_dir=d, config={})
     job.outputs = [d]
     status = job.to_status()
-    assert status["outputs"][0]["size_bytes"] == 0
+    assert cast(list[dict[str, object]], status["outputs"])[0]["size_bytes"] == 0
 
 
 def test_registry_create_and_evict_expired(tmp_path: Path) -> None:
@@ -179,27 +181,13 @@ def test_run_job_processes_a_small_video(monkeypatch: pytest.MonkeyPatch, media:
     from autoclip.server.schemas import JobState
     from autoclip.server.service import run_job, zip_outputs
     from autoclip.server.state import Job
-    from tests.support import install_stub_whisper, make_cfg
+    from tests.support import install_stub_whisper
 
     monkeypatch.setenv("AUTOCLIP_SERVER_INPROCESS", "1")
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
-    import dataclasses
     import threading
 
-    custom = dataclasses.asdict(
-        make_cfg(
-            media,
-            tmp_path / "out",
-            audio={"denoise": "none"},
-            compute={"device": "cpu"},
-            unsilence={"enabled": False},
-            clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}},
-            video={"thumbnail": True},
-        )
-    )
-    custom.pop("input", None)
-    custom.pop("output_dir", None)
-    custom.setdefault("logging", {})["file"] = "logs/autoclip.log"
+    custom = {"clips": {"preset": "shorts", "scenes": "best"}}
 
     upload = media.video
     out = tmp_path / "jobout"
@@ -209,7 +197,7 @@ def test_run_job_processes_a_small_video(monkeypatch: pytest.MonkeyPatch, media:
         filename=upload.name,
         input_path=upload,
         output_dir=out,
-        config={"_custom": custom},
+        config={"_custom": cast(JsonValue, custom)},
         work_dir=out / ".work" / upload.stem,
     )
     run_job(job)
@@ -230,9 +218,10 @@ def test_run_job_processes_a_small_video(monkeypatch: pytest.MonkeyPatch, media:
     assert all(".work" not in Path(name).parts for name in names), names
 
     # Split mode renders the source into several consecutive parts.
-    split_cfg = dataclasses.asdict(make_cfg(media, tmp_path / "out2", clips={"mode": "split", "split_seconds": 10}))
-    split_cfg.pop("input", None)
-    split_cfg.pop("output_dir", None)
+    from autoclip.core import pipeline
+
+    monkeypatch.setattr(pipeline, "SPLIT_SECONDS", 10.0)
+    split_cfg = {"clips": {"preset": "shorts", "ranges": ["00:00:00-00:00:10", "00:00:10-00:00:20"]}}
     split_out = tmp_path / "splitout"
     split_out.mkdir()
     split_job = Job(
@@ -240,7 +229,7 @@ def test_run_job_processes_a_small_video(monkeypatch: pytest.MonkeyPatch, media:
         filename=upload.name,
         input_path=upload,
         output_dir=split_out,
-        config={"_custom": split_cfg},
+        config={"_custom": cast(JsonValue, split_cfg)},
         work_dir=split_out / ".work" / upload.stem,
     )
     run_job(split_job)
@@ -250,15 +239,7 @@ def test_run_job_processes_a_small_video(monkeypatch: pytest.MonkeyPatch, media:
     # A cancellation request aborts the job and marks it failed.
     cancel_event = threading.Event()
     cancel_event.set()
-    cancel_cfg = dataclasses.asdict(
-        make_cfg(
-            media,
-            tmp_path / "out3",
-            clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}},
-        )
-    )
-    cancel_cfg.pop("input", None)
-    cancel_cfg.pop("output_dir", None)
+    cancel_cfg = {"clips": {"preset": "shorts"}}
     cancel_out = tmp_path / "cancelout"
     cancel_out.mkdir()
     cancel_job = Job(
@@ -266,22 +247,14 @@ def test_run_job_processes_a_small_video(monkeypatch: pytest.MonkeyPatch, media:
         filename=upload.name,
         input_path=upload,
         output_dir=cancel_out,
-        config={"_custom": cancel_cfg},
+        config={"_custom": cast(JsonValue, cancel_cfg)},
         work_dir=cancel_out / ".work" / upload.stem,
     )
     run_job(cancel_job, cancel_event=cancel_event)
     assert cancel_job.state == JobState.cancelled
 
     # An impossible length range produces no clips and a failed job.
-    empty_cfg = dataclasses.asdict(
-        make_cfg(
-            media,
-            tmp_path / "out4",
-            clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 1000, "max_seconds": 1001}},
-        )
-    )
-    empty_cfg.pop("input", None)
-    empty_cfg.pop("output_dir", None)
+    empty_cfg = {"clips": {"preset": "long"}}
     empty_out = tmp_path / "emptyout"
     empty_out.mkdir()
     empty_job = Job(
@@ -289,7 +262,7 @@ def test_run_job_processes_a_small_video(monkeypatch: pytest.MonkeyPatch, media:
         filename=upload.name,
         input_path=upload,
         output_dir=empty_out,
-        config={"_custom": empty_cfg},
+        config={"_custom": cast(JsonValue, empty_cfg)},
         work_dir=empty_out / ".work" / upload.stem,
     )
     run_job(empty_job)
@@ -633,25 +606,16 @@ def test_run_job_subprocess_path_completes(monkeypatch: pytest.MonkeyPatch, medi
 
 
 def test_run_job_reports_pending_clips_as_failed(monkeypatch: pytest.MonkeyPatch, media: Any, tmp_path: Path) -> None:
-    import dataclasses
     from unittest.mock import patch
 
     from autoclip.server.schemas import JobState
     from autoclip.server.service import run_job
     from autoclip.server.state import Job
-    from tests.support import install_stub_whisper, make_cfg
+    from tests.support import install_stub_whisper
 
     monkeypatch.setenv("AUTOCLIP_SERVER_INPROCESS", "1")
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
-    custom = dataclasses.asdict(
-        make_cfg(
-            media,
-            tmp_path / "out",
-            clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}},
-        )
-    )
-    custom.pop("input", None)
-    custom.pop("output_dir", None)
+    custom = {"clips": {"preset": "shorts"}}
 
     out = tmp_path / "pendingout"
     out.mkdir()
@@ -660,7 +624,7 @@ def test_run_job_reports_pending_clips_as_failed(monkeypatch: pytest.MonkeyPatch
         filename=media.video.name,
         input_path=media.video,
         output_dir=out,
-        config={"_custom": custom},
+        config={"_custom": cast(JsonValue, custom)},
         work_dir=out / ".work" / media.video.stem,
     )
     with patch("autoclip.core.pipeline.render_all"):
@@ -764,29 +728,16 @@ def test_download_job_success(client: TestClient, tmp_path: Path, monkeypatch: p
 
 
 def test_run_job_subprocess_path(monkeypatch: pytest.MonkeyPatch, media: Any, tmp_path: Path) -> None:
-    from tests.support import install_stub_whisper, make_cfg
+    from tests.support import install_stub_whisper
 
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
     monkeypatch.delenv("AUTOCLIP_SERVER_INPROCESS", raising=False)
-    import dataclasses
 
     from autoclip.server.schemas import JobState
     from autoclip.server.service import run_job
     from autoclip.server.state import Job
 
-    cfg_custom = dataclasses.asdict(
-        make_cfg(
-            media,
-            tmp_path / "out",
-            audio={"denoise": "none"},
-            compute={"device": "cpu"},
-            unsilence={"enabled": False},
-            clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}},
-        )
-    )
-    cfg_custom.pop("input", None)
-    cfg_custom.pop("output_dir", None)
-    cfg_custom["transcript"] = {"mode": "off"}
+    cfg_custom = {"clips": {"preset": "shorts", "ranges": ["00:00:03-00:00:12"]}}
     upload = media.video
     out = tmp_path / "subout"
     out.mkdir()
@@ -795,11 +746,201 @@ def test_run_job_subprocess_path(monkeypatch: pytest.MonkeyPatch, media: Any, tm
         filename=upload.name,
         input_path=upload,
         output_dir=out,
-        config={"_custom": cfg_custom},
+        config={"_custom": cast(JsonValue, cfg_custom)},
         work_dir=out / ".work" / upload.stem,
     )
     run_job(job)
     assert job.state in (JobState.completed, JobState.failed)
+
+
+def test_zip_outputs_skips_unwritable_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from autoclip.server import service
+    from autoclip.server.state import Job
+
+    out = tmp_path / "zipout"
+    out.mkdir()
+    (out / "a.mp4").write_bytes(b"x")
+    job = Job(job_id="zip-fail", filename="a.mp4", input_path=out / "a.mp4", output_dir=out, config={}, work_dir=out / ".work")
+    monkeypatch.setattr("zipfile.ZipFile.write", lambda *a, **k: (_ for _ in ()).throw(OSError("nope")))
+    archive = service.zip_outputs(job)
+    assert archive.is_file()
+
+
+def test_run_job_inprocess_collects_outputs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from autoclip.core.batch import BatchResult
+    from autoclip.server import service
+    from autoclip.server.state import Job
+
+    out = tmp_path / "inproc"
+    out.mkdir()
+    short = out / "short" / "talk"
+    short.mkdir(parents=True)
+    clip = short / "clip.mp4"
+    clip.write_bytes(b"x")
+    (short / "clips.json").write_text(json.dumps([{"file": "clip.mp4"}, {}, "missing.mp4"]), encoding="utf-8")
+    bad = out / "long" / "talk"
+    bad.mkdir(parents=True)
+    (bad / "clips.json").write_text("{not json", encoding="utf-8")
+    odd = out / "odd"
+    odd.mkdir()
+    (odd / "clips.json").write_text(json.dumps({"not": "a list"}), encoding="utf-8")
+    (out / ".work" / "talk").mkdir(parents=True)
+    (out / ".work" / "talk" / "clips.json").write_text("[]", encoding="utf-8")
+    job = Job(job_id="inproc", filename="input.mp4", input_path=tmp_path / "input.mp4", output_dir=out, config={}, work_dir=out / ".work")
+    monkeypatch.setattr(
+        "autoclip.core.batch.run_batch", lambda *a, **k: BatchResult(clips_done=1, clips_failed=0, elapsed_seconds=0.1, peak_rss_mb=0)
+    )
+    monkeypatch.setattr("autoclip.core.hardware.pick_encoder", lambda *a, **k: None)
+    service._run_job_inprocess(job, service.prepare_config(job, None))
+    assert job.outputs == [clip]
+
+
+class _FakeProc:
+    """A subprocess.Popen stand-in that replays NDJSON stdout and returns a chosen exit code."""
+
+    def __init__(self, lines: list[str], rc: int, on_wait: Any = None) -> None:
+        self.stdout = lines
+        self._rc = rc
+        self._on_wait = on_wait
+
+    def wait(self) -> int:
+        if self._on_wait is not None:
+            self._on_wait()
+        return self._rc
+
+
+def _run_subprocess_job(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    lines: list[str],
+    rc: int,
+    *,
+    with_output: bool = False,
+    dirty_outputs: bool = False,
+    cancel_requested: bool = False,
+    cancel_during: bool = False,
+    frozen: bool = False,
+) -> Any:
+    from autoclip.server import service
+    from autoclip.server.schemas import JobState
+    from autoclip.server.state import Job
+
+    monkeypatch.delenv("AUTOCLIP_SERVER_INPROCESS", raising=False)
+    if frozen:
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+    out = tmp_path / "sub"
+    out.mkdir(parents=True, exist_ok=True)
+    if with_output:
+        clip = out / "short" / "clip.mp4"
+        clip.parent.mkdir(parents=True)
+        clip.write_bytes(b"x")
+        (clip.parent / "clips.json").write_text(json.dumps([{"file": "clip.mp4"}]), encoding="utf-8")
+    if dirty_outputs:
+        (out / ".work" / "talk").mkdir(parents=True)
+        (out / ".work" / "talk" / "clips.json").write_text("[]", encoding="utf-8")
+        (out / "long").mkdir(parents=True)
+        (out / "long" / "clips.json").write_text("{not json", encoding="utf-8")
+        (out / "extra").mkdir(parents=True)
+        (out / "extra" / "clips.json").write_text(json.dumps([{}, "missing.mp4"]), encoding="utf-8")
+        (out / "odd").mkdir(parents=True)
+        (out / "odd" / "clips.json").write_text(json.dumps({"not": "a list"}), encoding="utf-8")
+    upload = tmp_path / "input.mp4"
+    upload.write_bytes(b"x")
+    job = Job(
+        job_id="fake-sub",
+        filename=upload.name,
+        input_path=upload,
+        output_dir=out,
+        config={},
+        work_dir=out / ".work",
+        cancel_requested=cancel_requested,
+    )
+
+    def on_wait() -> None:
+        if cancel_during:
+            job.cancel_requested = True
+
+    monkeypatch.setattr("autoclip.server.service.subprocess.Popen", lambda *a, **k: _FakeProc(lines, rc, on_wait))
+    service.run_job(job)
+    assert isinstance(job.state, JobState)
+    return job
+
+
+def test_run_job_subprocess_reports_a_crash_and_invalid_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    lines = [
+        "not json",
+        json.dumps({"event": "progress", "stage": "transcribing", "percent": 12}),
+        json.dumps({"event": "result", "failed": 2}),
+    ]
+    job = _run_subprocess_job(monkeypatch, tmp_path, lines, rc=-9)
+    assert job.state.value == "failed" and "signal" in (job.error or "")
+    assert "clip(s) failed" not in (job.error or "")
+
+
+def test_run_job_subprocess_tolerates_noisy_events_and_dirty_outputs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    lines = ["not json"] * 21 + [json.dumps(123), "", json.dumps({"event": "progress", "percent": 50})]
+    job = _run_subprocess_job(monkeypatch, tmp_path, lines, rc=0, dirty_outputs=True)
+    assert job.state.value == "completed"
+
+
+def test_run_job_subprocess_ignores_unknown_events_and_non_integer_failures(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    lines = [
+        json.dumps({"event": "other"}),
+        json.dumps({"event": "result", "failed": "two"}),
+        json.dumps({"event": "progress", "stage": "rendering", "percent": 60}),
+    ]
+    job = _run_subprocess_job(monkeypatch, tmp_path, lines, rc=0)
+    assert job.state.value == "completed" and job.error is None
+
+
+def test_run_job_subprocess_reports_a_crash_without_a_stderr_tail(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    job = _run_subprocess_job(monkeypatch, tmp_path, [], rc=-9)
+    assert job.state.value == "failed" and job.error == "worker killed by signal 9"
+
+
+def test_run_job_subprocess_works_in_a_frozen_build(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    job = _run_subprocess_job(monkeypatch, tmp_path, [json.dumps({"event": "progress", "percent": 50})], rc=0, frozen=True)
+    assert job.state.value == "completed"
+
+
+def test_run_job_subprocess_reports_a_cancelled_worker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    killed = _run_subprocess_job(monkeypatch, tmp_path / "kill", [], rc=-9, cancel_during=True)
+    assert killed.state.value == "cancelled"
+    clean = _run_subprocess_job(monkeypatch, tmp_path / "clean", [], rc=0, cancel_during=True)
+    assert clean.state.value == "cancelled"
+
+
+def test_run_job_subprocess_wraps_an_unexpected_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from autoclip.server import service
+    from autoclip.server.state import Job
+
+    out = tmp_path / "boom"
+    out.mkdir()
+    upload = tmp_path / "input.mp4"
+    upload.write_bytes(b"x")
+    job = Job(
+        job_id="boom-job", filename=upload.name, input_path=upload, output_dir=out, config={"_custom": {"nope": 1}}, work_dir=out / ".work"
+    )
+    service.run_job(job)
+    assert job.state.value == "failed" and job.error
+
+
+def test_run_job_subprocess_reports_a_nonzero_exit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    job = _run_subprocess_job(monkeypatch, tmp_path, [json.dumps({"event": "progress", "stage": "rendering", "percent": 60})], rc=1)
+    assert job.state.value == "failed"
+
+
+def test_run_job_subprocess_reports_failed_clips_without_outputs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    job = _run_subprocess_job(monkeypatch, tmp_path, [json.dumps({"event": "result", "failed": 3})], rc=0)
+    assert job.state.value == "failed" and "failed" in (job.error or "")
+
+
+def test_run_job_subprocess_completes_with_failures_and_without_them(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    complete = _run_subprocess_job(monkeypatch, tmp_path / "a", [json.dumps({"event": "result", "failed": 0})], rc=0)
+    assert complete.state.value == "completed"
+    failed = _run_subprocess_job(monkeypatch, tmp_path / "b", [json.dumps({"event": "result", "failed": 1})], rc=0, with_output=True)
+    # With at least one output the job is completed even though one clip failed.
+    assert failed.state.value == "completed" and "failure" in (failed.message or "")
 
 
 def test_run_job_task_ignores_missing_jobs() -> None:

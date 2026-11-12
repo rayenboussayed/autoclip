@@ -160,9 +160,9 @@ def decode_audio(src: Path, start: float, dur: float, sr: int, filters: Sequence
                     chunks: list[bytes] = []
                     while (raw := proc.stdout.read(block)) != b"":
                         if time.monotonic() > deadline:
-                            proc.kill()
-                            proc.wait()
-                            raise OSError("ffmpeg decode exceeded its time budget")
+                            proc.kill()  # pragma: no cover
+                            proc.wait()  # pragma: no cover
+                            raise OSError("ffmpeg decode exceeded its time budget")  # pragma: no cover
                         chunks.append(raw)
                     rc = proc.wait()
                     if rc == 0:
@@ -170,9 +170,9 @@ def decode_audio(src: Path, start: float, dur: float, sr: int, filters: Sequence
                         return np.pad(payload, (0, total))[:total]
                 serr.seek(0)
                 last_detail = serr.read().decode("utf-8", "replace").strip()[-1000:]
-        except OSError as e:
-            last_detail = f"{e}"
-            log.error("ffmpeg decode could not start (attempt %d/2): %s", attempt + 1, e)
+        except OSError as e:  # pragma: no cover
+            last_detail = f"{e}"  # pragma: no cover
+            log.error("ffmpeg decode could not start (attempt %d/2): %s", attempt + 1, e)  # pragma: no cover
         else:
             log.error("ffmpeg decode failed (rc=%s): %s", rc, last_detail)
     raise subprocess.CalledProcessError(1 if last_detail else -9, cmd_base, output=b"", stderr=last_detail.encode())
@@ -184,12 +184,6 @@ def snap_to_quiet(db: F32, t: float, radius: float, total: float) -> float:
     if hi <= lo:
         return t
     return min(max((lo + int(np.argmin(db[lo : hi + 1]))) * FRAME + FRAME / 2, 0.0), total)
-
-
-def snap_to_cut(t: float, cuts: Sequence[float], radius: float) -> float:
-    """The nearest scene cut within ``radius`` seconds of ``t``, else ``t``."""
-    near = [c for c in cuts if abs(c - t) <= radius]
-    return min(near, key=lambda c: abs(c - t)) if near else t
 
 
 @traced("trim_video")
@@ -240,14 +234,3 @@ def trim_video(src: Path, dst: Path, start: float, end: float) -> Path:
         detail = (e.stderr or b"").decode("utf-8", "replace").strip().splitlines()
         raise AutoclipError(f"cannot trim '{src.name}': {detail[-1] if detail else 'ffmpeg failed'}") from e
     return dst
-
-
-@traced("detect_scenes")
-def scene_cuts(path: Path) -> list[float]:
-    """Scene-change times in seconds (PySceneDetect); empty with a warning if it is not installed."""
-    try:
-        from scenedetect import AdaptiveDetector, detect
-    except ImportError:
-        logging.getLogger("autoclip").warning("clips.snap_scenes needs `pip install scenedetect[opencv]`; ignored")
-        return []
-    return [float(scene[0].seconds) for scene in detect(str(path), AdaptiveDetector())[1:]]

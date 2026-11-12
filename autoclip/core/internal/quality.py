@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 VALID_QUALITIES = ("highest", "high", "medium", "low", "lowest")
+#: Short side of the canvas at the neutral quality tier; every tier scales it.
+BASE_SHORT_SIDE = 1080
+DOWNLOAD_QUALITY_BY_OUTPUT = {"highest": 1080, "high": 720, "medium": 480, "low": 360, "lowest": 240}
 
 
 @dataclass(frozen=True)
@@ -28,6 +31,14 @@ QUALITY_PROFILES: dict[str, QualityProfile] = {
 }
 
 
+def download_quality_for(output_quality: str) -> int:
+    """The short side to download for an output quality tier."""
+    try:
+        return DOWNLOAD_QUALITY_BY_OUTPUT[output_quality]
+    except KeyError as e:
+        raise ValueError(f"unknown quality {output_quality!r}; valid: {', '.join(VALID_QUALITIES)}") from e
+
+
 def quality_profile(quality: str) -> QualityProfile:
     try:
         return QUALITY_PROFILES[quality]
@@ -35,16 +46,24 @@ def quality_profile(quality: str) -> QualityProfile:
         raise ValueError(f"unknown quality {quality!r}; valid: {', '.join(VALID_QUALITIES)}") from e
 
 
-def quality_short_side(short_side: int, quality: str) -> int:
-    return max(2, round(short_side * quality_profile(quality).short_side_scale))
+def quality_short_side(quality: str) -> int:
+    """The rendered short side of the quality tier (never smaller than 2 px)."""
+    return max(2, round(BASE_SHORT_SIDE * quality_profile(quality).short_side_scale))
 
 
-def output_fps(source_fps: float | None, requested_fps: float | None, quality: str) -> float:
+def output_fps(source_fps: float | None, quality: str) -> float:
     source = max(float(source_fps) if source_fps and source_fps > 0 else 30.0, 1.0)
-    if requested_fps is not None:
-        return max(1.0, min(float(requested_fps), source))
     cap = quality_profile(quality).fps_cap
     return max(1.0, min(source, cap) if cap is not None else source)
 
 
-__all__ = ["VALID_QUALITIES", "QualityProfile", "output_fps", "quality_profile", "quality_short_side"]
+__all__ = [
+    "BASE_SHORT_SIDE",
+    "DOWNLOAD_QUALITY_BY_OUTPUT",
+    "VALID_QUALITIES",
+    "QualityProfile",
+    "download_quality_for",
+    "output_fps",
+    "quality_profile",
+    "quality_short_side",
+]

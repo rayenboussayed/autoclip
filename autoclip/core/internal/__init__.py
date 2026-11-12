@@ -2,7 +2,7 @@
 
 from . import adaptive, modes
 from .decisions import decision_text, log_decisions
-from .quality import VALID_QUALITIES, QualityProfile, output_fps, quality_profile, quality_short_side
+from .quality import VALID_QUALITIES, QualityProfile, download_quality_for, output_fps, quality_profile, quality_short_side
 from .runtime import (
     CACHE_DISK_MB,
     CHUNK_MINUTES,
@@ -13,6 +13,7 @@ from .runtime import (
     RuntimeDecision,
     detect_cpu_count,
     runtime_decisions,
+    transcript_model_for,
 )
 
 __all__ = [
@@ -28,10 +29,12 @@ __all__ = [
     "adaptive",
     "decision_text",
     "detect_cpu_count",
+    "download_quality_for",
     "log_decisions",
     "modes",
     "output_fps",
     "quality_profile",
     "quality_short_side",
     "runtime_decisions",
+    "transcript_model_for",
 ]

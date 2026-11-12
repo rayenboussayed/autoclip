@@ -16,8 +16,8 @@ render (enhance audio, cut pauses/fillers, layout, burn captions, encode on GPU 
 * Runs on Linux, macOS and Windows, Python >= 3.11 (developed and verified on 3.12). No system ffmpeg required.
 * Four parts: `core` (the engine), `cli` (the command line), `app` (the desktop app, Tk) and `server` (the optional
   FastAPI/WebSocket service).
-* Version 3.0.11 (see `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml`). ~11,600 lines of
-  package code in 57 modules, ~14,400 lines of tests (100% statement + branch coverage).
+* Version 4.0.0 (see `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml`). ~12,000 lines of
+  package code across `core`/`cli`/`app`/`server`, ~14,400 lines of tests (100% statement + branch coverage).
 
 ## 2. Commands
 
@@ -58,7 +58,7 @@ and `make deptry`. Use `PYTHON=...` and `CONFIG=...` overrides.
 
 **Definition of done** (these must pass before you finish; `make check` runs them as one
 script): `ruff check .`, `ruff format --check .`, `mypy autoclip tests tools`, `vulture`, `deptry .`,
-`pytest` (coverage gate restored to the verified 95% baseline). The repository now ships a
+`pytest` (100% statement + branch coverage gate). The repository now ships a
 `Makefile`; `make check` is the required final verification, and `make test-all` runs `test` plus
 the network and e2e tiers. Before every commit, rerun `make check`, fix every warning and error
 it reports, and only then commit. A full `pytest` takes about one minute (real ffmpeg encodes,
@@ -190,7 +190,7 @@ main()
   load_config -> setup_logging -> RESOURCES.configure -> pick_encoder (once per run; probes GPUs)
   Downloader(cfg)                                only when input holds an http(s) URL; yt_dlp is imported here
     download(url) -> [Downloaded(path, name, platform, subtitle, subtitle_manual)]
-                                                 original in {out}/.work/downloads (or download.original_dir),
+                                                 original in {out}/.work/downloads,
                                                  reused when the prefix (title [id] [format] + range) exists
   for each input item (isolated: one failure never stops the batch):
     local file -> one source; URL -> the downloaded entries (names deduplicated across the batch)
@@ -235,9 +235,9 @@ clipped too). `--download-only` stops after this stage.
    `clips.keywords`), then `pick()` greedily takes the best candidates that overlap neither each other nor `taken`
    windows of earlier scenes (1 s gap). **Scene order therefore means priority.**
 4. Optional LLM re-rank per scene (`_rerank`: `0.4*z(heuristic) + 0.6*(llm-5)/2`; any failure keeps heuristic order);
-   `skip.llm` turns it off even when `llm.enabled` is true.
-5. Padding (`pad_start/pad_end`) for text picks; audio-only picks snap to quiet frames; optional snap to shot cuts
-   (`skip.snap` turns only the shot-cut snapping off).
+   `skip.llm` or `cfg.offline` turns it off. Padding for text picks uses the internal constants `CLIP_PAD_START` and
+   `CLIP_PAD_END`; audio-only picks snap to quiet frames; optional snap to shot cuts is controlled by
+   `skip.snap`.
 
 Candidates are **not stored in SQLite** (an earlier design did; it exploded to millions of rows for long clips x scenes).
 
@@ -300,17 +300,18 @@ step, percent, outputs); nothing else is persisted except the job folder and the
    "simplify" this into physically splitting the file.
 5. **`RESOURCES` is a process-wide singleton** that is *reconfigured*, never rebound (`RESOURCES.configure(cfg)`);
    modules import the object once. Memory/CPU balancing happens in `traced` operations (`after_operation`), during the render
-   batch, and inside `Cache.trim`. `compute.mode` (`performance`/`resources`/`balance`) selects the policy; the adaptive tuner
+   batch, and inside `Cache.trim`. `mode` (`performance`/`resources`/`balance`) selects the policy; the adaptive tuner
    logs `automation ...` and adjusts the CPU budget over time. Trim hooks are best-effort and swallow exceptions (logged at DEBUG).
 6. **GPU encoders are used only if proven.** `hardware.works()` really encodes a 0.4 s test clip with the exact arguments
    MoviePy will use (preset first, then `Encoder.params`) *and the binary MoviePy writes with* (`encoding_ffmpeg()`, not
    the `PATH` ffmpeg used for decoding). Listing an encoder in `ffmpeg -encoders` proves nothing.
-   `compute.device: "cpu"` keeps the GPU out of the run entirely (the encoder and the transcriber).
-7. **Config is strict.** Unknown keys, wrong JSON types and invalid values raise `ConfigError` at load; `"_comment"`
-   keys are ignored. All defaults live in the dataclass fields (single source of truth for `--init-full`).
+   `device: "cpu"` keeps the GPU out of the run entirely (the encoder and the transcriber).
+7. **Config is strict, with a soft fallback for values.** Unknown keys and wrong JSON types raise `ConfigError` at
+   load; invalid *values* warn and fall back to the field default (`_coerce_defaults`); `"_comment"` keys are
+   ignored. All defaults live in the dataclass fields (single source of truth for `--init`/`--init-full`).
 8. **Outputs:** `{output_dir}/{short|long}/{video}/` holds only clips (+ `.jpg`, `.srt`, `clips.json`);
-   `{output_dir}/.work/{video}/` holds the DB and transcript cache; `{output_dir}/.work/downloads/` (or
-   `download.original_dir`) holds downloaded originals and their sidecars; `{output_dir}/logs/` holds run logs.
+   `{output_dir}/.work/{video}/` holds the DB and transcript cache; `{output_dir}/.work/downloads/` holds
+   downloaded originals and their sidecars; `{output_dir}/logs/` holds run logs.
    File names: `{video}_{scene}_{nn:02d}_{int(start)}s.mp4` (`nn` counts per kind+scene). Two local inputs with the same
    file stem are rejected at load time (they would share outputs); downloaded names are deduplicated per batch
    (`Name (2)`).
@@ -329,18 +330,20 @@ step, percent, outputs); nothing else is persisted except the job folder and the
     anything. `generic` (any web page) is never in a group and is refused unless named. `allowed_extractors` is also
     handed to yt-dlp, but it is the second line of defence, not the policy.
 14. **The downloader never executes anything.** No `exec`, no `netrc_cmd`, no shell: `cookies` are a browser store or a
-    Netscape file, `js_runtime.path` is a file, `ffmpeg` paths come from `media.ffmpeg_exe` /
+    Netscape file, the JavaScript runtime is probed from the `PATH`, `ffmpeg` paths come from `media.ffmpeg_exe` /
     `hardware.encoding_ffmpeg`. Do not expose yt-dlp options that run commands.
-15. **Downloaded subtitles are a transcript source, never a forced one.** An explicit `transcript.file` wins;
-    `use_as_transcript` is `never` (default), `manual` (human subtitles only) or `always` (automatic captions too),
-    and `transcript.mode: "whisper"` ignores them unless it is `always`. Only a real `.srt` is handed to
+15. **Downloaded subtitles are a transcript source, never a forced one.** An explicit `--transcript` wins; otherwise a
+    downloaded subtitle is used next (a manual track is preferred; automatic captions are used when no manual one
+    exists), then the disk cache, then Whisper. `--skip stt` stops before Whisper. Only a real `.srt` is handed to
     `get_transcript` (other formats are converted or dropped); an empty one is unusable and falls back.
-16. **Nothing is skipped by default; `skip.*` only removes steps.** All eleven switches are `false` in `SkipCfg`, and a
-    skip overrides the stage's own toggle (`skip.caption` wins over `captions.enabled`, `skip.llm` over `llm.enabled`,
-    ...). `skip.stt` still uses an explicit file, a downloaded subtitle or the disk cache and never calls Whisper;
-    `skip.audio` mutes the clip and stops audio decoding, so pause removal cannot run. `audio.enhance: false` stays the
-    master switch of clip-audio processing. `needs_text(cfg)` decides whether a transcript is loaded at all
-    (highlights, or captions/titles that are not skipped).
+16. **Nothing is skipped by default; `skip.*` only removes steps.** The eleven switches are `stt`, `denoise`,
+    `audio_enhance`, `audio`, `pauses`, `caption`, `title`, `fade`, `thumbnail`, `llm` and `snap`, all `false` in
+    `SkipCfg`. `skip.stt` still uses an explicit file, a downloaded subtitle or the disk cache and never calls Whisper;
+    `skip.audio` mutes the clip and stops audio decoding, so pause removal cannot run; `skip.denoise` transcribes raw
+    audio and disables noise reduction of the clip audio; `skip.thumbnail` keeps the frame JPEG; `skip.llm` forbids
+    Ollama calls. `captions.enabled` and `title.enabled` are the permanent equivalents of the removed run-level caption
+    switches. `needs_text(cfg)` decides whether a transcript is loaded at all (highlights, or captions/titles that are
+    not skipped).
 17. **The server owns the input and the output folder.** `prepare_config` always drops `input` and `output_dir` from the
     uploaded config and sets them to the uploaded file and the job folder; a server job can never write outside its
     own folder. The registry is in memory (a restart loses the jobs, not their files), and `OUTPUT_DIR`/`CACHE_DIR`
@@ -355,52 +358,55 @@ step, percent, outputs); nothing else is persisted except the job folder and the
 
 ## 6. Configuration (`config.py`)
 
-`Config` = nested dataclasses: `input` (list; files, globs and http(s) URLs), `output_dir`, `compute` (`device`: `cpu`/`gpu`/`auto`),
-`mode` (`performance`/`resources`/`balance`), `quality` (`highest`/`high`/`medium`/`low`/`lowest`), `clips` (`mode`, `kinds`,
-`scenes`, `short`/`long`, `lexicon_file`, `snap_to_cuts`, `pad_*`), `download`, `transcript`, `llm`, `video` (`short_side`,
-`upscale`, `fps`, `layout`, `background`, `fade_seconds`, `codec`, `gpu`, `container`, `thumbnail`), `captions`, `title`,
-`audio`, `silence`, `unsilence`, `skip`, `logging`. `KindCfg` = `count` (per
-scene), `min_seconds`, `target_seconds` (recommended, optional), `max_seconds`, `aspect`, `ranges` - the length of a clip is
-`clip(minimum, recommended, maximum)`.
-`SkipCfg` = `stt`, `denoise`, `audio_enhance`, `audio`, `pauses`, `caption`, `title`, `fade`, `thumbnail`, `llm`, `snap`
-(all `false`; see invariant 16).
-`DownloadCfg` = `quality`, `fps`, `prefer`, `codec`, `container`, `audio_quality`, `audio_language`, `original_dir`,
-`metadata`, `subtitles`, `playlist`, `max_videos`, `time_range`, `cookies`, `network`, `js_runtime`, `platforms`, `cache` (cached originals enable a fully offline second run).
-`PlatformsCfg` = `allow`, `deny`, `groups`, `settings`, `group_by_platform`. Runtime values are derived internally and logged, never accepted from the config file.
+The **file** schema is exactly seven keys (`FileConfig`): `input`, `clips.preset`, `clips.scenes`, `clips.keywords`,
+`clips.ranges`, `download.platforms.allow`, `download.platforms.deny`. Everything else is a runtime override
+(`RuntimeOverrides`) or derived internally. `FileConfig.to_config(overrides)` builds the full runtime `Config`
+(quality tier, built-in short/long profiles, derived download settings). Removed keys are dropped by
+`_strip_removed` with a warning via `REMOVED_KEYS` (see `docs/UPGRADING-4.0.md`); unknown keys still raise
+`ConfigError`.
 
-Four previously user-facing knobs are now internally derived (see `autoclip/core/internal/automation.py`):
+`Config` (runtime) = `input`, `output_dir`, `mode`, `quality`, `device`, `offline`, `download`, `clips`, `transcript`,
+`llm`, `video`, `captions`, `title`, `skip`, `logging`. `KindCfg` = `count`, `min_seconds`, `max_seconds`, `aspect`,
+`ranges` (no `target_seconds` in 4.0). `SkipCfg` = `stt`, `denoise`, `audio_enhance`, `audio`, `pauses`, `caption`,
+`title`, `fade`, `thumbnail`, `llm`, `snap` (all `false`; see invariant 16). `DownloadCfg` = `cookies`, `network`,
+`platforms` (derived from the allow/deny lists). `PlatformsCfg` = `allow`, `deny` only in the file; `groups`,
+`settings`, `group_by_platform` are gone (groups are named directly in allow/deny). Runtime values are derived
+internally and logged, never accepted from the config file.
+
+Invalid *values* fall back: `_coerce_defaults` replaces a value that fails validation with the field default and logs
+`config: invalid value for <path>; falling back to default`. Wrong *types* and unknown keys remain fatal (`ConfigError`).
+
+Four previously user-facing knobs are still internally derived (see `autoclip/core/internal/automation.py`):
 `transcript.enhance.num_threads`, `transcript.beam_size`, `captions.max_chars`, and
-`captions.safe_top` / `captions.safe_bottom`. Do not reintroduce them in user-facing config.
-Defaults aim at quality: `download.quality: "best"`, `download.fps: null` (any), `video.fps: null` (source fps),
-`video.upscale: false` (never enlarge a smaller source), `video.quality: "high"` (the single media-quality knob),
-`video.codec: "h264"` and `video.container: "mp4"`. `formats.choose` prefers a direct HTTPS format over HLS/DASH at equal quality and fps (the segmented variants report inflated bitrates and throttle);
-`audio_language: null` follows `info["language"]` (the original track) instead of the highest-bitrate dub.
+`captions.safe_top` / `captions.safe_bottom`. Do not reintroduce them in user-facing config. Download quality derives
+from output quality via `DOWNLOAD_QUALITY_BY_OUTPUT` (1080/720/480/360/240 for highest/high/medium/low/lowest).
+`formats.choose` prefers a direct HTTPS format over HLS/DASH at equal quality and fps (the segmented variants report
+inflated bitrates and throttle); `audio_language: null` follows `info["language"]` (the original track).
 
 * **Pydantic validates the file** (`pydantic.dataclasses.dataclass` + `ConfigDict(extra="forbid")`): an unknown key, a
   wrong type or an out-of-range value becomes a `ConfigError` (`parse()` wraps the `ValidationError`). Numeric fields use
   `Annotated[int|float|bool, Strict()]` so JSON keeps its type (a bool is not an int, a string is not a number); formats
   use `StringConstraints(pattern=...)`; cross-field rules (min <= max, scene names) are `model_validator(mode="after")`.
   Keys starting with `_` are ignored, so a config file can carry `"_comment"` entries. **Do not hand-roll type checks.**
-* `load_config` resolves every path relative to the config file (including `download.original_dir`, `download.cookies.file`,
-  `download.js_runtime.path` and the same keys inside `download.platforms.settings`), expands `input` globs (sorted,
-  de-duplicated, absolute) and leaves http(s) URLs **verbatim**, and requires `{stem}` in `transcript.file` when several
-  videos are given. **Exception:** a relative `output_dir` is resolved against the current working directory instead, so the
-  output folder is independent of where the config file lives.
+* `load_config` resolves every path relative to the config file, expands `input` globs (sorted, de-duplicated,
+  absolute) and leaves http(s) URLs **verbatim**, and requires `{stem}` in `--transcript` when several videos are
+  given. **Exception:** a relative `output_dir` is resolved against the current working directory instead, so the output
+  folder is independent of where the config file lives.
 * `scenes`: `"all"` | one name | list; `ClipsCfg.scene_list()` expands it. `"scenes"` means the scene *types* (the keys of
-  `STYLES`); shot-change snapping is `snap_to_cuts` (renamed from `snap_scenes` to avoid the clash).
+  `STYLES`); shot-change snapping is automatic (`snap` skip switch).
 * `download.platforms`: names are extractor **families** (`youtube`, `tiktok`, ...), aliases (`x`, `vm.tiktok`, `html5`)
   or groups. User groups must match `@[a-z0-9][a-z0-9_-]*`, may not shadow a built-in group, are checked for unknown
   members and cycles at load time (a cycle is a `ConfigError`); family names are checked against yt-dlp at run time
-  (a missing yt-dlp is a `DownloadError`). `settings` entries are merged over the top-level section (`null` inherits)
-  and re-validated as a `DownloadCfg`; `platforms` and `js_runtime` cannot be overridden per platform.
+  (a missing yt-dlp is a `DownloadError`). The `generic` family (any web page) is only used when named.
 
 ### Adding a config option (checklist)
 1. Add a typed field with a default (and a comment) to the right dataclass. Put the constraint in the type
    (`Field(ge=..., le=...)`, `StringConstraints(pattern=...)`, `Annotated[int, Strict()]`) or, for a rule that spans
    fields, in a `model_validator(mode="after")` that raises `ConfigError` - never in a hand-written type check.
 2. Use it from code via `cfg.<section>.<field>` (never read raw JSON elsewhere).
-3. Tests: valid + invalid case in `tests/unit/test_config.py` (the `--init-full` round-trip test already guards defaults), plus a behavioural test.
-4. If it changes behaviour users see, update `README.md` (and the upgrade notes if it is breaking).
+3. Add the option to `app/fields.py` (the suite fails without it) and regenerate `docs/options-reference.md`.
+4. Tests: valid + invalid case in `tests/unit/test_config.py`, plus a behavioural test.
+5. If it changes behaviour users see, update `README.md`, `docs/UPGRADING-*.md` and `CHANGELOG.md`.
 
 ## 7. Conventions
 
@@ -535,10 +541,10 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
    every DPDFNet setting changed the text (CER 0.3-0.5 against the un-enhanced transcript, while the run-to-run noise
    of the same audio is ~0.1). That is why `enhance.snr_threshold_db` measures every chunk first and leaves clean
    audio alone. Only the DPDFNet models support `attenuation_limit_db`; a *larger* value allows *more* suppression.
-9. **The padding and the cut snapping can push a clip over its maximum.** `pad_start`/`pad_end` and `snap_to_cut`
-   add up to ~3 s to a window that was within the range, so the window is clamped to `max_seconds` again after the
-   snapping. The minimum is the harder half: the pause removal happens at render time, so `compute_keep` gets the
-   kind's `min_seconds` and gives the smallest cuts back when the clip would end up too short.
+9. **The padding and the cut snapping can push a clip over its maximum.** `CLIP_PAD_START`/`CLIP_PAD_END` and the
+   cut snapping add up to ~3 s to a window that was within the range, so the window is clamped to `max_seconds` again
+   after the snapping. The minimum is the harder half: the pause removal happens at render time, so `compute_keep`
+   gets the kind's `min_seconds` and gives the smallest cuts back when the clip would end up too short.
 10. **Drawing text straight onto an RGBA canvas leaves dark fringes.** `render_text_image` draws text/outline/highlight on
    separate pre-coloured transparent layers and alpha-composites them.
 11. **MoviePy's default resize is Pillow-LANCZOS (slow).** `render._resize_effect` swaps in OpenCV (~3x faster overall).
@@ -548,14 +554,20 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 14. **Scenes compete for a finite set of moments.** In short videos later scenes may get fewer clips than `count`; this is
     intended (and documented), not a bug.
 15. **Do not use `caplog` for CLI tests** (see section 8) and do not call `setup_logging` in library code.
-16. **Config key names matter:** `scenes` = scene types; `snap_to_cuts` = shot-change snapping. Do not reintroduce `style` or `snap_scenes`.
+16. **Config key names matter:** `scenes` = scene types (a list is per-type clips, not a blend); shot-change snapping is
+    `skip.snap`. Do not reintroduce `style`, `snap_scenes` or a `snap_to_cuts` file key.
 17. **A frozen build has no Python and no package.** `tools/frozen_entry.py` is its entry point (a frozen
     `__main__` cannot use a relative import); it only calls `autoclip.frozen.main`, where no argument opens
     the desktop app and any argument runs the command line. The app runs *itself* for a pipeline
     (`core.process.pipeline_command` checks `sys.frozen`) instead of `python -m autoclip`. The bundle is a
     folder, not a single file: numpy, OpenCV, the Whisper runtime and ffmpeg are big and a folder
     starts much faster. The optional extras are not bundled - the app degrades gracefully without them.
-18. **The Linux packages wrap the same build.** The AppImage and the snap do not compile anything:
+18. **All AI model calls share one serialized queue.** Ollama (ranking, titles, social captions) and Stable
+    Diffusion (thumbnails) never run concurrently, even in `performance` mode: every call takes the
+    process-wide lock in `autoclip.core.ai`. A missing or failing backend is logged and skipped; the
+    clip keeps its heuristic result. Stable Diffusion thumbnails are generated after `render_all` in the
+    main process and replace the frame JPEG only when they succeed.
+19. **The Linux packages wrap the same build.** The AppImage and the snap do not compile anything:
     they stage the PyInstaller folder. So the entry point is a *script* (without arguments the
     desktop app opens, with arguments the command line runs) and the payload keeps its place - a
     symlink would break PyInstaller, which looks for its files next to the binary.
@@ -658,9 +670,9 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 
 ## 11. Environment notes for sandboxed agents
 
-* The Hugging Face host (Whisper models) may be unreachable: use the stub (`install_stub_whisper`) or `transcript.mode: "file"`.
+* The Hugging Face host (Whisper models) may be unreachable: use the stub (`install_stub_whisper`) or `--transcript FILE`.
 * No GPU may be present: GPU code paths are verified by probe/fallback behaviour and software stand-ins only.
-* One CPU core: use `compute.mode: "performance"` and the thread fake (or monkeypatch `RESOURCES.cpus` to more than one) to force the parallel code path.
+* One CPU core: use `mode: "performance"` and the thread fake (or monkeypatch `RESOURCES.cpus` to more than one) to force the parallel code path.
 * Long-running commands (e.g. 30+ minute media) must be detached (`setsid nohup ... &`) and polled.
 * A 35-minute synthetic video with a chunk-aware Whisper stub is the reference for chunking behaviour (7 chunks, ~19 MB
   of audio each, ~30 s end to end on one core, peak RSS ~435 MB).
@@ -679,13 +691,13 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 ## 12. Boundaries
 
 **Always**
-* Run the four gates (section 2) and keep coverage at or above the 95% gate.
+* Run the four gates (section 2) and keep coverage at or above the 100% gate.
 * Add/adjust tests with every change; update `README.md`, `AGENTS.md` and `docs/` when architecture,
   commands, release flow, behaviour or operational guidance change.
 * Keep config backward-compatibility notes in the README "Upgrading" section when keys change.
 * Preserve cross-platform behaviour (paths, encodings, spawn, optional dependencies).
 * Keep the clip folders clips-only: downloaded originals, subtitles and metadata sidecars live in
-  `.work/downloads/` (or `download.original_dir`), never next to the clips.
+  `.work/downloads/`, never next to the clips.
 * Keep the downloader policy (allow/deny, groups, aliases, format choice) offline-testable: no test in the normal
   suite may need the network.
 
@@ -717,9 +729,9 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 * **energy track** - per-0.5 s loudness (dB) of the whole file, used for scoring, snapping and chunk boundaries.
 * **sprite** - a pre-rendered RGBA caption image cached compressed and blitted by `CaptionTrack`.
 * **work dir** - `{output_dir}/.work/{video}/`: database and transcript cache for one video.
-* **originals cache** - `{output_dir}/.work/downloads/` (or `download.original_dir`): the downloaded files and their
+* **originals cache** - `{output_dir}/.work/downloads/`: the downloaded files and their
   sidecars, reused between runs when the name prefix (title, id, format id, range) matches.
 * **platform family** - the canonical yt-dlp extractor family of a URL (`youtube`, `tiktok`, ...); what
-  `download.platforms` allow/deny and per-platform settings talk about. `generic` means "any other web page".
+  `download.platforms` allow/deny talk about. `generic` means "any other web page".
 * **group** - a named set of families (`@popular`, `@social`, `@video`, `@all` or a user group) usable in
   `allow`/`deny` and for per-group settings.

@@ -12,6 +12,7 @@ import copy
 import hashlib
 import json
 import logging
+import random
 import re
 import shutil
 import subprocess
@@ -21,12 +22,24 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
-from .config import Config, DownloadCfg, JsRuntimeCfg, parse, parse_hms
-from .errors import AutoclipError, DownloadError
-from .formats import Choice, choose
+from .config import Config, DownloadCfg, parse, parse_hms
+from .errors import AutoclipError, DownloadError, RateLimitError
+from .formats import Choice, DownloadPrefs, YtInfo, choose
+from .internal.automation import (
+    COOKIE_BROWSERS,
+    DOWNLOAD_PAUSE_MAX_SECONDS,
+    DOWNLOAD_PAUSE_MIN_SECONDS,
+    DOWNLOAD_PLAYLIST_PAUSE_MAX_SECONDS,
+    DOWNLOAD_PLAYLIST_PAUSE_MIN_SECONDS,
+    DOWNLOAD_RETRIES,
+    DOWNLOAD_SOCKET_TIMEOUT,
+    JS_RUNTIME_ORDER,
+    PLAYLIST_MAX_VIDEOS,
+)
+from .internal.quality import download_quality_for
 from .log import health_check, safe_path_text, traced
 from .media import bundled_ffmpeg_exe, external_env, ffmpeg_exe, probe, trim_video
 from .models import Downloaded
@@ -66,8 +79,6 @@ MEDIA_EXTS = frozenset(
         "wmv",
     }
 )
-#: Extensions of a thumbnail.
-IMAGE_EXTS = frozenset({"jpg", "jpeg", "png", "webp"})
 #: Subtitle formats, most convenient first.
 SUB_EXTS = ("srt", "vtt", "ttml", "dfxp", "tt", "ass", "ssa", "lrc", "json3", "srv1", "srv2", "srv3", "mhtml")
 #: Subtitle formats autoclip cannot turn into an SRT.
@@ -181,11 +192,68 @@ def _clean_error(message: str) -> str:
     return text
 
 
+#: Lower-case fragments yt-dlp and its HTTP stack use when they are told to slow down.
+_RATE_LIMIT_MARKERS = (
+    "http 429",
+    "http error 429",
+    "too many requests",
+    "rate limit",
+    "ratelimit",
+    "temporarily blocked",
+    "try again later",
+)
+
+
+def _rate_limited(exc: BaseException) -> bool:
+    """Whether a yt-dlp failure means "you are being rate limited" (walks the exception chain)."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        code = getattr(current, "code", None) or getattr(current, "status", None)
+        if code == 429:
+            return True
+        text = str(current).lower()
+        if any(marker in text for marker in _RATE_LIMIT_MARKERS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _ext_from_url(url: str) -> str:
     """The extension in the path of a subtitle URL (``""`` when there is none)."""
     if not url:
         return ""
     return Path(urlsplit(url).path).suffix.lower().lstrip(".")
+
+
+#: Path prefixes of a single video (a watch URL often carries a playlist id as well).
+_VIDEO_PATHS = ("/watch", "/shorts/", "/live/", "/embed/", "/v/", "/video/", "/clip/")
+#: Path prefixes that list several videos.
+_PLAYLIST_PATHS = (
+    "/playlist",
+    "/channel/",
+    "/c/",
+    "/user/",
+    "/@",
+    "/album/",
+    "/sets/",
+    "/show/",
+    "/results",
+)
+
+
+def wants_all_entries(url: str) -> bool:
+    """Whether a URL names a list of videos (playlist/channel/album/user) rather than one video.
+
+    The shape decides, so a YouTube watch URL that also carries ``list=`` stays a single video,
+    while a channel or a playlist page downloads every entry (up to ``PLAYLIST_MAX_VIDEOS``).
+    """
+    parts = urlsplit(url)
+    path = parts.path.lower()
+    if any(path.startswith(prefix) for prefix in _PLAYLIST_PATHS):
+        return True
+    return not any(path.startswith(prefix) for prefix in _VIDEO_PATHS) and path.count("/") > 1
 
 
 def _entry_url(entry: dict[str, Any]) -> str | None:
@@ -250,12 +318,9 @@ def _range_suffix(rng: tuple[float, float] | None) -> str:
     return f" [{rng[0]:g}-{rng[1]:g}s]"
 
 
-def _prefix(base: str, choice: Choice, settings: DownloadCfg, suffix: str) -> str:
-    """The file-name prefix of one download: title, id, chosen format, container and range."""
-    text = f"{base} [{_safe_id(choice.format_id)}]"
-    if settings.container != "auto":
-        text += f" [{settings.container}]"
-    return text + suffix
+def _prefix(base: str, choice: Choice, suffix: str) -> str:
+    """The file-name prefix of one download: title, id, chosen format and range."""
+    return f"{base} [{_safe_id(choice.format_id)}]{suffix}"
 
 
 def _media_in(directory: Path, prefix: str) -> Path | None:
@@ -366,6 +431,14 @@ def _subtitle_file(directory: Path, prefix: str, key: str) -> Path | None:
     return None
 
 
+def _read_json(path: Path) -> dict[str, Any]:
+    """Read a small JSON object, raising on any failure."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} does not contain a JSON object")
+    return data
+
+
 def _valid_srt(path: Path) -> bool:
     """Whether a file is a readable, non-empty SRT."""
     from .transcript import parse_srt
@@ -374,6 +447,20 @@ def _valid_srt(path: Path) -> bool:
         return bool(parse_srt(path.read_text(encoding="utf-8", errors="replace")))
     except OSError:
         return False
+
+
+def _subtitle_languages(info: dict[str, Any], settings: DownloadCfg) -> list[str]:
+    """Languages to try for a downloaded subtitle set; derived when none are configured."""
+    configured = settings.subtitles.languages
+    if configured:
+        return list(dict.fromkeys(item.strip().lower() for item in configured if item.strip()))
+    candidates: list[str] = []
+    for key in ("language", "original_language"):
+        value = info.get(key)
+        if isinstance(value, str) and value.strip():
+            candidates.append(value.strip().lower())
+    candidates.append("en")
+    return list(dict.fromkeys(candidates))
 
 
 def _pick_variant(variants: Any) -> dict[str, Any] | None:
@@ -484,7 +571,8 @@ class Downloader:
         except ImportError as e:
             raise DownloadError('downloading URLs needs yt-dlp: pip install "yt-dlp[default]"') from e
         self.cfg = cfg
-        self.root = Path(cfg.download.original_dir) if cfg.download.original_dir else Path(cfg.output_dir) / ".work" / "downloads"
+        self.root = Path(cfg.output_dir) / ".work" / "downloads"
+        self._quality = download_quality_for(cfg.quality)
         self._YoutubeDL = yt_dlp.YoutubeDL
         self._get_info_extractor = get_info_extractor
         self._runtime_classes = supported_js_runtimes.value
@@ -505,8 +593,7 @@ class Downloader:
             self.allowed_extractors = ["default", "-generic", "-html5", "end"]
         else:
             self.allowed_extractors = extractor_patterns(self.permitted_families)
-        self.js_runtimes = self._runtime_config(cfg.download.js_runtime)
-        self.remote_components = ["ejs:github"] if cfg.download.js_runtime.remote_components == "ejs" else []
+        self.js_runtimes = self._runtime_config()
         # A frozen build has no ffprobe next to its bundled ffmpeg (and a system ffmpeg would
         # inherit PyInstaller's LD_LIBRARY_PATH), so yt-dlp cannot cut a range safely there:
         # download the whole file and trim it locally with media.trim_video instead.
@@ -514,12 +601,16 @@ class Downloader:
         self._range_supported = not frozen and bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 
     # -------------------------------- zero-network cache (shared across runs) -----------------
+    def _prefs(self, settings: DownloadCfg) -> DownloadPrefs:
+        """The derived format preferences of one effective platform settings block."""
+        return DownloadPrefs(quality=self._quality, audio_language=settings.audio_language)
+
     def _cache_key(self, family: str, url: str, settings: DownloadCfg) -> str:
         """Fingerprint of ``url`` + the settings that decide what is downloaded (paths/policy excluded)."""
         effective = asdict(settings)
-        for drop in ("original_dir", "platforms", "js_runtime", "cookies"):
-            effective.pop(drop, None)
-        blob = json.dumps({"url": url, "settings": effective}, sort_keys=True, default=str)
+        effective.pop("platforms", None)
+        prefs = asdict(self._prefs(settings))
+        blob = json.dumps({"url": url, "settings": effective, "prefs": prefs}, sort_keys=True, default=str)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
     def _cache_file(self) -> Path:
@@ -548,10 +639,7 @@ class Downloader:
             if subtitle is not None and (not subtitle.is_relative_to(resolved) or not subtitle.is_file()):
                 return None
             prefix = path.stem
-            meta = settings.metadata
-            if meta.info_json and not (self.root / f"{prefix}.info.json").is_file():
-                return None
-            if meta.description and not (self.root / f"{prefix}.description").is_file():
+            if not (self.root / f"{prefix}.info.json").is_file():
                 return None
             out.append(
                 Downloaded(
@@ -641,7 +729,7 @@ class Downloader:
             raise DownloadError(f"platform '{entry_family}' is blocked by download.platforms")
         effective = settings if entry_family == family else self._settings(entry_family)
         full = self._full_info(entry, entry_url, effective)
-        choice = choose(full, effective)
+        choice = choose(cast(YtInfo, full), self._prefs(effective))
         warnings = list(choice.warnings)
         if len(entries) > 1:
             warnings.append("the URL is a playlist; showing the first entry")
@@ -679,29 +767,39 @@ class Downloader:
         family = self._require(url)
         log.info("system health before download: %s", health_check("download"))
         settings = self._settings(family)
-        if settings.cache:
-            cached = self._cache_load(family, url, settings)
-            if cached is not None:
-                log.info("reusing %d cached original(s) for %s (no network needed)", len(cached), url)
-                return cached
-        entries = self._entries(url, settings, limit=None)
+        cached = self._cache_load(family, url, settings)
+        if cached is not None:
+            log.info("reusing %d cached original(s) for %s (no network needed)", len(cached), url)
+            return cached
+        try:
+            self._pause(DOWNLOAD_PAUSE_MIN_SECONDS, DOWNLOAD_PAUSE_MAX_SECONDS)
+            entries = self._entries(url, settings, limit=None)
+        except RateLimitError as e:
+            log.warning("%s: %s (skipping this URL)", url, e)
+            raise
         if not entries:
             raise DownloadError(f"{url} has no downloadable entries")
         results: list[Downloaded] = []
         for index, entry in enumerate(entries):
-            if index and settings.network.sleep_between_seconds:
-                time.sleep(settings.network.sleep_between_seconds)
+            if index:
+                self._pause(DOWNLOAD_PLAYLIST_PAUSE_MIN_SECONDS, DOWNLOAD_PLAYLIST_PAUSE_MAX_SECONDS)
             try:
                 results.extend(self._one_entry(entry, family, settings))
+            except RateLimitError:
+                raise
             except DownloadError as e:
                 if len(entries) == 1:
                     raise
                 log.warning("skipping a playlist entry of %s: %s", url, e)
         if not results:
             raise DownloadError(f"nothing could be downloaded from {url}")
-        if settings.cache:
-            self._cache_store(family, url, settings, results)
+        self._cache_store(family, url, settings, results)
         return results
+
+    @staticmethod
+    def _pause(min_seconds: float, max_seconds: float) -> None:
+        """Sleep a random moment so a batch of URLs does not look like a burst (patchable in tests)."""
+        time.sleep(random.uniform(min_seconds, max_seconds))  # noqa: S311 - jitter, not a secret
 
     def _require(self, url: str) -> str:
         """The family of ``url``; raises before any request when the policy blocks it."""
@@ -720,7 +818,7 @@ class Downloader:
         full = self._full_info(entry, url, settings)
         if full.get("_type") in ("playlist", "multi_video") and full.get("entries"):
             return [downloaded for sub in full["entries"] if isinstance(sub, dict) for downloaded in self._one_entry(sub, family, settings)]
-        choice = choose(full, settings)
+        choice = choose(cast(YtInfo, full), self._prefs(settings))
         if not choice.has_video:
             raise DownloadError(f"{full.get('title') or url or 'the URL'} only offers audio; autoclip needs a video track")
         rng = _range(settings)
@@ -741,7 +839,7 @@ class Downloader:
             "downloaded %s | path=%s | sidecar=%s | platform=%s | subtitle=%s",
             name,
             safe_path_text(media),
-            f"{prefix}.info.json" if settings.metadata.info_json else "-",
+            f"{prefix}.info.json",
             family,
             safe_path_text(subtitle) if subtitle else "-",
         )
@@ -755,8 +853,8 @@ class Downloader:
         video_id = _safe_id(str(full.get("id") or ""))
         base = f"{title} [{video_id}]" if video_id else title
         suffix = _range_suffix(rng)
-        directory = self._directory(family)
-        prefix = _prefix(base, choice, settings, suffix)
+        directory = self._directory()
+        prefix = _prefix(base, choice, suffix)
         media = _media_in(directory, prefix)
         if media is not None:
             return base + suffix, directory, prefix, media
@@ -767,13 +865,12 @@ class Downloader:
                 number += 1
             base = f"{base} ({number})"
         self._used.add((str(directory), base + suffix))
-        return base + suffix, directory, _prefix(base, choice, settings, suffix), None
+        return base + suffix, directory, _prefix(base, choice, suffix), None
 
-    def _directory(self, family: str) -> Path:
-        """The folder of the originals of one family (``group_by_platform`` adds a sub-folder)."""
-        root = self.root / family if self.cfg.download.platforms.group_by_platform else self.root
-        root.mkdir(parents=True, exist_ok=True)
-        return root
+    def _directory(self) -> Path:
+        """The folder of the downloaded originals."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        return self.root
 
     # ------------------------------------------------------------------ media
 
@@ -857,10 +954,7 @@ class Downloader:
         choice: Choice,
         rng: tuple[float, float] | None,
     ) -> None:
-        """Save the requested subtitles, thumbnail and metadata next to the original."""
-        metadata = settings.metadata
-        if not (settings.subtitles.enabled or metadata.info_json or metadata.thumbnail or metadata.description):
-            return
+        """Save the requested subtitles and the metadata next to the original."""
         plan = self._plan(full, settings) if settings.subtitles.enabled else []
         temporary = Path(tempfile.mkdtemp(prefix=".sidecar-", dir=directory))
         try:
@@ -880,7 +974,7 @@ class Downloader:
     def _plan(self, full: dict[str, Any], settings: DownloadCfg) -> list[_ChosenSub]:
         """The subtitle track to request for every configured language."""
         plan: list[_ChosenSub] = []
-        for language in settings.subtitles.languages:
+        for language in _subtitle_languages(full, settings):
             manual = _pick_sub(full.get("subtitles") or {}, language)
             automatic = _pick_sub(full.get("automatic_captions") or {}, language) if manual is None else None
             picked = manual or automatic
@@ -921,12 +1015,9 @@ class Downloader:
                 continue
             rest = item.name[len(prefix) + len(".media.") :]
             ext = item.suffix.lower().lstrip(".")
-            if ext in IMAGE_EXTS:
-                target = directory / f"{prefix}.thumbnail.{ext}"
-            elif ext in SUB_EXTS and "." in rest:
-                target = directory / f"{prefix}.subtitle.{rest}"
-            else:
+            if ext not in SUB_EXTS or "." not in rest:
                 continue
+            target = directory / f"{prefix}.subtitle.{rest}"
             if target.exists():
                 continue
             try:
@@ -936,12 +1027,7 @@ class Downloader:
 
     def _complete(self, directory: Path, prefix: str, settings: DownloadCfg) -> bool:
         """Whether a cached original already has every requested sidecar."""
-        metadata = settings.metadata
-        if metadata.info_json and not (directory / f"{prefix}.info.json").is_file():
-            return False
-        if metadata.description and not (directory / f"{prefix}.description").is_file():
-            return False
-        if metadata.thumbnail and not self._any(directory, (f"{prefix}.thumbnail.",)):
+        if not (directory / f"{prefix}.info.json").is_file():
             return False
         if settings.subtitles.enabled:
             return self._any(directory, (f"{prefix}.manual.", f"{prefix}.auto.", f"{prefix}.subtitle."))
@@ -953,31 +1039,42 @@ class Downloader:
         return any(item.is_file() and item.name.startswith(prefixes) for item in directory.iterdir())
 
     def _subtitle_for(self, directory: Path, prefix: str, settings: DownloadCfg) -> tuple[Path | None, bool]:
-        """The SRT the pipeline may use as this video's transcript, and whether it is human-made."""
+        """The SRT the pipeline may use as this video's transcript, and whether it is human-made.
+
+        A manual track is preferred; automatic captions are only used when no language has one.
+        The requested languages follow the video's original language when the user leaves it alone.
+        """
         if not settings.subtitles.enabled:
             return None, False
-        policy = settings.subtitles.use_as_transcript
-        if policy == "never":
-            return None, False
-        if self.cfg.transcript.mode == "whisper" and policy != "always":
-            return None, False
-        for language in settings.subtitles.languages:
-            for kind, manual in (("manual", True), ("auto", False)):
-                if kind == "auto" and policy != "always":
-                    continue
-                path = directory / f"{prefix}.{kind}.{language}.srt"
+        try:
+            info = _read_json(directory / f"{prefix}.info.json")
+        except Exception:
+            info = {}
+        for kind, manual in (("manual", True), ("auto", False)):
+            for language_code in _subtitle_languages(info, settings):
+                path = directory / f"{prefix}.{kind}.{language_code}.srt"
                 if path.is_file() and _valid_srt(path):
                     return path, manual
+        for pattern in (f"{prefix}.manual.*.srt", f"{prefix}.auto.*.srt"):
+            for item in sorted(directory.glob(pattern)):
+                if item.is_file() and _valid_srt(item):
+                    return item, pattern.startswith(f"{prefix}.manual.")
         return None, False
 
     # --------------------------------------------------------------- yt-dlp IO
 
     def _entries(self, url: str, settings: DownloadCfg, limit: int | None) -> list[dict[str, Any]]:
-        """The top-level video or the entries of its playlist (flat extraction)."""
+        """The top-level video or the entries of its playlist (flat extraction).
+
+        The URL shape decides: a watch/shorts/video URL is one video even when it carries a
+        playlist id, while a playlist/channel/album/user URL expands to its entries (capped at
+        :data:`PLAYLIST_MAX_VIDEOS`). ``limit`` overrides the cap for an internal caller.
+        """
+        all_entries = limit is None and wants_all_entries(url)
         params = self._base_params(settings)
         params["extract_flat"] = "in_playlist"
-        if limit is not None:
-            params["playlistend"] = limit
+        params["noplaylist"] = not all_entries
+        params["playlistend"] = limit if limit is not None else (PLAYLIST_MAX_VIDEOS if all_entries else 1)
         with self._YoutubeDL(params) as ydl:
             info = self._call(ydl.extract_info, url, download=False)
         if not isinstance(info, dict):
@@ -988,7 +1085,7 @@ class Downloader:
         entries = [entry for entry in items if isinstance(entry, dict)]
         if not entries:
             raise DownloadError(f"{url} has no downloadable entries")
-        return entries[:1] if settings.playlist == "single" and limit is None else entries
+        return entries[:limit] if limit is not None else (entries if all_entries else entries[:1])
 
     def _full_info(self, entry: dict[str, Any], url: str | None, settings: DownloadCfg) -> dict[str, Any]:
         """The full extraction of one entry (a resolved entry is reused as it is)."""
@@ -1034,24 +1131,22 @@ class Downloader:
             "windowsfilenames": True,
             "restrictfilenames": False,
             "overwrites": True,
-            "socket_timeout": settings.network.socket_timeout,
-            "retries": settings.network.retries,
-            "fragment_retries": settings.network.retries,
-            "noplaylist": settings.playlist == "single",
-            "playlistend": 1 if settings.playlist == "single" else settings.max_videos,
+            "socket_timeout": DOWNLOAD_SOCKET_TIMEOUT,
+            "retries": DOWNLOAD_RETRIES,
+            "fragment_retries": DOWNLOAD_RETRIES,
+            "sleep_interval": DOWNLOAD_PAUSE_MIN_SECONDS,
+            "max_sleep_interval": DOWNLOAD_PAUSE_MAX_SECONDS,
             "allowed_extractors": list(self.allowed_extractors),
             "js_runtimes": copy.deepcopy(self.js_runtimes),
-            "remote_components": list(self.remote_components),
             "ffmpeg_location": bundled_ffmpeg_exe() if getattr(sys, "frozen", False) else ffmpeg_exe(),
         }
         if settings.network.proxy:
             params["proxy"] = settings.network.proxy
-        if settings.network.rate_limit_mbps:
-            params["ratelimit"] = settings.network.rate_limit_mbps * 1024 * 1024 / 8
-        if settings.cookies.file:
-            params["cookiefile"] = settings.cookies.file
-        elif settings.cookies.from_browser:
-            params["cookiesfrombrowser"] = (settings.cookies.from_browser, None, None, None)
+        if settings.cookies:
+            if settings.cookies in COOKIE_BROWSERS:
+                params["cookiesfrombrowser"] = (settings.cookies, None, None, None)
+            else:
+                params["cookiefile"] = settings.cookies
         return params
 
     def _media_params(self, settings: DownloadCfg, directory: Path, prefix: str, temporary: Path, choice: Choice) -> dict[str, Any]:
@@ -1080,9 +1175,7 @@ class Downloader:
                 "writeautomaticsub": any(not item.manual for item in plan),
                 "subtitleslangs": [re.escape(item.key) for item in plan],
                 "subtitlesformat": "best",
-                "writethumbnail": settings.metadata.thumbnail,
-                "writeinfojson": settings.metadata.info_json,
-                "writedescription": settings.metadata.description,
+                "writeinfojson": True,
             }
         )
         return params
@@ -1095,17 +1188,18 @@ class Downloader:
             "default": f"{safe}.%(ext)s",
             "temp": f"{safe}.media.%(ext)s",
             "subtitle": f"{safe}.subtitle.%(ext)s",
-            "thumbnail": f"{safe}.thumbnail.%(ext)s",
-            "description": safe,
             "infojson": safe,
         }
 
     def _call(self, function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-        """Call yt-dlp and translate its errors into :class:`DownloadError`."""
+        """Call yt-dlp and translate its errors into :class:`RateLimitError`/:class:`DownloadError`."""
         try:
             return function(*args, **kwargs)
         except self._ytdl_error as e:
-            raise DownloadError(_clean_error(str(e))) from e
+            message = _clean_error(str(e))
+            if _rate_limited(e):
+                raise RateLimitError(f"the platform is rate limiting requests: {message}") from e
+            raise DownloadError(message) from e
 
     def _settings(self, family: str) -> DownloadCfg:
         """The effective download settings of one family (top-level, its groups, its own entry)."""
@@ -1114,32 +1208,24 @@ class Downloader:
         if cached is None:
             base = asdict(self.cfg.download)
             base.pop("platforms", None)
-            base.pop("js_runtime", None)
             platforms = self.cfg.download.platforms
             cached = parse(DownloadCfg, effective_download(base, fam, platforms.groups, platforms.settings))
             self._settings_cache[fam] = cached
         return cached
 
-    def _runtime_config(self, cfg: JsRuntimeCfg) -> dict[str, dict[str, str]]:
-        """The ``js_runtimes`` parameter: the chosen runtime, or ``{}`` when none is available."""
-        if cfg.name == "auto":
-            for name in ("deno", "node", "bun", "quickjs"):
-                runtime = self._runtime_classes.get(name)
-                if runtime is not None and runtime().info is not None:
-                    log.info("using the %s JavaScript runtime for yt-dlp", name)
-                    return {name: {}}
-            log.warning("no JavaScript runtime found: YouTube may not offer every format (install deno or node)")
-            return {}
-        runtime = self._runtime_classes.get(cfg.name)
-        if runtime is None:
-            log.warning("yt-dlp does not support the %s JavaScript runtime", cfg.name)
-            return {}
-        if cfg.path:
-            path = Path(cfg.path)
-            if not path.is_file():
-                raise DownloadError(f"download.js_runtime.path: '{cfg.path}' is not a file")
-            return {cfg.name: {"path": str(path)}}
-        if runtime().info is None:
-            log.warning("the %s JavaScript runtime was not found on PATH", cfg.name)
-            return {}
-        return {cfg.name: {}}
+    def _runtime_config(self) -> dict[str, dict[str, str]]:
+        """The ``js_runtimes`` parameter: the first runtime found on PATH, or ``{}`` when none is available."""
+        for name in JS_RUNTIME_ORDER:
+            runtime = self._runtime_classes.get(name)
+            if runtime is None:
+                continue
+            try:
+                available = runtime().info is not None
+            except Exception:  # a broken runtime must not break the downloader
+                log.debug("could not check the %s JavaScript runtime", name, exc_info=True)
+                continue
+            if available:
+                log.info("automation js_runtime=%s | source=first runtime found on PATH", name)
+                return {name: {}}
+        log.warning("no JavaScript runtime found: YouTube may not offer every format (install deno or node)")
+        return {}

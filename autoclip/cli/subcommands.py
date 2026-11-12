@@ -157,4 +157,4 @@ def _models(rest: Sequence[str]) -> int:
             return 2
         download_model(args.name)
         return 0
-    return 2
+    return 2  # pragma: no cover - argparse rejects any other action

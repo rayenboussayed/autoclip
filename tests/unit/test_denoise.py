@@ -15,7 +15,6 @@ import pytest
 from numpy.typing import NDArray
 
 from autoclip.core import denoise
-from autoclip.core.config import EnhanceCfg
 from autoclip.core.denoise import SpeechEnhancer, fetch_model
 
 
@@ -50,8 +49,29 @@ def test_the_noise_measurement_separates_clean_and_noisy_audio() -> None:
     assert denoise.snr_db(noisy()) < denoise.snr_db(speech_like())
 
 
+def test_default_models_dir_follows_each_platform(tmp_path: Path) -> None:
+    from autoclip.core.denoise import default_models_dir
+
+    home = tmp_path / "home"
+    linux = default_models_dir("linux", {"XDG_CACHE_HOME": str(tmp_path / "cache")}, home)
+    assert linux == tmp_path / "cache" / "autoclip" / "models"
+    mac = default_models_dir("darwin", {}, home)
+    assert mac == home / "Library" / "Caches" / "autoclip" / "models"
+    windows = default_models_dir("win32", {"LOCALAPPDATA": str(tmp_path / "local")}, home)
+    assert windows == tmp_path / "local" / "autoclip" / "models"
+    windows_default = default_models_dir("win32", {}, home)
+    assert windows_default == home / "AppData" / "Local" / "autoclip" / "models"
+
+
+def test_the_noise_gate_can_be_disabled_entirely(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    enhancer = SpeechEnhancer(True, tmp_path)
+    monkeypatch.setattr(enhancer, "_denoise", lambda audio: audio * 0.5)
+    monkeypatch.setattr(denoise, "ENHANCE_SNR_THRESHOLD_DB", None)
+    assert np.array_equal(enhancer(noisy()), noisy() * 0.5)
+
+
 def test_clean_audio_is_left_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    enhancer = SpeechEnhancer(EnhanceCfg(backend="noisereduce"), tmp_path)
+    enhancer = SpeechEnhancer(True, tmp_path)
     called: list[int] = []
 
     def denoise(audio: NDArray[np.float32]) -> NDArray[np.float32]:
@@ -65,21 +85,22 @@ def test_clean_audio_is_left_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
 
 def test_noisy_audio_is_enhanced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    enhancer = SpeechEnhancer(EnhanceCfg(backend="noisereduce"), tmp_path)
+    enhancer = SpeechEnhancer(True, tmp_path)
     monkeypatch.setattr(enhancer, "_denoise", lambda audio: audio * 0.5)
     audio = noisy()
     assert np.array_equal(enhancer(audio), audio * 0.5)
 
 
 def test_the_noise_gate_can_be_switched_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    enhancer = SpeechEnhancer(EnhanceCfg(backend="noisereduce", snr_threshold_db=None), tmp_path)
+    monkeypatch.setattr(denoise, "snr_db", lambda audio: 0.0)
+    enhancer = SpeechEnhancer(True, tmp_path)
     monkeypatch.setattr(enhancer, "_denoise", lambda audio: audio * 0.5)
     audio = speech_like()
     assert np.array_equal(enhancer(audio), audio * 0.5)
 
 
 def test_a_broken_noise_measurement_still_enhances(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    enhancer = SpeechEnhancer(EnhanceCfg(backend="noisereduce"), tmp_path)
+    enhancer = SpeechEnhancer(True, tmp_path)
     monkeypatch.setattr(enhancer, "_denoise", lambda audio: audio * 0.5)
     monkeypatch.setattr(denoise, "snr_db", lambda audio: (_ for _ in ()).throw(ValueError("broken")))
     audio = speech_like()
@@ -88,7 +109,7 @@ def test_a_broken_noise_measurement_still_enhances(tmp_path: Path, monkeypatch: 
 
 def test_disabled_enhancement_passes_the_audio_through(tmp_path: Path) -> None:
     audio = tone()
-    enhancer = SpeechEnhancer(EnhanceCfg(enabled=False), tmp_path)
+    enhancer = SpeechEnhancer(False, tmp_path)
     assert not enhancer.active
     assert np.array_equal(enhancer(audio), audio)
 
@@ -98,20 +119,11 @@ def test_missing_backend_falls_back_to_the_original_audio(
 ) -> None:
     monkeypatch.setitem(sys.modules, "sherpa_onnx", None)  # importing it fails
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        enhancer = SpeechEnhancer(EnhanceCfg(backend="sherpa"), tmp_path)
+        enhancer = SpeechEnhancer(True, tmp_path)
     assert not enhancer.active
     assert "speech enhancement unavailable" in caplog.text
     audio = tone()
     assert np.array_equal(enhancer(audio), audio)
-
-
-def test_noisereduce_backend_enhances_the_audio(tmp_path: Path) -> None:
-    enhancer = SpeechEnhancer(EnhanceCfg(backend="noisereduce"), tmp_path)
-    assert enhancer.active
-    audio = tone()
-    out = enhancer(audio)
-    assert out.shape == audio.shape and out.dtype == np.float32
-    assert not np.array_equal(out, audio)
 
 
 def test_a_failing_backend_is_disabled_after_the_first_failure(
@@ -120,7 +132,7 @@ def test_a_failing_backend_is_disabled_after_the_first_failure(
     def boom(_audio: NDArray[np.float32]) -> NDArray[np.float32]:
         raise RuntimeError("model exploded")
 
-    enhancer = SpeechEnhancer(EnhanceCfg(backend="noisereduce"), tmp_path)
+    enhancer = SpeechEnhancer(True, tmp_path)
     monkeypatch.setattr(enhancer, "_denoise", boom)
     audio = tone()
     with caplog.at_level(logging.WARNING, logger="autoclip"):
@@ -160,57 +172,6 @@ def test_fetch_model_names_map_to_the_release_files() -> None:
     assert denoise.MODEL_URL.startswith("https://")
 
 
-def test_sherpa_backend_builds_a_denoiser(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The sherpa-onnx model config is assembled as the library expects (both model families)."""
-    built: dict[str, Any] = {}
-
-    class Gtcrn:
-        model = ""
-
-    class Dpdf:
-        model = ""
-        attenuation_limit_db = 0.0
-
-    class ModelConfig:
-        def __init__(self, gtcrn: Any, dpdfnet: Any, num_threads: int, debug: bool, provider: str) -> None:
-            built["gtcrn"], built["dpdfnet"], built["threads"], built["provider"] = gtcrn, dpdfnet, num_threads, provider
-
-        def validate(self) -> bool:
-            return True
-
-    class Config:
-        def __init__(self, model: Any) -> None:
-            built["model"] = model
-
-        def validate(self) -> bool:
-            return True
-
-    class Denoiser:
-        def __init__(self, config: Any) -> None:
-            built["denoiser"] = config
-
-        def run(self, audio: NDArray[np.float32], sr: int) -> Any:
-            built["run"] = (len(audio), sr)
-            return type("Out", (), {"samples": audio * 0.5})()
-
-    module = ModuleType("sherpa_onnx")
-    module.OfflineSpeechDenoiserGtcrnModelConfig = Gtcrn  # type: ignore[attr-defined]
-    module.OfflineSpeechDenoiserDpdfNetModelConfig = Dpdf  # type: ignore[attr-defined]
-    module.OfflineSpeechDenoiserModelConfig = ModelConfig  # type: ignore[attr-defined]
-    module.OfflineSpeechDenoiserConfig = Config  # type: ignore[attr-defined]
-    module.OfflineSpeechDenoiser = Denoiser  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "sherpa_onnx", module)
-    monkeypatch.setattr(denoise, "fetch_model", lambda model, directory, timeout=120.0: directory / "m.onnx")
-
-    enhancer = SpeechEnhancer(EnhanceCfg(model="dpdfnet2", attenuation_limit_db=9.0), tmp_path)
-    assert enhancer.active
-    assert built["dpdfnet"].model.endswith("m.onnx") and built["dpdfnet"].attenuation_limit_db == 9.0
-    assert built["threads"] == 2 and built["provider"] == "cpu"
-    out = enhancer(tone())
-    assert np.allclose(out, tone() * 0.5)  # the model halved the samples
-    assert built["run"][1] == 16000
-
-
 def test_an_invalid_model_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     class Config:
         def __init__(self, model: Any) -> None:
@@ -239,7 +200,7 @@ def test_an_invalid_model_is_reported(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setitem(sys.modules, "sherpa_onnx", module)
     monkeypatch.setattr(denoise, "fetch_model", lambda model, directory, timeout=120.0: directory / "m.onnx")
 
-    enhancer = SpeechEnhancer(EnhanceCfg(model="gtcrn"), tmp_path)
+    enhancer = SpeechEnhancer(True, tmp_path)
     assert not enhancer.active  # the invalid model disables the enhancement instead of failing the run
 
 

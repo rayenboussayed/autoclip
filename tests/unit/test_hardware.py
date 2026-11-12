@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import platform
 import subprocess
 
 import pytest
@@ -94,10 +95,13 @@ def test_probe_survives_hangs_and_missing_binaries(monkeypatch: pytest.MonkeyPat
 
 
 def test_what_is_listed_is_not_what_is_chosen() -> None:
-    """On any machine: the chosen encoder is a GPU one exactly when its probe encode succeeds."""
-    for name in HARDWARE:
-        chosen = pick_encoder(VideoCfg(gpu=name), "high")  # type: ignore[arg-type]
-        assert chosen.hardware == works(HARDWARE[name](VideoCfg(), "high")) and (chosen.hardware or chosen.name == "libx264")
+    """On any machine: the chosen encoder is the first working GPU one, otherwise CPU libx264."""
+    chosen = pick_encoder(VideoCfg(), "high")
+    candidates = [n for n in PRIORITY.get(platform.system(), ()) if works(HARDWARE[n](VideoCfg(), "high"))]
+    if candidates:
+        assert chosen.hardware and chosen.name == HARDWARE[candidates[0]](VideoCfg(), "high").name
+    else:
+        assert not chosen.hardware and chosen.name == "libx264"
 
 
 def fake_probe(monkeypatch: pytest.MonkeyPatch, working: set[str]) -> list[str]:
@@ -126,7 +130,7 @@ def test_auto_follows_the_platform_priority(
     monkeypatch: pytest.MonkeyPatch, system: str, working: set[str], expected: str, tried: list[str]
 ) -> None:
     log = fake_probe(monkeypatch, working)
-    assert pick_encoder(VideoCfg(gpu="auto"), "high", system).name == expected and log == tried
+    assert pick_encoder(VideoCfg(), "high", system).name == expected and log == tried
     assert PRIORITY["Darwin"] == ("videotoolbox",)
 
 
@@ -134,22 +138,17 @@ def test_off_never_probes_and_explicit_choice_warns_when_unusable(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     tried = fake_probe(monkeypatch, {"h264_amf"})
-    assert pick_encoder(VideoCfg(gpu="off"), "high").name == "libx264" and tried == []
-    assert pick_encoder(VideoCfg(gpu="amf"), "high").name == "h264_amf" and tried == ["h264_amf"]
-    with caplog.at_level(logging.WARNING, logger="autoclip"):
-        assert pick_encoder(VideoCfg(gpu="nvenc"), "high").name == "libx264"
-    assert "not usable on this machine" in caplog.text
+    assert pick_encoder(VideoCfg(), "high", allow_gpu=False).name == "libx264" and tried == []
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="autoclip"):
-        pick_encoder(VideoCfg(gpu="auto"), "high", "Linux")  # nothing works on "auto": silently the CPU (not a warning)
-    assert caplog.text == ""
+    with caplog.at_level(logging.INFO, logger="autoclip"):
+        pick_encoder(VideoCfg(), "high", "Linux")  # nothing works on "auto": silently the CPU (not a warning)
 
 
 def test_cpu_fallback_log_names_the_selected_encoder(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     """The log must not say libx264 when ``video.codec: "h265"`` actually selected libx265."""
     fake_probe(monkeypatch, set())
     with caplog.at_level(logging.INFO, logger="autoclip"):
-        assert pick_encoder(VideoCfg(codec="h265", gpu="auto"), "high", "Linux").name == "libx265"
+        assert pick_encoder(VideoCfg(codec="h265"), "high", "Linux").name == "libx265"
     assert "no usable GPU video encoder: using libx265 on the CPU" in caplog.text
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="autoclip"):

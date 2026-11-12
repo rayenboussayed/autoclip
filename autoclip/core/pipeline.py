@@ -21,6 +21,8 @@ from pathlib import Path
 from .config import Config, KindCfg, parse_hms
 from .errors import AutoclipError
 from .events import CancelToken, Reporter
+from .internal.automation import SPLIT_SECONDS
+from .internal.quality import quality_short_side
 from .log import health_check, safe_path_text, traced
 from .media import external_env, ffmpeg_exe, probe
 from .models import Encoder, MediaInfo, Moment, RenderJob
@@ -61,19 +63,36 @@ def split_video(src: Path, out_dir: Path, seconds: float, duration: float, name:
     return parts
 
 
-def ranges_moments(store: Store, kcfg: KindCfg, info: MediaInfo, cfg: Config, have_text: bool) -> list[Moment]:
+def ranges_moments(
+    store: Store, kcfg: KindCfg, info: MediaInfo, cfg: Config, have_text: bool, fillers: frozenset[str] | None = None, kind: str = "short"
+) -> list[Moment]:
     """Moments for the explicit ``ranges`` of a clip kind (scene type "custom"), clamped to the video."""
+    if fillers is None:
+        fillers = frozenset()
+    from . import ai
+
+    use_llm = not cfg.offline and ai.llm_available(cfg.llm.base_url)
     out = []
     for span in kcfg.ranges:
         lo, hi = (min(parse_hms(x), info.duration) for x in span.split("-"))
         text = store.window_text(lo, hi) if have_text else ""
-        out.append(Moment(lo, hi, text, scene="custom", title=make_title(text, cfg)))
+        title = make_title(text, fillers) if kind == "long" else ""
+        caption = ""
+        if use_llm and text:
+            try:
+                from . import ai
+
+                title = ai.generate_title(cfg, text) or title
+                caption = ai.generate_caption(cfg, text)
+            except Exception as e:
+                log.warning("AI generation failed (%s: %s); keeping the heuristic title", type(e).__name__, e)
+        out.append(Moment(lo, hi, text, scene="custom", title=title, caption=caption))
     return out
 
 
 def needs_text(cfg: Config) -> bool:
     """Whether the run needs a transcript: highlights select on text, captions and titles read it."""
-    return cfg.clips.mode == "highlights" or (cfg.captions.enabled and not cfg.skip.caption) or (cfg.title.enabled and not cfg.skip.title)
+    return cfg.clips.mode == "highlights" or cfg.captions.enabled or cfg.title.enabled
 
 
 @traced
@@ -86,6 +105,7 @@ def process_video(
     subtitle: Path | None = None,
     subtitle_manual: bool = False,
     consent: ConsentProvider | None = None,
+    config_dir: Path | None = None,
     report: Reporter | None = None,
     cancel: CancelToken | None = None,
 ) -> tuple[int, int]:
@@ -99,21 +119,21 @@ def process_video(
     """
     reporter = report if report is not None else Reporter(cancel=cancel)
     root, cc, stem = Path(cfg.output_dir), cfg.clips, name or src.stem
-    log.info("system health before preprocess/unsilence: %s", health_check("unsilence"))
-    if cfg.unsilence.enabled:
-        out_dir = root / "long" / stem
-        out_dir.mkdir(parents=True, exist_ok=True)
-        destination = out_dir / f"unsilence_{stem}.mp4"
-        reporter("validate", 0.02, "cleaning silence with the configured preprocessor")
-        try:
-            from .unsilence import remove_silence
+    from .internal.content import fillers_from, load_lexicon
 
-            src = remove_silence(src, cfg, destination, reporter=reporter, cancel=cancel)
-            if src == destination:
-                subtitle = None  # the new timeline is no longer aligned with platform subtitles
-        except Exception as exc:
-            log.warning("preprocessing: cannot clean %s (%s); continuing with the original", stem, exc)
-            pass
+    fillers = fillers_from(load_lexicon(config_dir))
+    log.info("system health before preprocess/unsilence: %s", health_check("unsilence"))
+    destination = root / ".work" / stem / f"unsilence_{stem}.mp4"
+    reporter("validate", 0.02, "cleaning silence")
+    try:
+        from .unsilence import remove_silence
+
+        src = remove_silence(src, cfg, destination, reporter=reporter, cancel=cancel)
+        if src == destination:
+            subtitle = None  # the new timeline is no longer aligned with platform subtitles
+    except Exception as exc:
+        log.warning("preprocessing: cannot clean %s (%s); continuing with the original", stem, exc)
+        pass
     info = probe(src)
     reporter("validate", 0.2, f"probed {src.name}")
     log.info("system health before input: %s", health_check("input"))
@@ -130,7 +150,7 @@ def process_video(
     if cc.mode == "split":
         out = root / "long" / stem
         out.mkdir(parents=True, exist_ok=True)
-        parts = split_video(src, out, cc.split_seconds, info.duration, stem)
+        parts = split_video(src, out, SPLIT_SECONDS, info.duration, stem)
         (out / "clips.json").write_text(json.dumps([p.name for p in parts], indent=2), encoding="utf-8")
         reporter("package", 1.0, "split complete")
         return len(parts), 0
@@ -166,9 +186,9 @@ def process_video(
         for kind in cc.kinds:
             kcfg = cc.kind(kind)
             moments = (
-                ranges_moments(store, kcfg, info, cfg, have_text)
+                ranges_moments(store, kcfg, info, cfg, have_text, kind=kind)
                 if cc.mode == "ranges"
-                else select_moments(src, info, store, cache, cfg, kind, db, have_text)
+                else select_moments(src, info, store, cache, cfg, kind, db, have_text, config_dir=config_dir)
             )
             if not moments:
                 log.warning("no %s clips for %s (video shorter than the length range, or no ranges given)", kind, name or src.name)
@@ -177,19 +197,32 @@ def process_video(
             out.mkdir(parents=True, exist_ok=True)
             size = canvas_size(
                 kcfg.aspect,
-                cfg.video.short_side,
+                quality_short_side(cfg.quality),
                 info.width,
                 info.height,
-                upscale=cfg.video.upscale,
                 fill=cfg.video.layout == "fill",
             )
             numbers: dict[str, int] = {}
             for m in moments:
                 n = numbers[m.scene] = numbers.get(m.scene, 0) + 1
-                dst = out / f"{stem}_{m.scene}_{n:02d}_{int(m.start)}s.{cfg.video.container}"
+                dst = out / f"{stem}_{m.scene}_{n:02d}_{int(m.start)}s.mp4"
                 clip_id = store.save_moment(kind, m.scene, n, m)
                 jobs.append(
-                    RenderJob(clip_id, m, src, dst, kind, kcfg.aspect, encoder, info.has_audio, cfg, store.path, log_file, os.getpid())
+                    RenderJob(
+                        clip_id,
+                        m,
+                        src,
+                        dst,
+                        kind,
+                        kcfg.aspect,
+                        encoder,
+                        info.has_audio,
+                        cfg,
+                        store.path,
+                        log_file,
+                        os.getpid(),
+                        fillers=fillers,
+                    )
                 )
                 needs = max(needs, estimate_render_bytes(size, m.end - m.start))
         if not jobs:
@@ -209,6 +242,32 @@ def process_video(
     finally:
         cache.close()
         store.close()
+    # Optional Stable Diffusion thumbnails (serialized in the AI queue; skipped when unavailable or offline).
+    if not cfg.skip.thumbnail and not cfg.offline:
+        try:
+            from . import ai as _ai
+
+            if _ai.sd_available():
+                import cv2
+
+                for r in rows:
+                    if r["status"] != "done":
+                        continue
+                    clip_path = root / r["kind"] / stem / r["file"]
+                    out_jpg = clip_path.with_suffix(".jpg")
+                    frame_path = clip_path.with_suffix(".frame.jpg")
+                    try:
+                        cap = cv2.VideoCapture(str(clip_path))
+                        ok, frame = cap.read()
+                        cap.release()
+                        if ok:
+                            cv2.imwrite(str(frame_path), frame)
+                            _ai.generate_sd_thumbnail(frame_path, out_jpg)
+                    finally:
+                        frame_path.unlink(missing_ok=True)
+        except Exception as e:
+            log.warning("Stable Diffusion thumbnail pass failed (%s: %s)", type(e).__name__, e)
+
     for clip_kind in dict.fromkeys(r["kind"] for r in rows):
         done = [r for r in rows if r["kind"] == clip_kind and r["status"] == "done"]
         summary = [
@@ -218,6 +277,7 @@ def process_video(
                 "start": round(r["start"], 2),
                 "end": round(r["end"], 2),
                 "title": r["title"],
+                "caption": r["caption"],
                 "text": r["text"],
                 "score": round(r["score"], 2) if isinstance(r["score"], (int, float)) and not isinstance(r["score"], bool) else r["score"],
                 "llm_score": round(r["llm_score"], 2)
@@ -236,6 +296,8 @@ def process_video(
             if r["kind"] != clip_kind:
                 continue
             sidecar_stem = r["file"].rpartition(".")[0]
+            if r["caption"]:
+                (root / clip_kind / stem / (sidecar_stem + ".txt")).write_text(r["caption"], encoding="utf-8")
             log.info(
                 "output: %s | %s/%s | %dx%d | %.2fs trimmed=%.2f wall=%.1fs srt=%s thumb=%s.jpg",
                 safe_path_text(root / clip_kind / stem / r["file"]),

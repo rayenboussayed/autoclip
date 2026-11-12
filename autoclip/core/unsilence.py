@@ -16,6 +16,13 @@ from .config import Config
 from .errors import AutoclipError
 from .events import CancelToken, Reporter
 from .internal import CHUNK_MINUTES as _CHUNK_MINUTES
+from .internal.automation import (
+    UNSILENCE_KEEP_SILENCE_MS,
+    UNSILENCE_MIN_SEGMENT_SECONDS,
+    UNSILENCE_MIN_SILENCE_MS,
+    UNSILENCE_MIN_TOTAL_SECONDS,
+    UNSILENCE_SILENCE_THRESHOLD_DB,
+)
 from .internal.quality import quality_profile
 from .log import LOG as log
 from .log import health_check, traced
@@ -56,18 +63,18 @@ def _merge_intervals(raw: list[tuple[float, float]]) -> list[tuple[float, float]
     return merged
 
 
-def _window_seconds(cfg: Config) -> float:  # cfg retained for call-site compatibility
+def _window_seconds() -> float:
     """The seconds loaded at once when cleaning silence, with a memory-safe chunk size."""
     return _CHUNK_MINUTES * 60.0
 
 
-def _split_for_assembly(intervals: list[tuple[float, float]], cfg: Config) -> list[tuple[float, float]]:
+def _split_for_assembly(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
     """Split kept intervals longer than 5 minutes * (1 + 0.3) into ~5-minute pieces, in order.
 
     Output content is unchanged (the same source ranges concatenated identically); splitting only
     bounds how big any single concat/encode segment is, which matters for several-hour livestreams.
     """
-    chunk = _window_seconds(cfg)
+    chunk = _window_seconds()
     limit = chunk * 1.3  # 30 % more than a chunk is tolerated; beyond it, cut at the chunk boundary
     out: list[tuple[float, float]] = []
     for start, end in intervals:
@@ -82,13 +89,13 @@ def _split_for_assembly(intervals: list[tuple[float, float]], cfg: Config) -> li
     return out
 
 
-def _non_silent_intervals(cfg: Config, src: Path, info: MediaInfo) -> list[tuple[float, float]]:
+def _non_silent_intervals(src: Path, info: MediaInfo) -> list[tuple[float, float]]:
     """Non-silent intervals of ``src`` (audio), found in 5-minute windows so a several-hour file never fits in RAM."""
     from pydub.silence import detect_nonsilent
 
     duration = info.duration
-    keep = cfg.unsilence.keep_silence_ms / 1000.0
-    window_seconds = _window_seconds(cfg)
+    keep = UNSILENCE_KEEP_SILENCE_MS / 1000.0
+    window_seconds = _window_seconds()
     raw: list[tuple[float, float]] = []
     cursor = 0.0
     while cursor < duration:
@@ -101,12 +108,12 @@ def _non_silent_intervals(cfg: Config, src: Path, info: MediaInfo) -> list[tuple
         del samples, pcm
         for start_ms, end_ms in detect_nonsilent(
             audio,
-            min_silence_len=cfg.unsilence.min_silence_ms,
-            silence_thresh=cfg.unsilence.silence_threshold_db,
+            min_silence_len=UNSILENCE_MIN_SILENCE_MS,
+            silence_thresh=UNSILENCE_SILENCE_THRESHOLD_DB,
         ):
             lo = max(0.0, cursor + start_ms / 1000.0 - keep)
             hi = min(duration, cursor + end_ms / 1000.0 + keep)
-            if hi - lo >= max(cfg.unsilence.min_segment_seconds, 1e-4):
+            if hi - lo >= max(UNSILENCE_MIN_SEGMENT_SECONDS, 1e-4):
                 raw.append((lo, hi))
         del audio
         cursor += window
@@ -126,46 +133,55 @@ def remove_silence(
     reporter: Reporter | None = None,
     cancel: CancelToken | None = None,
 ) -> Path:
-    if not cfg.unsilence.enabled:
-        return src
+    """Remove silent spans from ``src`` into ``dst``, unless they are too few to be worth a re-encode.
+
+    Returns ``src`` untouched when there is nothing material to remove (no audio, pydub missing,
+    or less silence than :data:`UNSILENCE_MIN_TOTAL_SECONDS`), so the pipeline keeps the original
+    timeline and any downloaded subtitle stays aligned.
+    """
     if not src.is_file():
         raise AutoclipError(f"unsilence: source file does not exist ({src.name})")
-    dst.parent.mkdir(parents=True, exist_ok=True)
     info = probe(src)
     if not info.has_audio:
-        try:
-            shutil.copyfile(src, dst)
-            return dst
-        except OSError as exc:
-            log.warning("unsilence: cannot copy %s to %s: %s", src.name, dst.name, exc)
-            return src
+        log.info("automation unsilence skip: no audio track")
+        return src
     if not _pydub_available():
-        log.warning("unsilence is enabled but pydub/audioop is unavailable; continuing with the original")
-        shutil.copyfile(src, dst)
-        return dst
+        log.warning("unsilence skipped: pydub/audioop is unavailable; continuing with the original")
+        return src
+    try:
+        intervals = _non_silent_intervals(src, info)
+    except Exception as exc:
+        log.warning("unsilence: cannot read audio of %s: %s", src.name, exc)
+        return src
+    if not intervals:
+        log.info("automation unsilence skip: no speech found in %s", src.name)
+        return src
+    removable = max(0.0, info.duration - sum(end - start for start, end in intervals))
+    threshold = max(UNSILENCE_MIN_TOTAL_SECONDS, 0.02 * info.duration)
+    if removable < threshold:
+        log.info(
+            "automation unsilence skip: removable=%.1fs below threshold=%.1fs (duration=%.1fs)",
+            removable,
+            threshold,
+            info.duration,
+        )
+        return src
+    log.info("automation unsilence: removing %.1fs of silence (duration=%.1fs)", removable, info.duration)
+    dst.parent.mkdir(parents=True, exist_ok=True)
     temporary = dst.with_suffix(".tmp.mp4")
     log.info("system health before unsilence detection: %s", health_check("unsilence"))
     try:
         from moviepy import VideoFileClip, concatenate_videoclips
 
         # Silence is detected window-by-window so the whole several-hour file is never decoded at once.
-        try:
-            intervals = _non_silent_intervals(cfg, src, info)
-        except Exception as exc:
-            log.warning("unsilence: cannot read audio of %s: %s", src.name, exc)
-            return src
-        if not intervals:
-            log.info("unsilence: no removable silence found in %s", src.name)
-            shutil.copyfile(src, dst)
-            return dst
         if cancel is not None:
             cancel.check()
         clip = VideoFileClip(str(src))
         parts: list[Any] = []  # moviepy clips are untyped
         duration = float(clip.duration or 0.0)
         intervals = [(max(0.0, start), min(duration, end)) for start, end in intervals]
-        intervals = [(start, end) for start, end in intervals if end - start >= cfg.unsilence.min_segment_seconds]
-        intervals = _split_for_assembly(intervals, cfg)
+        intervals = [(start, end) for start, end in intervals if end - start >= UNSILENCE_MIN_SEGMENT_SECONDS]
+        intervals = _split_for_assembly(intervals)
         try:
             for start, end in intervals:
                 parts.append(clip.subclipped(start, end))

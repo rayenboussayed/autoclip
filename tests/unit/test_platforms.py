@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from autoclip.core import platforms
-from autoclip.core.config import Config, parse
+from autoclip.core.config import Config, JsonValue, parse
 from autoclip.core.errors import ConfigError
 
 
@@ -117,7 +117,7 @@ def test_check_families_accepts_known_names_aliases_and_groups() -> None:
         ["@popular", "html5", "X"],  # x is the twitter alias, html5 the generic one
         ["@social"],
         {"@news": ["youtube", "@video", "archive.org"]},
-        {"youtube": {"quality": 720}, "@news": {"fps": 30}},
+        {"youtube": {"audio_language": "en"}, "@news": {"subtitles": {"languages": ["fr"]}}},
     )
 
 
@@ -127,7 +127,7 @@ def test_check_families_accepts_known_names_aliases_and_groups() -> None:
         (["youtube", "youtubee"], [], {}, {}, "allow: unknown platform 'youtubee' (did you mean 'youtube'?)"),
         (["@popular"], ["tiktokk"], {}, {}, "deny: unknown platform 'tiktokk' (did you mean 'tiktok'?)"),
         (["@popular"], [], {"@news": ["youtube", "vimeoo"]}, {}, "groups.@news: unknown platform 'vimeoo'"),
-        (["@popular"], [], {}, {"instgram": {"quality": 720}}, "settings: unknown platform 'instgram'"),
+        (["@popular"], [], {}, {"instgram": {"audio_language": "en"}}, "settings: unknown platform 'instgram'"),
     ],
 )
 def test_check_families_rejects_an_unknown_name(
@@ -159,29 +159,29 @@ def test_extractor_patterns_match_yt_dlp_extractor_keys() -> None:
 
 
 def test_deep_merge_inherits_null_and_recurses() -> None:
-    base: dict[str, Any] = {"quality": 1080, "fps": 30, "metadata": {"info_json": True, "thumbnail": False}, "cookies": {"file": "a"}}
-    merged = platforms.deep_merge(base, {"quality": None, "metadata": {"thumbnail": True}, "cookies": {"file": "b"}})
-    assert merged == {"quality": 1080, "fps": 30, "metadata": {"info_json": True, "thumbnail": True}, "cookies": {"file": "b"}}
-    assert base["metadata"]["thumbnail"] is False  # the input is not mutated
+    base: dict[str, Any] = {"audio_language": None, "subtitles": {"languages": ["en"]}, "cookies": {"file": "a"}}
+    merged = platforms.deep_merge(base, {"audio_language": "de", "subtitles": {"languages": ["fr"]}, "cookies": {"file": "b"}})
+    assert merged == {"audio_language": "de", "subtitles": {"languages": ["fr"]}, "cookies": {"file": "b"}}
+    assert base["subtitles"]["languages"] == ["en"]  # the input is not mutated
 
 
 def test_settings_entry_accepts_an_alias() -> None:
-    settings = {"x": {"quality": 720}, "@social": {"fps": 30}}
-    assert platforms.settings_entry("twitter", settings) == {"quality": 720}
+    settings: dict[str, dict[str, Any]] = {"x": {"audio_language": "de"}, "@social": {"subtitles": {"languages": ["ar"]}}}
+    assert platforms.settings_entry("twitter", settings) == {"audio_language": "de"}
     assert platforms.settings_entry("vimeo", settings) is None
 
 
 def test_effective_download_precedence() -> None:
-    base: dict[str, Any] = {"quality": 1080, "fps": 30, "metadata": {"info_json": True, "thumbnail": False}}
+    base: dict[str, Any] = {"audio_language": None, "subtitles": {"languages": ["en"]}}
     groups = {"@chan": ["youtube", "twitter"]}
     settings: dict[str, dict[str, Any]] = {
-        "@chan": {"quality": 720, "metadata": {"thumbnail": True}},
-        "youtube": {"quality": 480, "fps": None},
+        "@chan": {"audio_language": "de", "subtitles": {"languages": ["ar"]}},
+        "youtube": {"audio_language": "fr", "subtitles": {"languages": None}},
     }
     youtube = platforms.effective_download(base, "youtube", groups, settings)
-    assert youtube == {"quality": 480, "fps": 30, "metadata": {"info_json": True, "thumbnail": True}}
+    assert youtube == {"audio_language": "fr", "subtitles": {"languages": ["ar"]}}
     twitter = platforms.effective_download(base, "twitter", groups, settings)
-    assert twitter["quality"] == 720 and twitter["metadata"]["thumbnail"] is True
+    assert twitter["audio_language"] == "de" and twitter["subtitles"]["languages"] == ["ar"]
     vimeo = platforms.effective_download(base, "vimeo", groups, settings)
     assert vimeo == base
 
@@ -196,19 +196,18 @@ def test_download_config_accepts_aliases_groups_and_settings() -> None:
         Config,
         {
             "download": {
-                "quality": 720,
                 "platforms": {
                     "allow": ["@popular", "generic"],
                     "groups": {"@news": ["youtube", "@social"], "@mine": ["@news", "@news"]},
-                    "settings": {"x": {"quality": 480}, "@news": {"fps": 30}},
+                    "settings": {"x": {"audio_language": "de"}, "@news": {"subtitles": {"languages": ["fr"]}}},
                 },
-            }
+            },
         },
     )
     assert cfg.download.platforms.allow == ["@popular", "generic"]
     assert cfg.download.platforms.groups["@news"] == ["youtube", "@social"]
     assert cfg.download.platforms.groups["@mine"] == ["@news", "@news"]  # a group visited twice is only checked once
-    assert cfg.download.platforms.settings["x"] == {"quality": 480}
+    assert cfg.download.platforms.settings["x"] == {"audio_language": "de"}
 
 
 @pytest.mark.parametrize(
@@ -224,15 +223,14 @@ def test_download_config_accepts_aliases_groups_and_settings() -> None:
         ({"groups": {"@news": [" "]}}, "member must not be empty"),
         ({"groups": {"@news": ["@nope"]}}, "unknown group @nope"),
         ({"groups": {"@a": ["@b"], "@b": ["@a"]}}, "has a cycle"),
-        ({"settings": {" ": {"quality": 720}}}, "empty platform name"),
-        ({"settings": {"@nope": {"quality": 720}}}, "unknown group @nope"),
+        ({"settings": {" ": {"audio_language": "de"}}}, "empty platform name"),
+        ({"settings": {"@nope": {"audio_language": "de"}}}, "unknown group @nope"),
         ({"settings": {"x": {}, "twitter": {}}}, "name the same platform"),
-        ({"settings": {"youtube": {"platforms": {}}}}, "platforms and js_runtime cannot be overridden"),
-        ({"settings": {"youtube": {"js_runtime": {}}}}, "platforms and js_runtime cannot be overridden"),
-        ({"settings": {"youtube": {"quality": 100}}}, r"settings.youtube: quality"),
+        ({"settings": {"youtube": {"platforms": {}}}}, "platforms cannot be overridden"),
+        ({"settings": {"youtube": {"js_runtime": {}}}}, "js_runtime: Unexpected keyword"),
         ({"settings": {"youtube": {"nope": 1}}}, r"settings.youtube: nope: Unexpected keyword"),
     ],
 )
 def test_platform_config_errors(platforms_cfg: dict[str, object], fragment: str) -> None:
     with pytest.raises(ConfigError, match=re.escape(fragment) if ":" in fragment else fragment):
-        parse(Config, {"download": {"platforms": platforms_cfg}})
+        parse(Config, {"download": {"platforms": cast(JsonValue, platforms_cfg)}})

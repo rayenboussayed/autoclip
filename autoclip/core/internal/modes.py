@@ -74,8 +74,9 @@ PROFILES: dict[str, ModeProfile] = {
 
 
 def profile_for(mode: str) -> ModeProfile:
-    if mode not in PROFILES:
-        raise ValueError(f"unknown mode {mode!r}; valid: {', '.join(VALID_MODES)}")
+    """Return the profile for *mode*; unknown or empty values fall back to ``balance`` rather than raising."""
+    if not mode or mode not in PROFILES:
+        return PROFILES["balance"]
     return PROFILES[mode]
 
 

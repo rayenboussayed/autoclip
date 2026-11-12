@@ -18,10 +18,11 @@ from typing import Any
 import numpy as np
 
 from .config import Config, TranscriptCfg
-from .denoise import SpeechEnhancer, default_models_dir
+from .denoise import SpeechEnhancer, default_models_dir, snr_db
 from .errors import AutoclipError
 from .internal import CHUNK_MINUTES as _CHUNK_MINUTES
-from .internal.automation import transcription_beam_size
+from .internal.automation import ENHANCE_ATTENUATION_DB, ENHANCE_SNR_THRESHOLD_DB, transcription_beam_size
+from .internal.runtime import transcript_model_for
 from .log import speed_text, traced
 from .media import F32, decode_audio, snap_to_quiet
 from .models import MediaInfo, Segment, Word
@@ -155,7 +156,14 @@ def fit_whisper_model(name: str, device: str) -> str:
     return chosen
 
 
+def transcript_model(cfg: Config) -> str:
+    """The Whisper model chosen for this run, after the free-memory fit is applied."""
+    device = asr_device(cfg)
+    return fit_whisper_model(transcript_model_for(cfg.quality, device), device)
+
+
 def chunk_bounds(duration: float, db: F32, chunk_seconds: float) -> list[tuple[float, float]]:
+    """Split ``[0, duration]`` into chunks of about ``chunk_seconds``, each boundary moved to the quietest nearby frame."""
     """Split ``[0, duration]`` into chunks of about ``chunk_seconds``, each boundary moved to the quietest nearby frame."""
     count = math.ceil(duration / chunk_seconds)
     radius = min(15.0, chunk_seconds / 4)
@@ -164,36 +172,32 @@ def chunk_bounds(duration: float, db: F32, chunk_seconds: float) -> list[tuple[f
 
 
 def asr_device(cfg: Config) -> str:
-    """The device the ASR model runs on: the global switch first, then ``transcript.device``."""
-    if cfg.compute.device == "cpu" or cfg.transcript.device == "cpu":
+    """The device the ASR model runs on (GPU only when CUDA is present; can be pinned to CPU with AUTOCLIP_CPU=1)."""
+    import os
+
+    if os.environ.get("AUTOCLIP_CPU", "").strip().lower() in {"1", "true", "yes"}:
         return "cpu"
     import ctranslate2
 
-    has_cuda = ctranslate2.get_cuda_device_count() > 0
-    if (cfg.compute.device == "gpu" or cfg.transcript.device == "cuda") and not has_cuda:
-        log.warning("a GPU was requested but no CUDA device was found: using the CPU")
-        return "cpu"
-    if not has_cuda:
-        return "cpu"
-    return "cuda"
+    return "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
 
 
-def _model_is_cached(model_name: str, cache_dir: str | None) -> bool:
-    """Whether faster-whisper already has ``model_name`` under ``cache_dir`` (never touches the network)."""
+def _model_is_cached(model_name: str) -> bool:
+    """Whether faster-whisper already has ``model_name`` in its default cache (never touches the network)."""
     from faster_whisper.utils import download_model
 
     try:
-        download_model(model_name, cache_dir=cache_dir, local_files_only=True)
+        download_model(model_name, local_files_only=True)
     except Exception:
         return False
     return True
 
 
-def _download_model(model_name: str, cache_dir: str | None) -> None:
-    """Download ``model_name`` into ``cache_dir`` (called only after the user consented)."""
+def _download_model(model_name: str) -> None:
+    """Download ``model_name`` into the default cache (called only after the user consented)."""
     from faster_whisper.utils import download_model
 
-    download_model(model_name, cache_dir=cache_dir, local_files_only=False)
+    download_model(model_name, local_files_only=False)
 
 
 def _warmup_model(model: Any) -> None:
@@ -240,48 +244,28 @@ def transcribe(
     db: F32,
     enhancer: SpeechEnhancer | None = None,
     *,
+    model_name_override: str | None = None,
     consent: ConsentProvider | None = None,
 ) -> list[Segment]:
-    """Transcribe with faster-whisper using every allowed core (and the GPU when there is one).
-
-    The audio is processed in ``processing.chunk_minutes`` chunks (5 by default) so neither the
-    denoiser nor Whisper ever holds more than that in memory; the language is detected once
-    and reused for the remaining chunks.  A video shorter than one chunk is one chunk.
-
-    ``enhancer`` denoises every chunk before it is transcribed, so the model hears clear words.
-    """
     from faster_whisper import WhisperModel
 
     tc = cfg.transcript
     device = asr_device(cfg)
-    _model = tc.model or "small"
-    model_name = fit_whisper_model(_model, device) if tc.auto_downgrade else _model
+    model_name = model_name_override or transcript_model(cfg)
+    model_name = fit_whisper_model(model_name, device)
     threads = RESOURCES.cpu_budget()
-    cache_dir = tc.model_dir
-    # consent for a first download (offline never downloads)
-    if not _model_is_cached(model_name, cache_dir):
-        if tc.offline or tc.consent == "never":
-            raise AutoclipError(
-                f"Whisper model '{model_name}' is not cached and transcript.offline is set"
-                if tc.offline
-                else f"model '{model_name}' not cached and transcript.consent is 'never'"
-            )
+    # consent for a first download (consent "never" is also the offline mode)
+    if not _model_is_cached(model_name):
+        if tc.consent == "never":
+            raise AutoclipError(f"model '{model_name}' not cached and transcript.consent is 'never'")
         auto = tc.consent == "auto" or os.environ.get("AUTOCLIP_ASSUME_YES") == "1"
         if not auto and tc.consent == "ask":
             if consent is not None:
-                answer = consent(
-                    "autoclip",
-                    f"Download Whisper model '{model_name}' (cached under {cache_dir or 'default cache dir'}) now?",
-                )
+                answer = consent("autoclip", f"Download Whisper model '{model_name}' now?")
                 ok = bool(answer)
             elif sys.stdin is not None and sys.stdin.isatty():
                 try:
-                    ok = (
-                        input(f"Download Whisper model '{model_name}' (cached under {cache_dir or 'default cache dir'}) now? [y/N] ")
-                        .strip()
-                        .lower()
-                        .startswith("y")
-                    )
+                    ok = input(f"Download Whisper model '{model_name}' now? [y/N] ").strip().lower().startswith("y")
                 except (EOFError, OSError):
                     ok = False
             else:
@@ -291,7 +275,7 @@ def transcribe(
                     f"model '{model_name}' not cached; run 'autoclip models pull {model_name}' or set "
                     "transcript.consent: auto (or AUTOCLIP_ASSUME_YES=1)"
                 )
-        _download_model(model_name, cache_dir)
+        _download_model(model_name)
 
     attempts: list[tuple[str, Exception]] = []
 
@@ -301,7 +285,6 @@ def transcribe(
             device=dev,
             compute_type="float16" if dev == "cuda" else "int8",
             cpu_threads=threads,
-            download_root=cache_dir,
             local_files_only=True,
         )
 
@@ -337,12 +320,12 @@ def transcribe(
             audio: F32 = decode_audio(src, start, end - start, WHISPER_SR)
             if enhancer is not None and enhancer.active:
                 audio = enhancer(audio)
-            options: dict[str, Any] = {"multilingual": True} if tc.multilingual else {}
+            options: dict[str, Any] = {"multilingual": True}
             try:
                 stream, found = model.transcribe(
                     audio,
                     vad_filter=vad,
-                    word_timestamps=tc.word_timestamps,
+                    word_timestamps=True,
                     language=language,
                     condition_on_previous_text=False,
                     beam_size=transcription_beam_size(cfg.quality),
@@ -394,17 +377,20 @@ def transcribe(
     return to_segments(raw)
 
 
-def _cache_key(src: Path, cfg: TranscriptCfg, *, denoise: bool = True) -> dict[str, Any]:
+def _cache_key(src: Path, cfg: TranscriptCfg, model: str, *, enhance: bool = True) -> dict[str, Any]:
     """Identity of a transcription run: the cached transcript is reused only while this is unchanged."""
     st = src.stat()
     return {
         "source": f"{src.name}:{st.st_size}:{st.st_mtime_ns}",
-        "model": cfg.model or "small",
+        "model": model,
         "language": cfg.language,
-        "multilingual": cfg.multilingual,
-        "word_timestamps": cfg.word_timestamps,
-        "enhance": cfg.enhance.fingerprint(),
-        "denoise": denoise,
+        "multilingual": True,
+        "word_timestamps": True,
+        "enhance": (
+            {"backend": "gtcrn", "snr_threshold_db": ENHANCE_SNR_THRESHOLD_DB, "attenuation_db": ENHANCE_ATTENUATION_DB}
+            if enhance
+            else None
+        ),
         "chunk_minutes": _CHUNK_MINUTES,
     }
 
@@ -434,69 +420,61 @@ def get_transcript(
     enhancer (and changes the cache key, so an enhanced cache is not reused for raw audio).
     """
     tc = cfg.transcript
-    if tc.mode == "off" or not need_text:
+    if not need_text:
         return False
-    if tc.mode == "file" and not tc.file and subtitle is None:
-        raise AutoclipError("transcript.mode is 'file' but neither transcript.file nor a downloaded subtitle is available")
     stem = name or src.stem
     if tc.file:
-        segments = load_transcript_file(Path(tc.file.replace("{stem}", stem)))
+        try:
+            segments = load_transcript_file(Path(tc.file.replace("{stem}", stem)))
+        except Exception as e:
+            raise AutoclipError(f"cannot use transcript.file '{tc.file}': {type(e).__name__}: {e}") from e
         log.info("loaded transcript: %d segments", len(segments))
-    else:
-        segments = _downloaded_segments(subtitle, tc.mode, subtitle_manual) if subtitle is not None else []
-        if segments:
-            store.put_segments(segments)
+        store.put_segments(segments)
+        return bool(segments)
+    if subtitle is not None:
+        downloaded = _downloaded_segments(subtitle, subtitle_manual)
+        if downloaded:
+            store.put_segments(downloaded)
             return True
-        denoise = not cfg.skip.denoise
-        cache_file, key = work_dir / f"{stem}.transcript.json", _cache_key(src, tc, denoise=denoise)
-        segments = []
-        if tc.cache and cache_file.exists():
-            data = json.loads(cache_file.read_text(encoding="utf-8"))
-            if data.get("meta") == key:
-                segments = to_segments(data["segments"])
-                log.info("reusing cached transcript %s (%d segments)", cache_file.name, len(segments))
-            else:
-                log.warning("cached transcript is stale (input, model or language changed): transcribing again")
-        if not segments and cfg.skip.stt:
-            log.info("skip.stt is set: no transcript is available without Whisper")
+    selected_model = transcript_model(cfg)
+    cache_file, key = work_dir / f"{stem}.transcript.json", _cache_key(src, tc, selected_model, enhance=True)
+    segments = []
+    if cache_file.exists():
+        data = json.loads(cache_file.read_text(encoding="utf-8"))
+        if data.get("meta") == key:
+            segments = to_segments(data["segments"])
+            log.info("reusing cached transcript %s (%d segments)", cache_file.name, len(segments))
+        else:
+            log.warning("cached transcript is stale (input, model or language changed): transcribing again")
+    if not segments:
+        if cfg.skip.stt:
+            log.info("skip.stt is set: no cached transcript or subtitle is available")
             return False
-        if not segments:
-            enhancer = SpeechEnhancer(tc.enhance, _model_dir(tc)) if denoise else None
-            try:
-                segments = transcribe(src, cfg, info, db, enhancer, consent=consent)
-            except Exception as e:
-                detail = str(e) if isinstance(e, AutoclipError) else f"{type(e).__name__}: {e}"
-                if tc.mode == "whisper":
-                    raise AutoclipError(f"transcription failed: {detail}") from e
-                log.warning("transcription skipped (%s): selecting on audio only; captions and titles need a transcript", detail)
-                return False
-            cache_file.write_text(
-                json.dumps({"meta": key, "segments": [_plain(s) for s in segments]}, ensure_ascii=False), encoding="utf-8"
-            )
+        noisy = decode_audio(src, 0.0, info.duration, 16000)
+        make = snr_db(noisy) < ENHANCE_SNR_THRESHOLD_DB
+        enhancer = SpeechEnhancer(True, default_models_dir()) if make else None
+        try:
+            segments = transcribe(src, cfg, info, db, enhancer, model_name_override=selected_model, consent=consent)
+        except Exception as e:
+            detail = str(e) if isinstance(e, AutoclipError) else f"{type(e).__name__}: {e}"
+            log.warning("transcription skipped (%s): selecting on audio only; captions and titles need a transcript", detail)
+            return False
+        cache_file.write_text(json.dumps({"meta": key, "segments": [_plain(s) for s in segments]}, ensure_ascii=False), encoding="utf-8")
     store.put_segments(segments)
     return bool(segments)
 
 
-def _downloaded_segments(path: Path, mode: str, manual: bool) -> list[Segment]:
-    """The segments of a downloaded subtitle file, or ``[]`` when it cannot be used (an error in "file" mode)."""
+def _downloaded_segments(path: Path, manual: bool) -> list[Segment]:
+    """The segments of a downloaded subtitle file, or ``[]`` when it cannot be used."""
     try:
         segments = load_transcript_file(path)
         if not segments:
             raise ValueError("it has no cues")
     except Exception as e:  # a broken subtitle must not cost the video when Whisper can replace it
-        if mode == "file":
-            raise AutoclipError(f"cannot use the downloaded subtitles '{path.name}': {type(e).__name__}: {e}") from e
         log.warning("the downloaded subtitles '%s' cannot be used (%s: %s); using another source", path.name, type(e).__name__, e)
         return []
     log.info("using the downloaded %s subtitles as the transcript (%d segments)", "manual" if manual else "automatic", len(segments))
     return segments
-
-
-def _model_dir(cfg: TranscriptCfg) -> Path:
-    """Where the speech enhancement model is kept: the configured folder or the shared per-user cache."""
-    if cfg.enhance.model_dir:
-        return Path(cfg.enhance.model_dir)
-    return default_models_dir()
 
 
 def _plain(seg: Segment) -> dict[str, Any]:

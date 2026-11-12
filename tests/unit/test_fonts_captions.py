@@ -128,7 +128,7 @@ def test_join_tokens() -> None:
 
 
 def test_make_chunks_split_on_length_pause_punctuation_and_glue() -> None:
-    cfg = CaptionsCfg(max_seconds=2.0)
+    cfg = CaptionsCfg()
     chunks = make_chunks(
         words(("Hello", 0, 0.4), ("big", 0.4, 0.8), ("world.", 0.8, 1.2), ("Next", 1.3, 1.6), ("one", 1.6, 2.0), ("here", 4.0, 4.1)), cfg
     )
@@ -138,7 +138,7 @@ def test_make_chunks_split_on_length_pause_punctuation_and_glue() -> None:
     assert [c.text for c in comma] == ["alpha, beta, gamma"]
     punct = make_chunks(words(("Hi.", 0, 0.5), ("!!", 0.5, 0.8)), CaptionsCfg())
     assert len(punct) == 1 and punct[0].text == "Hi.!!"
-    slow = make_chunks(words(("a", 0, 1.5), ("b", 1.5, 3.0)), CaptionsCfg(max_seconds=2.0))
+    slow = make_chunks(words(("a", 0, 1.5), ("b", 1.5, 3.0)), CaptionsCfg())
     assert len(slow) == 2
     assert make_chunks([], CaptionsCfg()) == []
 
@@ -160,7 +160,8 @@ def test_balanced_lines() -> None:
 
 
 # ---- rendering -----------------------------------------------------------------------------------
-STYLE = CaptionsCfg(bg_opacity=0.0)
+STYLE = CaptionsCfg(theme="plain")
+STYLE.highlight_color = "#FFD400"
 
 
 def opaque(arr: NDArray[np.uint8]) -> NDArray[np.uint8]:
@@ -177,11 +178,11 @@ def test_render_plain_and_highlight(real_font: Path) -> None:
 
 
 def test_render_box_stroke_and_wrapping(real_font: Path) -> None:
-    boxed = render_text_image("hi", real_font, 30, CaptionsCfg(bg_opacity=0.5), 400)
+    boxed = render_text_image("hi", real_font, 30, CaptionsCfg(theme="social"), 400)
     assert boxed[0, 0, 3] == 0 or boxed[boxed.shape[0] // 2, 2, 3] == 127  # translucent box, rounded corners
-    stroked = render_text_image(
-        "hi there", real_font, 30, CaptionsCfg(bg_opacity=0, stroke_width=3, stroke_color="#FF0000", highlight=True), 400, active=0
-    )
+    stroked_cfg = CaptionsCfg(theme="outline")
+    stroked_cfg.stroke_color = "#FF0000"
+    stroked = render_text_image("hi there", real_font, 30, stroked_cfg, 400, active=0)
     assert ((stroked[..., 0] > 200) & (stroked[..., 1] < 60) & (stroked[..., 3] > 200)).any()  # red outline present
     wide = render_text_image("word " * 12, real_font, 30, STYLE, 300)
     assert wide.shape[0] > 2 * render_text_image("word", real_font, 30, STYLE, 300).shape[0] and wide.shape[1] <= 300 + 60
@@ -319,17 +320,13 @@ def test_build_captions_plain_uppercase_and_skips(cache: Cache, real_font: Path)
     clip, lines = build_captions(cjk, Timeline([(0.0, 2.0)]), config(uppercase=True), cache, (360, 640), 2.0)
     assert clip is not None and [ln.text for ln in lines] == ["\u4eca\u5929\u597d"]
     shouty, shout_lines = build_captions(
-        words(("hello", 0, 1), ("world", 1, 2)), Timeline([(0.0, 2.0)]), config(uppercase=True, highlight=False), cache, (360, 640), 2.0
+        words(("hello", 0, 1), ("world", 1, 2)), Timeline([(0.0, 2.0)]), config(uppercase=True), cache, (360, 640), 2.0
     )
     assert shouty is not None and shout_lines[0].text == "HELLO WORLD"
     removed, none_lines = build_captions(sentence(), Timeline([(5.0, 6.0)]), config(), cache, (360, 640), 1.0)
     assert removed is None and none_lines == []  # every caption lies in a removed part of the clip
     tiny, _ = build_captions(words(("blink", 0.0, 0.01)), Timeline([(0.0, 0.05)]), config(), cache, (360, 640), 0.05)
     assert tiny is None  # shown for under 80 ms: skipped
-    keep_fillers, kf_lines = build_captions(
-        sentence(), Timeline([(0.0, 3.0)]), parse(Config, {"silence": {"remove_fillers": False}}), cache, (360, 640), 3.0
-    )
-    assert keep_fillers is not None and any("Um," in ln.text for ln in kf_lines)
 
 
 def test_chunk_dataclass_defaults() -> None:
@@ -337,7 +334,9 @@ def test_chunk_dataclass_defaults() -> None:
 
 
 def test_plain_text_with_outline_and_skipped_highlight_sprites(cache: Cache, real_font: Path) -> None:
-    outlined = render_text_image("hi there", real_font, 30, CaptionsCfg(bg_opacity=0, stroke_width=3, stroke_color="#FF0000"), 400)
+    outlined_cfg = CaptionsCfg(theme="outline")
+    outlined_cfg.stroke_color = "#FF0000"
+    outlined = render_text_image("hi there", real_font, 30, outlined_cfg, 400)
     assert ((outlined[..., 0] > 200) & (outlined[..., 1] < 60) & (outlined[..., 3] > 200)).any()  # outline without a highlighted word
     ws = words(("alpha", 0.0, 0.5), ("beta", 0.5, 1.0), ("gamma", 1.0, 1.5))
     clip, lines = build_captions(ws, Timeline([(0.0, 0.5), (1.0, 1.5)]), config(), cache, (360, 640), 1.0)  # "beta" lies in a removed part

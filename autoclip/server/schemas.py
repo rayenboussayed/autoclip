@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -52,4 +51,4 @@ class ConfigValidation(BaseModel):
     accepted: bool
     errors: list[str] = []
     warnings: list[str] = []
-    config: dict[str, Any] | None = None
+    config: dict[str, object] | None = None

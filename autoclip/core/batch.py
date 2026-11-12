@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .config import Config, is_url
 from .download import Downloader
-from .errors import AutoclipError, ConfigError
+from .errors import AutoclipError, ConfigError, RateLimitError
 from .events import CancelToken, Reporter
 from .log import health_check, traced
 from .models import Encoder
@@ -55,6 +55,7 @@ def _unique_name(candidate: str, used: set[str]) -> str:
 def run_batch(
     cfg: Config,
     *,
+    config_dir: Path | None = None,
     downloader: Downloader | None = None,
     encoder: Encoder,
     log_file: Path | None,
@@ -91,6 +92,10 @@ def run_batch(
                     (entry.path, _unique_name(entry.name, used_names), entry.subtitle, entry.subtitle_manual)
                     for entry in downloader.download(item)
                 ]
+            except RateLimitError as e:
+                log.warning("%s skipped (rate limited): %s", item, e)
+                failed += 1
+                continue
             except (AutoclipError, ConfigError) as e:
                 log.error("%s failed: %s", item, e)
                 failed += 1
@@ -108,6 +113,7 @@ def run_batch(
                     subtitle=subtitle,
                     subtitle_manual=subtitle_manual,
                     consent=consent,
+                    config_dir=config_dir,
                     report=scoped,
                     cancel=reporter.cancel if cancel is None else cancel,
                 )

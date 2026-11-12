@@ -22,7 +22,7 @@ from autoclip.core.errors import ConfigError, DownloadError
 from autoclip.core.models import Downloaded
 from autoclip.core.resources import RESOURCES
 
-from ..support import Media, write_config
+from ..support import Media, run_args, write_config
 
 URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 OTHER = "https://vimeo.com/12345"
@@ -96,6 +96,8 @@ def record_pipeline(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         consent: Any = None,
         report: Any = None,
         cancel: Any = None,
+        config_dir: Any = None,
+        **kw: Any,
     ) -> tuple[int, int]:
         calls.append({"path": Path(path), "name": name, "subtitle": subtitle, "manual": subtitle_manual})
         return 1, 0
@@ -266,20 +268,20 @@ def test_download_only_runs_before_the_pipeline(media: Media, tmp_path: Path, mo
     entries = {URL: [Downloaded(tmp_path / "a.mp4", "A", "youtube")]}
     install_fake_downloader(monkeypatch, downloads=entries)
     calls = record_pipeline(monkeypatch)
-    cfg = write_config(tmp_path, media, input=[URL], logging={"enabled": False})
+    cfg = write_config(tmp_path, media, input=[URL], logging={"level": "OFF"})
     assert main(["--download-only", str(cfg)]) == 0
     assert calls == []
 
 
 def test_download_only_reports_a_failed_url(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     install_fake_downloader(monkeypatch, downloads={URL: DownloadError("blocked")})
-    cfg = write_config(tmp_path, media, input=[URL], logging={"enabled": False})
+    cfg = write_config(tmp_path, media, input=[URL], logging={"level": "OFF"})
     assert main(["--download-only", str(cfg)]) == 1
 
 
 def test_download_only_without_urls_is_a_config_error(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     install_fake_downloader(monkeypatch)  # must not even be constructed
-    cfg = write_config(tmp_path, media, input=[str(media.video)], logging={"enabled": False})
+    cfg = write_config(tmp_path, media, input=[str(media.video)], logging={"level": "OFF"})
     assert main(["--download-only", str(cfg)]) == 2
 
 
@@ -288,7 +290,7 @@ def test_downloader_init_errors_stop_a_run(
     media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception, status: int
 ) -> None:
     install_fake_downloader(monkeypatch, init_error=error)
-    cfg = write_config(tmp_path, media, input=[URL], logging={"enabled": False})
+    cfg = write_config(tmp_path, media, input=[URL], logging={"level": "OFF"})
     assert main([str(cfg)]) == status
 
 
@@ -303,8 +305,8 @@ def test_urls_and_local_files_share_one_batch(media: Media, tmp_path: Path, monk
     }
     install_fake_downloader(monkeypatch, downloads=entries)
     calls = record_pipeline(monkeypatch)
-    cfg = write_config(tmp_path, media, input=[str(media.video), URL], logging={"enabled": False})
-    assert main([str(cfg)]) == 0
+    cfg = write_config(tmp_path, media, inputs=[str(media.video), URL])
+    assert main(run_args(cfg)) == 0
     assert [(c["path"].name, c["name"], c["subtitle"], c["manual"]) for c in calls] == [
         ("talk.mp4", None, None, False),
         ("a.mp4", "TALK (2)", subtitle, True),
@@ -315,7 +317,7 @@ def test_urls_and_local_files_share_one_batch(media: Media, tmp_path: Path, monk
 def test_a_failed_download_does_not_stop_the_local_video(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     install_fake_downloader(monkeypatch, downloads={URL: DownloadError("blocked")})
     calls = record_pipeline(monkeypatch)
-    cfg = write_config(tmp_path, media, input=[str(media.video), URL], logging={"enabled": False})
+    cfg = write_config(tmp_path, media, input=[str(media.video), URL], logging={"level": "OFF"})
     assert main([str(cfg)]) == 1
     assert [c["path"].name for c in calls] == ["talk.mp4"]
 
@@ -323,7 +325,7 @@ def test_a_failed_download_does_not_stop_the_local_video(media: Media, tmp_path:
 def test_a_local_only_run_never_imports_yt_dlp(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "yt_dlp", None)
     calls = record_pipeline(monkeypatch)
-    cfg = write_config(tmp_path, media, input=[str(media.video)], logging={"enabled": False})
+    cfg = write_config(tmp_path, media, input=[str(media.video)], logging={"level": "OFF"})
     assert main([str(cfg)]) == 0
     assert [c["path"].name for c in calls] == ["talk.mp4"]
 

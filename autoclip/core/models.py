@@ -40,6 +40,7 @@ class Moment(Span):
     score: float | None = None
     llm_score: float | None = None
     title: str = ""
+    caption: str = ""  # optional social caption for the sidecar
     scene: str = ""  # the scene type this moment was picked for ("custom" for explicit ranges)
     i: int = -1  # first/last transcript segment of the window (-1 when selected from audio only)
     j: int = -1
@@ -99,3 +100,4 @@ class RenderJob:
     log_file: Path | None
     parent_pid: int
     threads: int = 1
+    fillers: frozenset[str] = field(default_factory=frozenset)

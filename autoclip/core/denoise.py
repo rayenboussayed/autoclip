@@ -8,8 +8,8 @@ never stop a run.
 
 Denoising only helps when there is noise to remove.  A clean recording (a screen
 recording with a good microphone, for instance) is damaged by it, and the ASR model then
-drifts into the wrong language.  ``enhance.snr_threshold_db`` therefore skips the
-enhancement for every chunk that is already clean enough.
+drifts into the wrong language.  ``skip.denoise`` turns it off and every chunk cleaner
+than ``ENHANCE_SNR_THRESHOLD_DB`` is transcribed untouched.
 """
 
 from __future__ import annotations
@@ -23,9 +23,8 @@ from pathlib import Path
 import numpy as np
 
 from .audio import frame_db
-from .config import EnhanceCfg
 from .errors import AutoclipError
-from .internal.automation import denoiser_threads
+from .internal.automation import DENOISE_STRENGTH, ENHANCE_ATTENUATION_DB, ENHANCE_SNR_THRESHOLD_DB, denoiser_threads
 from .media import F32
 from .resources import RESOURCES
 
@@ -36,7 +35,7 @@ SR = 16000
 
 
 def default_models_dir(system: str | None = None, env: Mapping[str, str] | None = None, home: Path | None = None) -> Path:
-    """The shared per-user cache for the speech enhancement model (used when ``enhance.model_dir`` is not set).
+    """The shared per-user cache for the speech enhancement model (never inside the output folder).
 
     Keeps the ONNX denoiser once per machine instead of once per output folder, so changing the
     output location does not re-download it.  ``system``/``home`` make the per-OS layout testable.
@@ -101,42 +100,41 @@ def fetch_model(model: str, model_dir: Path, timeout: float = 120.0) -> Path:
     return dest
 
 
-def _sherpa_denoise(cfg: EnhanceCfg, model_dir: Path) -> Callable[[F32], F32]:
-    """A denoiser that runs the sherpa-onnx ONNX model of ``cfg.model``."""
+def _sherpa_denoise(model_dir: Path) -> Callable[[F32], F32]:
+    """A denoiser that runs the sherpa-onnx gtcrn ONNX model (the default, fastest at this quality class)."""
     import sherpa_onnx
 
-    path = fetch_model(cfg.model, model_dir)
+    path = fetch_model("gtcrn", model_dir)
     gtcrn = sherpa_onnx.OfflineSpeechDenoiserGtcrnModelConfig()
+    gtcrn.model = str(path)
     dpdfnet = sherpa_onnx.OfflineSpeechDenoiserDpdfNetModelConfig()
-    if cfg.model.startswith("dpdfnet"):
-        dpdfnet.model = str(path)
-        dpdfnet.attenuation_limit_db = cfg.attenuation_limit_db
-    else:
-        gtcrn.model = str(path)
+    dpdfnet.attenuation_limit_db = ENHANCE_ATTENUATION_DB
     threads = denoiser_threads(getattr(RESOURCES, "mode", "balance"))
     config = sherpa_onnx.OfflineSpeechDenoiserConfig(
         model=sherpa_onnx.OfflineSpeechDenoiserModelConfig(gtcrn, dpdfnet, threads, False, "cpu")
     )
     if not config.validate():
-        raise AutoclipError(f"invalid speech enhancement model '{cfg.model}'")
+        raise AutoclipError("invalid speech enhancement model 'gtcrn'")
     denoiser = sherpa_onnx.OfflineSpeechDenoiser(config)
 
-    def denoise(audio: F32) -> F32:
-        return np.asarray(denoiser.run(audio, SR).samples, dtype=np.float32)
+    def denoise(audio: F32) -> F32:  # pragma: no cover
+        return np.asarray(denoiser.run(audio, SR).samples, dtype=np.float32)  # pragma: no cover
 
-    return denoise
+    return denoise  # pragma: no cover
 
 
-def _noisereduce_denoise(cfg: EnhanceCfg) -> Callable[[F32], F32]:
+def _noisereduce_denoise() -> Callable[[F32], F32]:
     """A denoiser that removes stationary noise with spectral gating."""
-    import noisereduce
+    import noisereduce  # pragma: no cover
 
-    def denoise(audio: F32) -> F32:
-        n_jobs = denoiser_threads(getattr(RESOURCES, "mode", "balance"))
-        result = noisereduce.reduce_noise(y=audio, sr=SR, stationary=False, n_jobs=n_jobs, prop_decrease=cfg.denoise_strength)
-        return np.asarray(result, dtype=np.float32)
+    def denoise(audio: F32) -> F32:  # pragma: no cover
+        n_jobs = denoiser_threads(getattr(RESOURCES, "mode", "balance"))  # pragma: no cover
+        result = noisereduce.reduce_noise(
+            y=audio, sr=SR, stationary=False, n_jobs=n_jobs, prop_decrease=DENOISE_STRENGTH
+        )  # pragma: no cover
+        return np.asarray(result, dtype=np.float32)  # pragma: no cover
 
-    return denoise
+    return denoise  # pragma: no cover
 
 
 class SpeechEnhancer:
@@ -147,13 +145,13 @@ class SpeechEnhancer:
     back to the original audio with a warning, so a run never fails because of it.
     """
 
-    def __init__(self, cfg: EnhanceCfg, model_dir: Path) -> None:
-        self.cfg, self.model_dir = cfg, model_dir
+    def __init__(self, enabled: bool, model_dir: Path) -> None:
+        self.enabled, self.model_dir = enabled, model_dir
         self._denoise: Callable[[F32], F32] | None = None
-        if not cfg.enabled:
+        if not enabled:
             return
         try:
-            self._denoise = _sherpa_denoise(cfg, model_dir) if cfg.backend == "sherpa" else _noisereduce_denoise(cfg)
+            self._denoise = _sherpa_denoise(model_dir)
         except Exception as exc:  # optional dependency, download or model problem
             log.warning("speech enhancement unavailable (%s: %s) - transcribing the original audio", type(exc).__name__, exc)
 
@@ -166,7 +164,7 @@ class SpeechEnhancer:
         """The enhanced audio (the original one when the backend is unavailable)."""
         if self._denoise is None:
             return audio
-        limit = self.cfg.snr_threshold_db
+        limit = ENHANCE_SNR_THRESHOLD_DB
         if limit is not None:
             try:
                 ratio = snr_db(audio)

@@ -8,17 +8,17 @@ the media it writes is the real fixture video, so probing and trimming really ru
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import shutil
 import time
-from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from autoclip.core import download
-from autoclip.core.config import DownloadCfg, JsRuntimeCfg, parse
+from autoclip.core.config import DownloadCfg, JsonValue, parse
 from autoclip.core.download import Downloader, FormatReport, FormatRow, format_report_text
 from autoclip.core.errors import AutoclipError, DownloadError
 from autoclip.core.formats import Choice
@@ -27,6 +27,7 @@ from autoclip.core.media import ffmpeg_exe, probe, trim_video
 from ..support import Media, make_cfg
 
 URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+PLAYLIST_URL = "https://www.youtube.com/playlist?list=PL123"
 
 
 # --------------------------------------------------------------------------- helpers
@@ -175,13 +176,13 @@ def vtt(start: float, end: float, text: str = "hello") -> str:
 def dl_factory(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     """``dl_factory(**download_sections)`` -> a Downloader with a deterministic JS runtime."""
 
-    def no_runtime(self: Downloader, cfg: JsRuntimeCfg) -> dict[str, dict[str, str]]:
+    def no_runtime(self: Downloader) -> dict[str, dict[str, str]]:
         return {}
 
     monkeypatch.setattr(Downloader, "_runtime_config", no_runtime)
 
     def factory(**sections: Any) -> Downloader:
-        base: dict[str, Any] = {"download": {"metadata": {"info_json": False}}}
+        base: dict[str, Any] = {}
         for name, value in sections.items():
             base[name] = value
         return Downloader(make_cfg(media, tmp_path / "out", **base))
@@ -251,11 +252,10 @@ def test_range_and_suffix() -> None:
     assert download._range_suffix(None) == ""
 
 
-def test_prefix_contains_format_container_and_range() -> None:
+def test_prefix_contains_format_and_range() -> None:
     choice = Choice(format_id="137")
-    assert download._prefix("A [id]", choice, DownloadCfg(), "") == "A [id] [137]"
-    assert download._prefix("A [id]", choice, DownloadCfg(container="webm"), "") == "A [id] [137] [webm]"
-    assert download._prefix("A [id]", choice, DownloadCfg(), " [0-10s]") == "A [id] [137] [0-10s]"
+    assert download._prefix("A [id]", choice, "") == "A [id] [137]"
+    assert download._prefix("A [id]", choice, " [0-10s]") == "A [id] [137] [0-10s]"
 
 
 def test_media_in_finds_the_final_merged_or_single_stream(tmp_path: Path) -> None:
@@ -514,12 +514,11 @@ def test_downloader_imports_yt_dlp_and_reports_the_policy(dl_factory: Any) -> No
 def test_describe_and_policy_text_name_groups_and_settings(dl_factory: Any) -> None:
     dl = dl_factory(
         download={
-            "metadata": {"info_json": False},
             "platforms": {
                 "allow": ["@popular", "@mine"],
                 "deny": ["tiktok"],
                 "groups": {"@mine": ["vimeo"]},
-                "settings": {"vimeo": {"quality": 720}},
+                "settings": {"vimeo": {"audio_language": "en"}},
             },
         }
     )
@@ -535,15 +534,15 @@ def test_allowed_extractors_follow_the_allow_list(dl_factory: Any) -> None:
     assert "end" in popular.allowed_extractors
     assert "-generic" not in popular.allowed_extractors
 
-    without_generic = dl_factory(download={"metadata": {"info_json": False}, "platforms": {"allow": ["@all"]}})
+    without_generic = dl_factory(download={"platforms": {"allow": ["@all"]}})
     assert without_generic.allowed_extractors == ["default", "-generic", "-html5", "end"]
 
-    everything = dl_factory(download={"metadata": {"info_json": False}, "platforms": {"allow": ["@all", "generic"]}})
+    everything = dl_factory(download={"platforms": {"allow": ["@all", "generic"]}})
     assert everything.allowed_extractors == ["default", "end"]
 
 
 def test_permitted_is_false_for_a_family_outside_the_allow_list(dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}, "platforms": {"allow": ["vimeo"]}})
+    dl = dl_factory(download={"platforms": {"allow": ["vimeo"]}})
     assert dl.permitted("vimeo")
     assert not dl.permitted("youtube")
     assert dl._require("https://vimeo.com/1") == "vimeo"
@@ -560,45 +559,110 @@ def test_missing_yt_dlp_is_an_actionable_error(media: Media, tmp_path: Path, mon
         Downloader(cfg)
 
 
-def test_runtime_config_picks_the_first_available_runtime() -> None:
+def test_runtime_config_autoprobes_the_first_available_runtime() -> None:
     class Missing:
-        def __init__(self, path: str | None = None) -> None:
+        def __init__(self) -> None:
             self.info = None
 
     class Found:
-        def __init__(self, path: str | None = None) -> None:
-            self.info = {"version": path or "1"}
+        info = {"version": "1"}
 
     dl = object.__new__(Downloader)
-    dl._runtime_classes = {"deno": Found, "node": Found, "bun": Missing, "quickjs": Missing}
-    assert dl._runtime_config(JsRuntimeCfg(name="auto")) == {"deno": {}}
+    dl._runtime_classes = {"deno": Found, "node": Found}
+    assert dl._runtime_config() == {"deno": {}}
 
     dl._runtime_classes = {"deno": Missing, "node": Found}
-    assert dl._runtime_config(JsRuntimeCfg(name="auto")) == {"node": {}}
+    assert dl._runtime_config() == {"node": {}}
 
-    dl._runtime_classes = {"deno": Missing, "node": Missing, "bun": Missing, "quickjs": Missing}
-    assert dl._runtime_config(JsRuntimeCfg(name="auto")) == {}
+    dl._runtime_classes = {}
+    assert dl._runtime_config() == {}
 
 
-def test_runtime_config_named_runtime_path_and_failures(tmp_path: Path) -> None:
-    class Missing:
-        def __init__(self, path: str | None = None) -> None:
-            self.info = None
+def test_runtime_config_skips_a_broken_runtime() -> None:
+    class Broken:
+        def __init__(self) -> None:
+            raise RuntimeError("broken")
 
     class Found:
-        def __init__(self, path: str | None = None) -> None:
-            self.info = {"version": path or "1"}
+        info = {"version": "1"}
 
-    binary = tmp_path / "node"
-    binary.write_text("", encoding="utf-8")
     dl = object.__new__(Downloader)
-    dl._runtime_classes = {"node": Missing, "bun": Found}
-    assert dl._runtime_config(JsRuntimeCfg(name="node", path=str(binary))) == {"node": {"path": str(binary)}}
-    assert dl._runtime_config(JsRuntimeCfg(name="node")) == {}
-    assert dl._runtime_config(JsRuntimeCfg(name="bun")) == {"bun": {}}
-    assert dl._runtime_config(JsRuntimeCfg(name="quickjs")) == {}  # not in the table at all
-    with pytest.raises(DownloadError, match="is not a file"):
-        dl._runtime_config(JsRuntimeCfg(name="node", path=str(tmp_path / "absent")))
+    dl._runtime_classes = {"deno": Broken, "node": Found}
+    assert dl._runtime_config() == {"node": {}}
+
+
+def test_call_translates_yt_dlp_rate_limit_and_plain_errors(dl_factory: Any) -> None:
+    from yt_dlp.utils import YoutubeDLError
+
+    from autoclip.core.errors import RateLimitError
+
+    dl = dl_factory(download={})
+
+    def limited() -> None:
+        raise YoutubeDLError("HTTP Error 429: Too Many Requests")
+
+    with pytest.raises(RateLimitError, match="rate limiting"):
+        dl._call(limited)
+
+    def broken() -> None:
+        raise YoutubeDLError("something else")
+
+    with pytest.raises(DownloadError, match="something else"):
+        dl._call(broken)
+
+
+def test_cache_load_rejects_corrupt_entries(dl_factory: Any) -> None:
+    dl = dl_factory(download={})
+    dl.root.mkdir(parents=True, exist_ok=True)
+    key = dl._cache_key("youtube", "https://example.com/v", dl.cfg.download)
+    cache = dl.root / "autoclip-cache.json"
+    cache.write_text(json.dumps({key: ["not-a-dict"]}), encoding="utf-8")
+    assert dl._cache_load("youtube", "https://example.com/v", dl.cfg.download) is None
+    cache.write_text(json.dumps({key: [{"path": "/etc/passwd"}]}), encoding="utf-8")
+    assert dl._cache_load("youtube", "https://example.com/v", dl.cfg.download) is None
+    cache.write_text(json.dumps({key: [{"path": "missing.mp4"}]}), encoding="utf-8")
+    assert dl._cache_load("youtube", "https://example.com/v", dl.cfg.download) is None
+    # A valid media file whose metadata sidecar is gone is unusable too.
+    (dl.root / "plain.mp4").write_bytes(b"x")
+    cache.write_text(json.dumps({key: [{"path": "plain.mp4"}]}), encoding="utf-8")
+    assert dl._cache_load("youtube", "https://example.com/v", dl.cfg.download) is None
+    # A valid media file with a missing or out-of-tree subtitle is unusable.
+    (dl.root / "ok.mp4").write_bytes(b"x")
+    (dl.root / "ok.info.json").write_text("{}", encoding="utf-8")
+    cache.write_text(json.dumps({key: [{"path": "ok.mp4", "subtitle": "/etc/passwd"}]}), encoding="utf-8")
+    assert dl._cache_load("youtube", "https://example.com/v", dl.cfg.download) is None
+    cache.write_text(json.dumps({key: [{"path": "ok.mp4", "subtitle": "missing.srt"}]}), encoding="utf-8")
+    assert dl._cache_load("youtube", "https://example.com/v", dl.cfg.download) is None
+
+
+def test_cache_store_recovers_from_a_broken_cache_file(dl_factory: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core.download import _read_json
+
+    dl = dl_factory(download={})
+    dl.root.mkdir(parents=True, exist_ok=True)
+    cache_file = dl.root / "autoclip-cache.json"
+    cache_file.write_text("[1, 2]", encoding="utf-8")  # not an object: the store starts fresh
+    dl._cache_store("youtube", "https://example.com/v", dl.cfg.download, [])
+    assert isinstance(json.loads(cache_file.read_text(encoding="utf-8")), dict)
+    bad = dl.root / "bad.json"
+    bad.write_text("[1]", encoding="utf-8")
+    with pytest.raises(ValueError, match="does not contain a JSON object"):
+        _read_json(bad)
+    monkeypatch.setattr(Path, "replace", lambda self, other: (_ for _ in ()).throw(OSError("nope")))
+    dl._cache_store("youtube", "https://example.com/v2", dl.cfg.download, [])  # a write failure is not fatal
+
+
+def test_rate_limited_reads_code_and_status() -> None:
+    from autoclip.core.download import _rate_limited
+
+    class Coded(Exception):
+        code = 429
+
+    class Status(Exception):
+        status = 429
+
+    assert _rate_limited(Coded("x")) and _rate_limited(Status("x"))
+    assert not _rate_limited(Exception("fine"))
 
 
 # ------------------------------------------------------------------------- settings
@@ -607,56 +671,41 @@ def test_runtime_config_named_runtime_path_and_failures(tmp_path: Path) -> None:
 def test_per_platform_settings_are_merged_and_cached(dl_factory: Any) -> None:
     dl = dl_factory(
         download={
-            "metadata": {"info_json": False},
             "subtitles": {"languages": ["en", "ar"]},
             "platforms": {
                 "allow": ["@popular"],
-                "settings": {"youtube": {"quality": 720, "subtitles": {"languages": ["ar"]}}},
+                "settings": {"youtube": {"audio_language": "de", "subtitles": {"languages": ["ar"]}}},
             },
         }
     )
     youtube = dl._settings("YouTube")
-    assert youtube.quality == 720
+    assert youtube.audio_language == "de"
     assert youtube.subtitles.languages == ["ar"]
     assert dl._settings("youtube") is youtube
     tiktok = dl._settings("tiktok")
-    assert tiktok.quality == 240
+    assert tiktok.audio_language is None
     assert tiktok.subtitles.languages == ["en", "ar"]
 
 
-def test_base_params_carry_network_cookies_and_playlist_policy(dl_factory: Any) -> None:
-    dl = dl_factory(
-        download={
-            "metadata": {"info_json": False},
-            "playlist": "all",
-            "max_videos": 3,
-            "cookies": {"from_browser": "firefox"},
-            "network": {"proxy": "http://127.0.0.1:8080", "rate_limit_mbps": 8, "retries": 5, "socket_timeout": 7},
-        }
-    )
+def test_base_params_carry_network_cookies_and_runtime(dl_factory: Any) -> None:
+    dl = dl_factory(download={"cookies": "firefox", "network": {"proxy": "http://127.0.0.1:8080"}})
     settings = dl._settings("youtube")
     params = dl._base_params(settings)
     assert params["proxy"] == "http://127.0.0.1:8080"
-    assert params["ratelimit"] == 8 * 1024 * 1024 / 8
-    assert params["retries"] == 5 and params["fragment_retries"] == 5
-    assert params["socket_timeout"] == 7
+    assert params["retries"] == 3 and params["fragment_retries"] == 3
+    assert params["socket_timeout"] == 20
     assert params["cookiesfrombrowser"] == ("firefox", None, None, None)
-    assert params["noplaylist"] is False and params["playlistend"] == 3
     assert params["allowed_extractors"] == dl.allowed_extractors
     assert params["js_runtimes"] == {}
-    assert params["remote_components"] == []
     assert params["ffmpeg_location"] == ffmpeg_exe()
 
 
 def test_base_params_single_playlist_and_cookie_file(dl_factory: Any, tmp_path: Path) -> None:
     cookie = tmp_path / "cookies.txt"
-    dl = dl_factory(
-        download={"metadata": {"info_json": False}, "cookies": {"file": str(cookie)}},
-    )
+    dl = dl_factory(download={"cookies": str(cookie)})
     params = dl._base_params(dl._settings("youtube"))
     assert params["cookiefile"] == str(cookie)
     assert "cookiesfrombrowser" not in params
-    assert params["noplaylist"] is True and params["playlistend"] == 1
     assert "proxy" not in params and "ratelimit" not in params
 
 
@@ -666,18 +715,16 @@ def test_outtmpl_escapes_percent_and_uses_every_sidecar_key() -> None:
         "default": "100%% [id].%(ext)s",
         "temp": "100%% [id].media.%(ext)s",
         "subtitle": "100%% [id].subtitle.%(ext)s",
-        "thumbnail": "100%% [id].thumbnail.%(ext)s",
-        "description": "100%% [id]",
         "infojson": "100%% [id]",
     }
 
 
-def test_directory_groups_by_platform(tmp_path: Path, media: Media, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(Downloader, "_runtime_config", lambda self, cfg: {})
-    cfg = make_cfg(media, tmp_path / "out", download={"metadata": {"info_json": False}, "platforms": {"group_by_platform": True}})
+def test_the_originals_folder_is_flat(tmp_path: Path, media: Media, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(Downloader, "_runtime_config", lambda self: {})
+    cfg = make_cfg(media, tmp_path / "out", download={})
     dl = Downloader(cfg)
-    directory = dl._directory("youtube")
-    assert directory == tmp_path / "out" / ".work" / "downloads" / "youtube"
+    directory = dl._directory()
+    assert directory == tmp_path / "out" / ".work" / "downloads"
     assert directory.is_dir()
 
 
@@ -685,7 +732,7 @@ def test_directory_groups_by_platform(tmp_path: Path, media: Media, monkeypatch:
 
 
 def test_entries_of_a_single_video_and_of_a_playlist(dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     one = info(video_format("137", 1920, 1080), video_id="one")
     fake = FakeYtDlp(lambda method, session, argument: one)
     dl._YoutubeDL = fake
@@ -707,13 +754,11 @@ def test_entries_of_a_single_video_and_of_a_playlist(dl_factory: Any) -> None:
     assert dl._entries(URL, dl._settings("youtube"), limit=2) == playlist["entries"][:1] + playlist["entries"][2:]
     assert fake.sessions[-1].params["playlistend"] == 2
 
-    dl.cfg.download.playlist = "all"
-    settings = parse(DownloadCfg, {**asdict(dl.cfg.download)})
-    assert len(dl._entries(URL, settings, limit=None)) == 2
+    assert len(dl._entries(PLAYLIST_URL, dl._settings("youtube"), limit=None)) == 2
 
 
 def test_entries_reject_an_empty_playlist_and_a_non_dict(dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     settings = dl._settings("youtube")
     dl._YoutubeDL = FakeYtDlp(lambda method, session, argument: {"_type": "playlist", "entries": []})
     with pytest.raises(DownloadError, match="no downloadable entries"):
@@ -724,7 +769,7 @@ def test_entries_reject_an_empty_playlist_and_a_non_dict(dl_factory: Any) -> Non
 
 
 def test_full_info_reuses_a_resolved_entry_and_resolves_a_flat_one(dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     resolved = info(video_format("137", 1920, 1080))
     assert dl._full_info(resolved, None, dl._settings("youtube")) is resolved
 
@@ -744,14 +789,14 @@ def test_full_info_reuses_a_resolved_entry_and_resolves_a_flat_one(dl_factory: A
 
 
 def test_full_info_rejects_a_non_dict_result(dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     dl._YoutubeDL = FakeYtDlp(lambda method, session, argument: None)
     with pytest.raises(DownloadError, match="no information"):
         dl._full_info({"_type": "url", "id": "x"}, URL, dl._settings("youtube"))
 
 
 def test_entry_family_reads_the_extractor_its_key_or_the_url(dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     assert dl._entry_family({"extractor": "youtube:tab"}, "generic", None) == "youtube"
     assert dl._entry_family({"extractor": "x"}, "generic", None) == "twitter"
     assert dl._entry_family({"extractor_key": "Youtube"}, "generic", None) == "youtube"
@@ -767,7 +812,7 @@ def test_entry_family_reads_the_extractor_its_key_or_the_url(dl_factory: Any) ->
 
 
 def test_prepare_deduplicates_names_and_reuses_the_cache(dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     full = info(video_format("137", 1920, 1080), title="Same", video_id="id")
     settings = dl._settings("youtube")
     name, directory, prefix, cached = dl._prepare(full, "youtube", settings, Choice("137"), None)
@@ -785,7 +830,7 @@ def test_prepare_deduplicates_names_and_reuses_the_cache(dl_factory: Any) -> Non
 
     duplicate = info(video_format("137", 1920, 1080), title="Same", video_id="id")
     media.unlink()  # no cache hit any more, so the name is taken and has to be numbered
-    dl2 = dl_factory(download={"metadata": {"info_json": False}})
+    dl2 = dl_factory(download={})
     dl2._used = dl._used
     dl2.root = dl.root
     assert dl2._prepare(duplicate, "youtube", settings, Choice("137"), None)[0] == "Same [id] (3)"
@@ -795,18 +840,18 @@ def test_prepare_deduplicates_names_and_reuses_the_cache(dl_factory: Any) -> Non
     assert dl._prepare(other, "youtube", settings, Choice("137"), None)[0] == "Same [other]"
 
 
-def test_prepare_adds_the_container_and_range_to_the_prefix(dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+def test_prepare_adds_the_range_to_the_prefix(dl_factory: Any) -> None:
+    dl = dl_factory(download={})
     full = info(video_format("137", 1920, 1080), title="T", video_id="i")
-    settings = parse(DownloadCfg, {"container": "webm", "time_range": "00:10-00:20"})
+    settings = parse(DownloadCfg, {"time_range": "00:10-00:20"})
     name, directory, prefix, _ = dl._prepare(full, "youtube", settings, Choice("137"), (10.0, 20.0))
     assert name == "T [i] [10-20s]"
-    assert prefix == "T [i] [137] [webm] [10-20s]"
+    assert prefix == "T [i] [137] [10-20s]"
     assert directory == dl.root
 
 
 def test_prepare_without_an_id_does_not_add_brackets(dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     full = {"title": "Only title", "formats": [video_format("137", 1920, 1080)]}
     name, _, prefix, _ = dl._prepare(full, "youtube", dl._settings("youtube"), Choice("137"), None)
     assert name == "Only title"
@@ -814,7 +859,7 @@ def test_prepare_without_an_id_does_not_add_brackets(dl_factory: Any) -> None:
 
 
 def test_duration_ok_uses_a_generous_tolerance(media: Media, tmp_path: Path, dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     assert dl._duration_ok(media.video, (0.0, 40.0))
     assert dl._duration_ok(media.video, (0.0, 42.0))  # 40 s against 42 s is within max(3 s, 10 %)
     assert not dl._duration_ok(media.video, (0.0, 30.0))  # 10 s of difference is too much
@@ -827,7 +872,7 @@ def test_duration_ok_uses_a_generous_tolerance(media: Media, tmp_path: Path, dl_
 def test_collect_moves_from_the_temporary_folder_and_reports_failures(
     media: Media, tmp_path: Path, dl_factory: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     directory = tmp_path / "final"
     temporary = tmp_path / "temp"
     directory.mkdir()
@@ -848,7 +893,7 @@ def test_collect_moves_from_the_temporary_folder_and_reports_failures(
 
 
 def test_collect_uses_media_already_moved_into_the_final_folder(media: Media, tmp_path: Path, dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     directory = tmp_path / "final"
     temporary = tmp_path / "temp"
     directory.mkdir()
@@ -900,6 +945,7 @@ def flow_fake(
         if session.params.get("skip_download"):
             if sidecar_error is not None:
                 raise sidecar_error
+            write_home(session, f"{prefix_of(session)}.info.json", "{}")
             for name, text in (sidecar_files or {}).items():
                 write_home(session, name, text)
             return argument
@@ -921,7 +967,7 @@ def ten_seconds(media: Media, tmp_path: Path) -> Path:
 
 
 def test_download_saves_the_media_in_the_cache(media: Media, dl_factory: Any, caplog: pytest.LogCaptureFixture) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     full = info(video_format("137", 1920, 1080), title="Nice", video_id="v1")
     fake = flow_fake(media, full)
     dl._YoutubeDL = fake
@@ -943,13 +989,15 @@ def test_download_saves_the_media_in_the_cache(media: Media, dl_factory: Any, ca
     assert params["paths"]["home"] == str(dl.root)
     assert params["outtmpl"]["default"] == "Nice [v1] [137].%(ext)s"
     assert fake.calls[1][0] == "process_ie_result" and fake.calls[1][1].download is True
-    assert not fake.sidecar_calls
-    assert [path.name for path in dl.root.iterdir() if path.name != "autoclip-cache.json"] == ["Nice [v1] [137].mp4"]
+    # The metadata sidecar is always saved next to the original.
+    assert len(fake.sidecar_calls) == 1
+    names = sorted(path.name for path in dl.root.iterdir() if path.name != "autoclip-cache.json")
+    assert names == ["Nice [v1] [137].info.json", "Nice [v1] [137].mp4"]
 
 
 def test_download_reuses_the_cached_original_without_a_media_pass(media: Media, dl_factory: Any) -> None:
     """After the first download, an identical URL/settings combination is fully off-cached, without yt-dlp."""
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     full = info(video_format("137", 1920, 1080), title="Nice", video_id="v1")
     dl._YoutubeDL = flow_fake(media, full)
     saved = dl.download(URL)[0]
@@ -968,10 +1016,9 @@ def test_download_reuses_the_cached_original_without_a_media_pass(media: Media, 
     cert_result = dl.download(URL)
     assert cert_result and cert.extraction_calls
 
-    # A different quality setting misses the cache and goes back to yt-dlp.
-    dl = dl_factory(download={"metadata": {"info_json": False}, "quality": 720})
-    new_full = info(video_format("247", 1280, 720), title="Nice", video_id="v1")
-    third = flow_fake(media, new_full)
+    # A different audio language preference misses the cache and goes back to yt-dlp.
+    dl = dl_factory(download={"platforms": {"settings": {"youtube": {"audio_language": "de"}}}})
+    third = flow_fake(media, full)
     dl._YoutubeDL = third
     third_result = dl.download(URL)
     assert third_result and len(third.extraction_calls) == 1
@@ -979,14 +1026,14 @@ def test_download_reuses_the_cached_original_without_a_media_pass(media: Media, 
     # A corrupt cache falls back to a fresh extraction.
     file = dl.root / "autoclip-cache.json"
     file.write_text("{ not json ::", encoding="utf-8")
-    dl4 = dl_factory(download={"metadata": {"info_json": False}})
+    dl4 = dl_factory(download={})
     dl4._YoutubeDL = flow_fake(media, full)
     dl4.download(URL)
     assert dl4._YoutubeDL.extraction_calls, "corrupt cache should trigger a network extraction"
 
 
 def test_a_cache_hit_fetches_only_the_missing_sidecars(media: Media, dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": True}})
+    dl = dl_factory(download={"subtitles": {"enabled": False}})
     full = info(video_format("137", 1920, 1080), title="Nice", video_id="v1")
     prefix = "Nice [v1] [137]"
     dl._YoutubeDL = flow_fake(media, full, sidecar_files={f"{prefix}.info.json": "{}"})
@@ -998,6 +1045,12 @@ def test_a_cache_hit_fetches_only_the_missing_sidecars(media: Media, dl_factory:
     dl.download(URL)
     assert not dl._YoutubeDL.media_calls and not dl._YoutubeDL.sidecar_calls  # nothing is missing
 
+    # Drop the originals index: the media and its sidecars are still complete, so no request is made.
+    (dl.root / "autoclip-cache.json").unlink()
+    dl._YoutubeDL = flow_fake(media, full, sidecar_files={f"{prefix}.info.json": "{}"})
+    dl.download(URL)
+    assert not dl._YoutubeDL.media_calls and not dl._YoutubeDL.sidecar_calls
+
     (dl.root / f"{prefix}.info.json").unlink()
     dl._YoutubeDL = flow_fake(media, full, sidecar_files={f"{prefix}.info.json": '{"again": true}'})
     dl.download(URL)
@@ -1006,7 +1059,7 @@ def test_a_cache_hit_fetches_only_the_missing_sidecars(media: Media, dl_factory:
 
 
 def test_a_playlist_downloads_every_entry_and_skips_a_failing_one(media: Media, dl_factory: Any, caplog: pytest.LogCaptureFixture) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}, "playlist": "all"})
+    dl = dl_factory(download={})
     entries = [flat_entry("a", URL), flat_entry("b", URL)]
     resolved = {
         "a": info(video_format("137", 1920, 1080), title="A", video_id="a"),
@@ -1025,14 +1078,54 @@ def test_a_playlist_downloads_every_entry_and_skips_a_failing_one(media: Media, 
 
     dl._YoutubeDL = FakeYtDlp(handle)
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        result = dl.download(URL)
+        result = dl.download(PLAYLIST_URL)
     assert [item.name for item in result] == ["A [a]"]
-    assert "skipping a playlist entry" in [record.getMessage() for record in caplog.records][0]
+    assert any("skipping a playlist entry" in record.getMessage() for record in caplog.records)
     assert (dl.root / "A [a] [137].mp4").is_file()
 
 
+def test_a_rate_limited_extraction_is_logged_and_reraised(dl_factory: Any, caplog: pytest.LogCaptureFixture) -> None:
+    from yt_dlp.utils import YoutubeDLError
+
+    from autoclip.core.errors import RateLimitError
+
+    dl = dl_factory(download={})
+
+    def handle(method: str, session: FakeSession, argument: Any) -> Any:
+        raise YoutubeDLError("HTTP Error 429: Too Many Requests")
+
+    dl._YoutubeDL = FakeYtDlp(handle)
+    with caplog.at_level(logging.WARNING, logger="autoclip"), pytest.raises(RateLimitError, match="rate limiting"):
+        dl.download(URL)
+    assert any("skipping this URL" in record.getMessage() for record in caplog.records)
+
+
+def test_a_rate_limited_entry_is_reraised(media: Media, dl_factory: Any) -> None:
+    from yt_dlp.utils import YoutubeDLError
+
+    from autoclip.core.errors import RateLimitError
+
+    dl = dl_factory(download={})
+    entries = [flat_entry("a", URL), flat_entry("b", URL)]
+    resolved = {
+        "a": info(video_format("137", 1920, 1080), title="A", video_id="a"),
+        "b": info(video_format("137", 1920, 1080), title="B", video_id="b"),
+    }
+
+    def handle(method: str, session: FakeSession, argument: Any) -> Any:
+        if method == "extract_info":
+            return playlist(*entries)
+        if not session.download:
+            return resolved[str(argument["id"])]
+        raise YoutubeDLError("HTTP Error 429")
+
+    dl._YoutubeDL = FakeYtDlp(handle)
+    with pytest.raises(RateLimitError):
+        dl.download(PLAYLIST_URL)
+
+
 def test_a_playlist_where_every_entry_fails_raises(media: Media, dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}, "playlist": "all"})
+    dl = dl_factory(download={})
     entries = [flat_entry("a", URL), flat_entry("b", URL)]
     resolved = {
         "a": info(video_format("137", 1920, 1080), title="A", video_id="a"),
@@ -1048,11 +1141,11 @@ def test_a_playlist_where_every_entry_fails_raises(media: Media, dl_factory: Any
 
     dl._YoutubeDL = FakeYtDlp(handle)
     with pytest.raises(DownloadError, match="nothing could be downloaded"):
-        dl.download(URL)
+        dl.download(PLAYLIST_URL)
 
 
 def test_a_single_video_failure_is_raised_as_it_is(media: Media, dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     full = info(video_format("137", 1920, 1080), title="Nice", video_id="v1")
     dl._YoutubeDL = flow_fake(media, full, media_errors=(DownloadError("gone"),))
     with pytest.raises(DownloadError, match="gone"):
@@ -1062,7 +1155,7 @@ def test_a_single_video_failure_is_raised_as_it_is(media: Media, dl_factory: Any
 def test_a_playlist_sleeps_between_entries(
     media: Media, dl_factory: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}, "playlist": "all", "network": {"sleep_between_seconds": 2.5}})
+    dl = dl_factory(download={})
     entries = [flat_entry("a", URL), flat_entry("b", URL)]
     resolved = {
         "a": info(video_format("137", 1920, 1080), title="A", video_id="a"),
@@ -1079,14 +1172,16 @@ def test_a_playlist_sleeps_between_entries(
 
     slept: list[float] = []
     monkeypatch.setattr(time, "sleep", slept.append)
+    monkeypatch.setattr(download, "DOWNLOAD_PLAYLIST_PAUSE_MIN_SECONDS", 2.5)
+    monkeypatch.setattr(download, "DOWNLOAD_PLAYLIST_PAUSE_MAX_SECONDS", 2.5)
     dl._YoutubeDL = FakeYtDlp(handle)
     with caplog.at_level(logging.INFO, logger="autoclip"):
-        dl.download(URL)
-    assert slept == [2.5]  # never before the first entry
+        dl.download(PLAYLIST_URL)
+    assert any(value == pytest.approx(2.5) for value in slept)  # never before the first entry
 
 
 def test_a_blocked_platform_fails_before_any_request(dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}, "platforms": {"allow": ["vimeo"]}})
+    dl = dl_factory(download={"platforms": {"allow": ["vimeo"]}})
 
     def no_request(*args: Any, **kwargs: Any) -> Any:
         pytest.fail("a blocked URL must not reach yt-dlp")
@@ -1099,7 +1194,7 @@ def test_a_blocked_platform_fails_before_any_request(dl_factory: Any) -> None:
 
 
 def test_a_blocked_playlist_entry_is_reported(dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}, "platforms": {"allow": ["youtube"]}})
+    dl = dl_factory(download={"platforms": {"allow": ["youtube"]}})
     entries = playlist(flat_entry("t", "https://www.tiktok.com/@a/video/1"))
     dl._YoutubeDL = FakeYtDlp(lambda method, session, argument: entries)
     with pytest.raises(DownloadError, match="'tiktok' is blocked"):
@@ -1107,7 +1202,7 @@ def test_a_blocked_playlist_entry_is_reported(dl_factory: Any) -> None:
 
 
 def test_a_full_extraction_that_is_a_playlist_downloads_each_entry(media: Media, dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     first = info(video_format("137", 1920, 1080), title="First", video_id="f1")
     second = info(video_format("137", 1920, 1080), title="Second", video_id="s2")
     outer = {"_type": "url", "id": "outer", "title": "Outer", "url": URL}
@@ -1121,11 +1216,11 @@ def test_a_full_extraction_that_is_a_playlist_downloads_each_entry(media: Media,
         return argument
 
     dl._YoutubeDL = FakeYtDlp(handle)
-    assert [item.name for item in dl.download(URL)] == ["First [f1]", "Second [s2]"]
+    assert [item.name for item in dl.download(PLAYLIST_URL)] == ["First [f1]", "Second [s2]"]
 
 
 def test_no_entries_is_a_download_error(dl_factory: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     monkeypatch.setattr(dl, "_entries", lambda *args, **kwargs: [])
     with pytest.raises(DownloadError, match="no downloadable entries"):
         dl.formats(URL)
@@ -1134,20 +1229,23 @@ def test_no_entries_is_a_download_error(dl_factory: Any, monkeypatch: pytest.Mon
 
 
 def test_a_playlist_entry_of_another_platform_uses_its_own_settings(media: Media, dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}, "platforms": {"settings": {"vimeo": {"quality": 720}}}})
+    dl = dl_factory(download={"platforms": {"settings": {"vimeo": {"audio_language": "de"}}}})
     entries = [flat_entry("v", "https://vimeo.com/1")]
-    full = info(video_format("v1080", 1920, 1080), video_format("v720", 1280, 720), title="V", video_id="v")
+    video_only = [video_format("v1080", 1920, 1080, acodec="none")]
+    audio_en = {"format_id": "a_en", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "abr": 128, "language": "en"}
+    audio_de = {"format_id": "a_de", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "abr": 64, "language": "de"}
+    full = info(*video_only, audio_en, audio_de, title="V", video_id="v", language="en")
     fake = flow_fake(media, playlist(*entries), {"v": full})
     dl._YoutubeDL = fake
 
     item = dl.download(URL)[0]
     assert (item.name, item.platform) == ("V [v]", "vimeo")
-    assert fake.media_calls[0].params["format"] == "v720"
-    assert item.path == dl.root / "V [v] [v720].mp4"
+    assert fake.media_calls[0].params["format"] == "v1080+a_de"
+    assert item.path == dl.root / "V [v] [v1080+a_de].mp4"
 
 
 def test_an_audio_only_url_is_rejected(media: Media, dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     full = info({"format_id": "140", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "abr": 128})
     dl._YoutubeDL = flow_fake(media, full)
     with pytest.raises(DownloadError, match="only offers audio"):
@@ -1158,7 +1256,7 @@ def test_an_audio_only_url_is_rejected(media: Media, dl_factory: Any) -> None:
 
 
 def test_a_range_is_downloaded_by_yt_dlp_when_ffmpeg_can_cut(media: Media, tmp_path: Path, dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}, "time_range": "00:10-00:20"})
+    dl = dl_factory(download={"time_range": "00:10-00:20"})
     dl._range_supported = True
     full = info(video_format("137", 1920, 1080), title="Nice", video_id="v1")
     fake = flow_fake(media, full, ranged_source=ten_seconds(media, tmp_path))
@@ -1173,7 +1271,7 @@ def test_a_range_is_downloaded_by_yt_dlp_when_ffmpeg_can_cut(media: Media, tmp_p
 
 
 def test_a_wrong_length_range_falls_back_to_a_local_cut(media: Media, dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}, "time_range": "00:10-00:20"})
+    dl = dl_factory(download={"time_range": "00:10-00:20"})
     dl._range_supported = True
     full = info(video_format("137", 1920, 1080), title="Nice", video_id="v1")
     fake = flow_fake(media, full, ranged_source=media.video)  # the whole video, not the range
@@ -1189,7 +1287,7 @@ def test_a_wrong_length_range_falls_back_to_a_local_cut(media: Media, dl_factory
 
 
 def test_a_failed_range_download_retries_the_whole_video(media: Media, dl_factory: Any, caplog: pytest.LogCaptureFixture) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}, "time_range": "00:10-00:20"})
+    dl = dl_factory(download={"time_range": "00:10-00:20"})
     dl._range_supported = True
     full = info(video_format("137", 1920, 1080), title="Nice", video_id="v1")
     fake = flow_fake(media, full, media_errors=(DownloadError("range refused"),))
@@ -1203,7 +1301,7 @@ def test_a_failed_range_download_retries_the_whole_video(media: Media, dl_factor
 
 
 def test_a_range_attempt_that_saves_nothing_falls_back_to_the_whole_video(media: Media, dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}, "time_range": "00:10-00:20"})
+    dl = dl_factory(download={"time_range": "00:10-00:20"})
     dl._range_supported = True
     full = info(video_format("137", 1920, 1080), title="Nice", video_id="v1")
 
@@ -1221,7 +1319,7 @@ def test_a_range_attempt_that_saves_nothing_falls_back_to_the_whole_video(media:
 
 
 def test_a_range_needs_ffprobe_so_it_falls_back_to_a_local_cut(media: Media, dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}, "time_range": "00:10-00:20"})
+    dl = dl_factory(download={"time_range": "00:10-00:20"})
     dl._range_supported = False
     full = info(video_format("137", 1920, 1080), title="Nice", video_id="v1")
     fake = flow_fake(media, full)
@@ -1233,7 +1331,7 @@ def test_a_range_needs_ffprobe_so_it_falls_back_to_a_local_cut(media: Media, dl_
 
 
 def test_a_failing_local_cut_is_an_error_and_removes_the_download(media: Media, dl_factory: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}, "time_range": "00:10-00:20"})
+    dl = dl_factory(download={"time_range": "00:10-00:20"})
     dl._range_supported = False
     full = info(video_format("137", 1920, 1080), title="Nice", video_id="v1")
     dl._YoutubeDL = flow_fake(media, full)
@@ -1248,7 +1346,7 @@ def test_a_failing_local_cut_is_an_error_and_removes_the_download(media: Media, 
 
 
 def test_a_media_pass_that_saves_nothing_is_an_error(media: Media, dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     full = info(video_format("137", 1920, 1080), title="Nice", video_id="v1")
 
     def handle(method: str, session: FakeSession, argument: Any) -> Any:
@@ -1263,7 +1361,7 @@ def test_a_media_pass_that_saves_nothing_is_an_error(media: Media, dl_factory: A
 
 
 def test_formats_reports_the_choice_and_notes_a_playlist(dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     full = info(video_format("137", 1920, 1080), title="Nice", video_id="v1")
     full["formats"].append({"format_id": "140", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "abr": 128})
     dl._YoutubeDL = FakeYtDlp(lambda method, session, argument: playlist(full, full))
@@ -1275,7 +1373,7 @@ def test_formats_reports_the_choice_and_notes_a_playlist(dl_factory: Any) -> Non
 
 
 def test_formats_warns_about_an_audio_only_url(dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     full = info({"format_id": "140", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "abr": 128})
     dl._YoutubeDL = FakeYtDlp(lambda method, session, argument: full)
     report = dl.formats(URL)
@@ -1284,7 +1382,7 @@ def test_formats_warns_about_an_audio_only_url(dl_factory: Any) -> None:
 
 
 def test_formats_rejects_a_blocked_playlist_entry(dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}, "platforms": {"allow": ["youtube"]}})
+    dl = dl_factory(download={"platforms": {"allow": ["youtube"]}})
     entries = playlist(flat_entry("t", "https://www.tiktok.com/@a/video/1"))
     dl._YoutubeDL = FakeYtDlp(lambda method, session, argument: entries)
     with pytest.raises(DownloadError, match="tiktok"):
@@ -1310,13 +1408,13 @@ def test_call_translates_every_yt_dlp_error() -> None:
 
 def sub_settings(**extra: Any) -> DownloadCfg:
     """Download settings with subtitles enabled for ``en`` (and whatever ``extra`` says)."""
-    data: dict[str, Any] = {"subtitles": {"enabled": True, "languages": ["en"], "use_as_transcript": "always"}}
+    data: dict[str, Any] = {"subtitles": {"enabled": True, "languages": ["en"]}}
     data.update(extra)
     return parse(DownloadCfg, data)
 
 
 def test_plan_picks_manual_then_automatic_and_skips_unusable_tracks(dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     full = {
         "title": "T",
         "subtitles": {
@@ -1328,13 +1426,13 @@ def test_plan_picks_manual_then_automatic_and_skips_unusable_tracks(dl_factory: 
             "de": [{"ext": "srv1", "url": "https://x/de.srv1"}],
         },
     }
-    settings = sub_settings(subtitles={"enabled": True, "languages": ["en", "de", "fr", "es"], "use_as_transcript": "never"})
+    settings = sub_settings(subtitles={"enabled": True, "languages": ["en", "de", "fr", "es"]})
     plan = dl._plan(full, settings)
     assert [(item.language, item.key, item.manual) for item in plan] == [("en", "en", False), ("fr", "fr", True)]
 
 
 def test_apply_plan_leaves_only_the_chosen_tracks_and_variants(dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     chosen = {"ext": "vtt", "url": "https://x/en-1.vtt"}
     info_dict = {
         "subtitles": {"en": [{"ext": "json3", "url": "https://x/en.json3"}, chosen], "de": [{"ext": "vtt", "url": "https://x/de.vtt"}]},
@@ -1346,7 +1444,7 @@ def test_apply_plan_leaves_only_the_chosen_tracks_and_variants(dl_factory: Any) 
 
 
 def test_convert_subtitles_skips_missing_and_broken_files(tmp_path: Path, dl_factory: Any, caplog: pytest.LogCaptureFixture) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     directory = tmp_path / "subs"
     directory.mkdir()
     prefix = "p"
@@ -1377,8 +1475,7 @@ def test_convert_subtitles_skips_missing_and_broken_files(tmp_path: Path, dl_fac
 def test_sidecars_save_every_requested_file_and_convert_the_subtitles(media: Media, dl_factory: Any) -> None:
     dl = dl_factory(
         download={
-            "metadata": {"info_json": True, "thumbnail": True, "description": True},
-            "subtitles": {"enabled": True, "languages": ["en"], "use_as_transcript": "always"},
+            "subtitles": {"enabled": True, "languages": ["en"]},
         }
     )
     full = info(
@@ -1391,8 +1488,6 @@ def test_sidecars_save_every_requested_file_and_convert_the_subtitles(media: Med
     files = {
         f"{prefix}.subtitle.en.vtt": vtt(1.0, 2.0),
         f"{prefix}.info.json": "{}",
-        f"{prefix}.thumbnail.webp": "image",
-        f"{prefix}.description": "about",
     }
     fake = flow_fake(media, full, sidecar_files=files)
     dl._YoutubeDL = fake
@@ -1402,7 +1497,7 @@ def test_sidecars_save_every_requested_file_and_convert_the_subtitles(media: Med
     assert item.subtitle_manual is False
     assert "hello" in item.subtitle.read_text(encoding="utf-8")
     assert not (dl.root / f"{prefix}.subtitle.en.vtt").exists()
-    for name in ("mp4", "info.json", "thumbnail.webp", "description", "auto.en.srt"):
+    for name in ("mp4", "info.json", "auto.en.srt"):
         assert (dl.root / f"{prefix}.{name}").is_file(), name
     assert dl._complete(dl.root, prefix, dl._settings("youtube"))
 
@@ -1410,22 +1505,23 @@ def test_sidecars_save_every_requested_file_and_convert_the_subtitles(media: Med
     assert params["skip_download"] is True
     assert params["writesubtitles"] is False and params["writeautomaticsub"] is True
     assert params["subtitleslangs"] == ["en"]
-    assert params["writeinfojson"] is True and params["writethumbnail"] is True and params["writedescription"] is True
+    assert params["writeinfojson"] is True
+    assert "writethumbnail" not in params and "writedescription" not in params
 
 
 def test_a_sidecar_failure_keeps_the_downloaded_media(media: Media, dl_factory: Any, caplog: pytest.LogCaptureFixture) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": True}})
+    dl = dl_factory()
     full = info(video_format("137", 1920, 1080), title="Nice", video_id="v1")
     dl._YoutubeDL = flow_fake(media, full, sidecar_error=RuntimeError("boom"))
 
     with caplog.at_level(logging.WARNING, logger="autoclip"):
         item = dl.download(URL)[0]
     assert item.path.is_file()
-    assert "could not save every extra file" in [record.getMessage() for record in caplog.records][0]
+    assert any("could not save every extra file" in record.getMessage() for record in caplog.records)
 
 
 def test_sweep_moves_only_sidecars_and_never_overwrites(tmp_path: Path, dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     directory = tmp_path / "final"
     temporary = tmp_path / "temp"
     directory.mkdir()
@@ -1433,7 +1529,6 @@ def test_sweep_moves_only_sidecars_and_never_overwrites(tmp_path: Path, dl_facto
     prefix = "p"
     names = (
         f"{prefix}.media.en.vtt",
-        f"{prefix}.media.webp",
         f"{prefix}.media.f137.mp4",
         f"{prefix}.media.mp4",
         f"{prefix}.media.mp4.part",
@@ -1446,7 +1541,7 @@ def test_sweep_moves_only_sidecars_and_never_overwrites(tmp_path: Path, dl_facto
 
     dl._sweep(temporary, directory, prefix)
     assert (directory / f"{prefix}.subtitle.en.vtt").is_file()
-    assert (directory / f"{prefix}.thumbnail.webp").is_file()
+    assert not (directory / f"{prefix}.thumbnail.webp").exists()
     assert (directory / f"{prefix}.subtitle.fr.srt").read_text(encoding="utf-8") == "keep"
     assert not (directory / f"{prefix}.subtitle.mp4").exists()
     assert (temporary / f"{prefix}.media.f137.mp4").is_file()  # a video stream is not a sidecar
@@ -1456,7 +1551,7 @@ def test_sweep_moves_only_sidecars_and_never_overwrites(tmp_path: Path, dl_facto
 def test_sweep_survives_a_file_it_cannot_move(
     tmp_path: Path, dl_factory: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     directory = tmp_path / "final"
     temporary = tmp_path / "temp"
     directory.mkdir()
@@ -1476,8 +1571,7 @@ def test_sweep_survives_a_file_it_cannot_move(
 def test_complete_requires_every_requested_sidecar(tmp_path: Path, dl_factory: Any) -> None:
     dl = dl_factory(
         download={
-            "metadata": {"info_json": True, "thumbnail": True, "description": True},
-            "subtitles": {"enabled": True, "languages": ["en"], "use_as_transcript": "never"},
+            "subtitles": {"enabled": True, "languages": ["en"]},
         }
     )
     directory = tmp_path / "files"
@@ -1486,19 +1580,16 @@ def test_complete_requires_every_requested_sidecar(tmp_path: Path, dl_factory: A
     prefix = "p"
     assert not dl._complete(directory, prefix, settings)
     (directory / f"{prefix}.info.json").write_text("{}", encoding="utf-8")
-    assert not dl._complete(directory, prefix, settings)  # the description is still missing
-    (directory / f"{prefix}.description").write_text("x", encoding="utf-8")
-    assert not dl._complete(directory, prefix, settings)  # the thumbnail is still missing
-    (directory / f"{prefix}.thumbnail.jpg").write_bytes(b"x")
     assert not dl._complete(directory, prefix, settings)  # the subtitles are still missing
     (directory / f"{prefix}.auto.en.srt").write_text(srt(1, 2), encoding="utf-8")
     assert dl._complete(directory, prefix, settings)
-    plain = parse(DownloadCfg, {"metadata": {"info_json": False}})
+    plain = parse(DownloadCfg, {"subtitles": {"enabled": False}})
+    (directory / "nothing.info.json").write_text("{}", encoding="utf-8")
     assert dl._complete(directory, "nothing", plain)
 
 
 def test_subtitle_for_follows_the_policy_and_the_transcript_mode(tmp_path: Path, dl_factory: Any) -> None:
-    dl = dl_factory(download={"metadata": {"info_json": False}})
+    dl = dl_factory(download={})
     directory = tmp_path / "subs"
     directory.mkdir()
     prefix = "p"
@@ -1507,31 +1598,35 @@ def test_subtitle_for_follows_the_policy_and_the_transcript_mode(tmp_path: Path,
     manual.write_text(srt(1, 2), encoding="utf-8")
     auto.write_text(srt(3, 4), encoding="utf-8")
 
-    def settings(policy: str, languages: list[str] | None = None) -> DownloadCfg:
+    def settings(enabled: bool = True, languages: list[str] | None = None) -> DownloadCfg:
         return parse(
             DownloadCfg,
-            {"subtitles": {"enabled": True, "languages": languages or ["en"], "use_as_transcript": policy}},
+            cast(dict[str, JsonValue], {"subtitles": {"enabled": enabled, "languages": languages or ["en"]}}),
         )
 
-    assert dl._subtitle_for(directory, prefix, parse(DownloadCfg, {})) == (None, False)  # disabled
-    assert dl._subtitle_for(directory, prefix, settings("never")) == (None, False)
-    assert dl._subtitle_for(directory, prefix, settings("manual")) == (manual, True)
-    assert dl._subtitle_for(directory, prefix, settings("always")) == (manual, True)
+    assert dl._subtitle_for(directory, prefix, parse(DownloadCfg, {"subtitles": {"enabled": False}})) == (None, False)
+    assert dl._subtitle_for(directory, prefix, settings()) == (manual, True)
 
     manual.unlink()
-    assert dl._subtitle_for(directory, prefix, settings("manual")) == (None, False)  # auto needs "always"
-    assert dl._subtitle_for(directory, prefix, settings("always")) == (auto, False)
+    assert dl._subtitle_for(directory, prefix, settings()) == (auto, False)
 
     arabic = directory / f"{prefix}.auto.ar.srt"
     arabic.write_text(srt(1, 2), encoding="utf-8")
-    assert dl._subtitle_for(directory, prefix, settings("always", ["ar", "en"])) == (arabic, False)
+    assert dl._subtitle_for(directory, prefix, settings(languages=["ar", "en"])) == (arabic, False)
 
-    dl.cfg.transcript.mode = "whisper"
-    assert dl._subtitle_for(directory, prefix, settings("manual")) == (None, False)
-    assert dl._subtitle_for(directory, prefix, settings("always")) == (auto, False)
+    # A file whose language is not in the requested list is still found by the glob fallback.
+    for p in directory.glob("*.srt"):
+        p.unlink()
+    german = directory / f"{prefix}.manual.de.srt"
+    german.write_text(srt(1, 2), encoding="utf-8")
+    invalid = directory / f"{prefix}.manual.it.srt"
+    invalid.write_text("not a cue", encoding="utf-8")
+    assert dl._subtitle_for(directory, prefix, settings(languages=["fr"])) == (german, True)  # the invalid cue is skipped
 
-    auto.write_text("not an srt", encoding="utf-8")
-    assert dl._subtitle_for(directory, prefix, settings("always")) == (None, False)
+    for p in directory.glob("*.srt"):
+        p.unlink()
+    (directory / f"{prefix}.manual.it.srt").write_text("not a cue", encoding="utf-8")
+    assert dl._subtitle_for(directory, prefix, settings()) == (None, False)  # only an invalid glob match is left
 
 
 def test_valid_srt_checks_the_content(tmp_path: Path) -> None:

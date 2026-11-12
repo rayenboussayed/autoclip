@@ -28,7 +28,7 @@ from autoclip.core.runner import _srt_time, render_all, render_job
 from autoclip.core.store import Store
 from autoclip.core.transcript import load_transcript_file
 
-from ..support import Media, install_stub_whisper, make_cfg, write_config
+from ..support import Media, install_stub_whisper, make_cfg, run_args, write_config
 
 
 @pytest.fixture(autouse=True)
@@ -47,7 +47,7 @@ def make_jobs(
     **sections: dict[str, Any],
 ) -> tuple[list[RenderJob], Store, Config]:
     cfg = make_cfg(media, tmp_path, None, **sections)
-    cfg.video.short_side = 480  # quality=lowest renders at 20% of this (96)
+    # quality=lowest renders at a 216 px short side on a 9:16 canvas
     store = Store(tmp_path / "jobs.db", fresh=True)
     store.put_segments(load_transcript_file(media.transcript))
     jobs = []
@@ -87,7 +87,7 @@ def test_render_job_success_writes_outputs_and_database(media: Media, tmp_path: 
     (job,), store, _ = make_jobs(media, tmp_path, n=1)
     assert render_job(job) is True
     row = store.clips()[0]
-    assert row["status"] == "done" and row["file"] == "c1.mp4" and (row["width"], row["height"]) == (96, 170) and row["trimmed"] > 3
+    assert row["status"] == "done" and row["file"] == "c1.mp4" and (row["width"], row["height"]) == (216, 384) and row["trimmed"] > 3
     assert (tmp_path / "c1.mp4").exists() and (tmp_path / "c1.srt").read_text(encoding="utf-8").startswith("1\n00:00:")
     store.close()
 
@@ -104,7 +104,9 @@ def test_render_job_failure_is_recorded_not_raised(media: Media, tmp_path: Path,
 
 def test_render_job_in_a_fresh_worker_rebuilds_logging_and_monitor(media: Media, tmp_path: Path) -> None:
     log_file = tmp_path / "worker.log"
-    (job,), store, _ = make_jobs(media, tmp_path, n=1, log_file=log_file, parent_pid=-1)  # pid differs: behaves like a spawned worker
+    (job,), store, _ = make_jobs(
+        media, tmp_path, n=1, log_file=log_file, parent_pid=-1, logging={"level": "INFO"}
+    )  # pid differs: behaves like a spawned worker
     assert render_job(job) and store.clips()[0]["status"] == "done"
     assert "rendering " in log_file.read_text(encoding="utf-8") and "c1.mp4" in log_file.read_text(encoding="utf-8")
     store.close()
@@ -189,6 +191,21 @@ def test_the_cpu_encoder_is_not_capped_like_a_gpu(
     store.close()
 
 
+def test_render_all_falls_back_when_the_pool_cannot_start(
+    media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    jobs, store, _ = parallel_jobs(media, tmp_path, 2)
+
+    def broken_pool(*_a: Any, **_k: Any) -> Any:
+        raise OSError("no processes here")
+
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", broken_pool)
+    with caplog.at_level(logging.WARNING, logger="autoclip"):
+        render_all(jobs, 100 << 20)
+    assert "falling back to in-process rendering" in caplog.text and statuses(store) == ["done", "done"]
+    store.close()
+
+
 def test_render_all_retries_a_killed_worker_alone(
     media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -214,7 +231,7 @@ def test_render_all_retries_a_killed_worker_alone(
 
 def test_render_all_with_real_spawned_workers(media: Media, tmp_path: Path) -> None:
     log_file = tmp_path / "pool.log"
-    jobs, store, cfg = make_jobs(media, tmp_path, n=2, log_file=log_file)
+    jobs, store, cfg = make_jobs(media, tmp_path, n=2, log_file=log_file, logging={"level": "INFO"})
     RESOURCES.configure(None)
     RESOURCES.cpus = 2
     RESOURCES.max_cpu_percent = 100.0
@@ -236,13 +253,13 @@ def clips_json(tmp_path: Path, kind: str, stem: str) -> list[dict[str, Any]]:
 
 
 def test_main_processes_several_videos_into_the_short_long_video_structure(media: Media, tmp_path: Path) -> None:
-    assert main([str(write_config(tmp_path, media))]) == 0
+    assert main(run_args(write_config(tmp_path, media), log_level="INFO")) == 0
     out = tmp_path / "out"
     assert sorted(p.name for p in out.iterdir()) == [".work", "logs", "short"]  # only the requested kind gets a folder
     for stem in ("talk", "silent"):
         summary = clips_json(tmp_path, "short", stem)
         assert len(summary) == 1 and (out / "short" / stem / summary[0]["file"]).exists()
-        assert summary[0]["file"].startswith(f"{stem}_best_01_") and summary[0]["scene"] == "best" and summary[0]["width"] == 96
+        assert summary[0]["file"].startswith(f"{stem}_best_01_") and summary[0]["scene"] == "best" and summary[0]["width"] == 216
         assert isinstance(summary[0]["start"], float) and set(summary[0]) >= {"title", "score", "trimmed"}
         assert (out / ".work" / stem / "autoclip.db").exists()  # shared work files stay out of the short/long folders
     (log_file,) = (out / "logs").glob("autoclip_*.log")
@@ -251,44 +268,34 @@ def test_main_processes_several_videos_into_the_short_long_video_structure(media
 
 
 def test_main_short_and_long_clips_for_several_scene_types(media: Media, tmp_path: Path) -> None:
-    cfg = write_config(
-        tmp_path,
-        media,
-        input=[str(media.video)],
-        clips={"kinds": ["short", "long"], "scenes": ["funny", "sad"], "long": {"aspect": "16:9"}},
-    )
-    assert main([str(cfg)]) == 0
+    cfg = write_config(tmp_path, media, inputs=[str(media.video)], clips={"preset": "shorts", "scenes": ["funny", "sad"]})
+    assert main(run_args(cfg, log_level="INFO")) == 0
     out = tmp_path / "out"
-    assert sorted(p.name for p in out.iterdir() if not p.name.startswith(".") and p.name != "logs") == ["long", "short"]
-    for kind, size in (("short", (96, 170)), ("long", (170, 96))):
-        rows = clips_json(tmp_path, kind, "talk")
-        assert {r["scene"] for r in rows} == {"funny", "sad"} or len(rows) >= 1  # a short video may leave little room for the 2nd scene
-        assert all((r["width"], r["height"]) == size for r in rows)
-        for r in rows:
-            assert re.fullmatch(r"talk_(funny|sad)_\d\d_\d+s\.mp4", r["file"]) and (out / kind / "talk" / r["file"]).exists()
-        assert max(r["trimmed"] for r in rows) <= (13 if kind == "short" else 31)
-    longest = max(r["trimmed"] for r in clips_json(tmp_path, "long", "talk"))
-    assert longest > max(r["trimmed"] for r in clips_json(tmp_path, "short", "talk"))  # long-form clips really are longer
+    assert (out / "short" / "talk").is_dir()
+    rows = clips_json(tmp_path, "short", "talk")
+    assert len(rows) >= 1
+    assert all((r["width"], r["height"]) == (216, 384) for r in rows)
+    for r in rows:
+        assert re.fullmatch(r"talk_(funny|sad)_\d\d_\d+s\.mp4", r["file"]) and (out / "short" / "talk" / r["file"]).exists()
 
 
 def test_a_kind_without_room_is_skipped_but_the_rest_is_produced(media: Media, tmp_path: Path) -> None:
-    log_file = tmp_path / "run.log"
-    clips = {"kinds": ["short", "long"], "long": {"min_seconds": 100, "max_seconds": 200}}
-    cfg = write_config(tmp_path, media, input=[str(media.video)], clips=clips, logging={"file": str(log_file)})
-    assert main([str(cfg)]) == 0
-    assert "no long clips for talk.mp4" in log_file.read_text(encoding="utf-8")
+    cfg = write_config(tmp_path, media, inputs=[str(media.video)], clips={"preset": "both"})
+    assert main(run_args(cfg, log_level="INFO")) == 0
+    log_files = list((tmp_path / "out" / "logs").glob("autoclip_*.log"))
+    assert log_files and "no long clips for talk.mp4" in log_files[0].read_text(encoding="utf-8")
     assert (tmp_path / "out" / "short" / "talk").is_dir() and not (tmp_path / "out" / "long").exists()
 
 
 def test_main_no_clips_for_any_kind_fails_the_video(media: Media, tmp_path: Path) -> None:
-    cfg = write_config(tmp_path, media, input=[str(media.video)], clips={"short": {"min_seconds": 90, "max_seconds": 120}})
-    assert main([str(cfg)]) == 1
+    cfg = write_config(tmp_path, media, inputs=[str(media.video)], clips={"preset": "long"})
+    assert main(run_args(cfg)) == 1
 
 
 def test_main_one_broken_video_does_not_stop_the_batch(media: Media, tmp_path: Path) -> None:
     broken = tmp_path / "broken.mp4"
     broken.write_text("this is not a video")
-    assert main([str(write_config(tmp_path, media, input=[str(broken), str(media.video)]))]) == 1
+    assert main(run_args(write_config(tmp_path, media, inputs=[str(broken), str(media.video)]))) == 1
     assert len(clips_json(tmp_path, "short", "talk")) == 1
 
 
@@ -317,36 +324,27 @@ def test_run_batch_processes_inputs_one_at_a_time(media: Media, tmp_path: Path, 
     assert result.clips_done == 2 and result.clips_failed == 0
 
 
-def test_main_reports_clips_that_failed_to_render(media: Media, tmp_path: Path) -> None:
-    missing = str(tmp_path / "missing.png")
-    cfg = write_config(tmp_path, media, input=[str(media.video)], video={"background": {"type": "image", "image": missing}})
-    assert main([str(cfg)]) == 1
-    assert clips_json(tmp_path, "short", "talk") == []
-
-
 def test_main_ranges_are_given_per_clip_kind(media: Media, tmp_path: Path) -> None:
-    clips = {
-        "mode": "ranges",
-        "kinds": ["short", "long"],
-        "short": {"ranges": ["00:00:04-00:00:10"]},
-        "long": {"ranges": ["0:20-0:45"], "aspect": "original"},
-    }
-    assert main([str(write_config(tmp_path, media, input=[str(media.video)], clips=clips))]) == 0
+    clips = {"preset": "both", "ranges": ["00:00:04-00:00:10", "00:00:20-00:00:40"]}
+    assert main(run_args(write_config(tmp_path, media, inputs=[str(media.video)], clips=clips))) == 0
     short, long = clips_json(tmp_path, "short", "talk"), clips_json(tmp_path, "long", "talk")
-    assert [(c["start"], c["end"], c["scene"], c["file"]) for c in short] == [(4.0, 10.0, "custom", "talk_custom_01_4s.mp4")]
-    assert [(c["start"], c["end"]) for c in long] == [(20.0, 40.0)]  # the range is clamped to the video's end
-    assert (long[0]["width"], long[0]["height"]) == (320, 180)  # aspect "original" keeps the source shape
+    assert [(c["start"], c["end"], c["scene"]) for c in short] == [(4.0, 10.0, "custom"), (20.0, 40.0, "custom")]
+    assert [(c["start"], c["end"]) for c in long] == [(4.0, 10.0), (20.0, 40.0)]
 
 
 def test_main_ranges_skip_kinds_without_ranges_and_fail_without_any(media: Media, tmp_path: Path) -> None:
-    only_short = {"mode": "ranges", "kinds": ["short", "long"], "short": {"ranges": ["0:04-0:10"]}}
-    assert main([str(write_config(tmp_path / "a", media, input=[str(media.video)], clips=only_short))]) == 0
+    cfg = write_config(tmp_path / "a", media, inputs=[str(media.video)], clips={"preset": "shorts", "ranges": ["0:04-0:10"]})
+    assert main(run_args(cfg, output=tmp_path / "a" / "out")) == 0
     assert (tmp_path / "a" / "out" / "short").is_dir() and not (tmp_path / "a" / "out" / "long").exists()
-    assert main([str(write_config(tmp_path / "b", media, input=[str(media.video)], clips={"mode": "ranges"}))]) == 1
+    cfg2 = write_config(tmp_path / "b", media, inputs=[str(media.video)], clips={"preset": "long"})
+    assert main(run_args(cfg2, output=tmp_path / "b" / "out")) == 1
 
 
-def test_main_split_mode_cuts_equal_parts_into_the_long_folder(media: Media, tmp_path: Path) -> None:
-    assert main([str(write_config(tmp_path, media, input=[str(media.video)], clips={"mode": "split", "split_seconds": 15}))]) == 0
+def test_main_split_mode_cuts_equal_parts_into_the_long_folder(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core import pipeline
+
+    monkeypatch.setattr(pipeline, "SPLIT_SECONDS", 15.0)
+    assert main(run_args(write_config(tmp_path, media, inputs=[str(media.video)]), extra=["--split"])) == 0
     folder = tmp_path / "out" / "long" / "talk"
     assert json.loads((folder / "clips.json").read_text(encoding="utf-8")) == ["talk_part001.mp4", "talk_part002.mp4", "talk_part003.mp4"]
     assert all((folder / f"talk_part{k:03d}.mp4").stat().st_size > 1000 for k in (1, 2, 3))
@@ -360,15 +358,14 @@ def test_needs_text_only_when_selection_captions_or_titles_use_it(media: Media, 
     assert not needs_text(make_cfg(media, out, clips=ranges, captions={"enabled": False}))
     assert needs_text(make_cfg(media, out, clips=ranges))
     assert needs_text(make_cfg(media, out, clips=ranges, captions={"enabled": False}, title={"enabled": True}))
-    skipped = {"caption": True, "title": True}
-    assert not needs_text(make_cfg(media, out, clips=ranges, title={"enabled": True}, skip=skipped))
+    assert not needs_text(make_cfg(media, out, clips=ranges, title={"enabled": False}, captions={"enabled": False}))
 
 
 def test_main_chunks_long_videos_for_transcription(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
-    cfg = write_config(tmp_path, media, input=[str(media.video)], transcript={"mode": "whisper", "file": None, "model": "tiny"})  # fmt: skip
-    assert main([str(cfg)]) == 0
+    cfg = write_config(tmp_path, media, inputs=[str(media.video)])
+    assert main(run_args(cfg, transcript=False)) == 0
     assert (
         "chunks" not in rec and rec["samples"] > 0 and len(clips_json(tmp_path, "short", "talk")) == 1
     )  # one automatic pass (possibly whole audio), clip still produced
@@ -376,15 +373,11 @@ def test_main_chunks_long_videos_for_transcription(media: Media, tmp_path: Path,
 
 
 def test_main_logs_which_video_encoder_was_chosen(media: Media, tmp_path: Path) -> None:
-    cfg = write_config(
-        tmp_path,
-        media,
-        input=[str(media.video)],
-        video={"gpu": "auto"},
-        logging={"file": str(tmp_path / "gpu.log"), "console_level": "ERROR"},
-    )
-    assert main([str(cfg)]) == 0
-    text = (tmp_path / "gpu.log").read_text(encoding="utf-8")
+    cfg = write_config(tmp_path, media, inputs=[str(media.video)])
+    assert main(run_args(cfg, log_level="INFO")) == 0
+    log_files = list((tmp_path / "out" / "logs").glob("autoclip_*.log"))
+    assert log_files, "expected a derived log file"
+    text = log_files[0].read_text(encoding="utf-8")
     assert "GPU video encoder:" in text or "no usable GPU video encoder: using libx264 on the CPU" in text  # either, by machine
     assert "libx264" in text or "h264_" in text
 
@@ -394,16 +387,12 @@ def test_main_config_errors_and_init(tmp_path: Path, capsys: pytest.CaptureFixtu
     target = tmp_path / "new.json"
     assert main(["--init", str(target)]) == 0
     starter = json.loads(target.read_text(encoding="utf-8"))["clips"]
-    assert starter["scenes"] == ["best"]
-    assert (starter["short"]["min_seconds"], starter["short"]["max_seconds"]) == (20, 60)  # the lengths are in the starter
-    assert (starter["long"]["min_seconds"], starter["long"]["max_seconds"]) == (180, 600)
+    assert starter["preset"] == "both" and starter["scenes"] == "best"
     assert main(["--init", str(target)]) == 2 and "already exists" in capsys.readouterr().err
     full = tmp_path / "full.json"
     assert main(["--init-full", str(full)]) == 0
     data = json.loads(full.read_text(encoding="utf-8"))
-    assert data["clips"]["long"]["aspect"] == "16:9" and data["video"]["gpu"] == "auto"
-    # The default model is resolved for the machine: large-v3 with CUDA, small on the CPU.
-    assert data["transcript"]["model"] in {"small", "large-v3"} and data["transcript"]["enhance"]["enabled"] is True
+    assert data["clips"]["preset"] == "both" and "input" in data
 
 
 def test_generated_configs_load_without_errors(tmp_path: Path) -> None:
@@ -418,10 +407,44 @@ def test_generated_configs_load_without_errors(tmp_path: Path) -> None:
 
 
 def test_main_logging_can_be_disabled_and_directed(media: Media, tmp_path: Path) -> None:
-    quiet = write_config(tmp_path, media, input=[str(media.video)], logging={"enabled": False})
-    assert main([str(quiet)]) == 0 and not (tmp_path / "out" / "logs").exists()
-    custom = write_config(tmp_path, media, input=[str(media.video)], logging={"file": str(tmp_path / "my.log"), "enabled": True})
-    assert main([str(custom)]) == 0 and "autoclip start" in (tmp_path / "my.log").read_text(encoding="utf-8")
+    quiet = write_config(tmp_path, media, inputs=[str(media.video)])
+    assert main(run_args(quiet, log_level="OFF")) == 0 and not (tmp_path / "out" / "logs").exists()
+    enabled_cfg = write_config(tmp_path, media, inputs=[str(media.video)])
+    assert main(run_args(enabled_cfg, log_level="INFO")) == 0
+    log_files = list((tmp_path / "out" / "logs").glob("autoclip_*.log"))
+    assert log_files and "autoclip start" in log_files[0].read_text(encoding="utf-8")
+
+
+def test_events_jsonl_emits_progress_json(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = write_config(tmp_path, media, inputs=[str(media.video)], clips={"preset": "shorts"})
+    captured: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: captured.append(" ".join(map(str, a))))
+    rc = main(["run", str(cfg), "--events", "jsonl"])
+    assert rc == 0
+    assert any("progress" in line for line in captured)
+
+
+def test_overrides_include_skip_offline_and_split() -> None:
+    import argparse
+
+    from autoclip.cli import _overrides
+
+    args = argparse.Namespace(skip=["stt", "caption"], offline=True, split=True)
+    overrides = _overrides(args)
+    assert overrides.skip == ["stt", "caption"] and overrides.offline is True and overrides.split is True
+
+
+def test_main_without_arguments_defaults_to_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)  # no config.json and no input.mp4 here
+    monkeypatch.setenv("AUTOCLIP_TRANSCRIPT", str(tmp_path / "subs" / "{stem}.srt"))
+    assert main([]) in (1, 2)
+
+
+def test_main_refuses_offline_with_urls(media: Media, tmp_path: Path) -> None:
+    from autoclip.cli import main
+
+    cfg = write_config(tmp_path, media, inputs=["https://example.com/x.mp4"])
+    assert main(["--offline", str(cfg)]) == 2
 
 
 def test_module_entry_point(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

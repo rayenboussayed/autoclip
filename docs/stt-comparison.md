@@ -2,6 +2,10 @@
 
 > Generated with `tools/compare_stt.py`; the raw numbers are in `runs/stt-compare/results.json`.
 > Reproduce: `python tools/compare_stt.py VIDEO --start 4956 --duration 120`
+>
+> The settings referenced below (`transcript.enhance`, `transcript.model`, `compute.device`,
+> `processing.chunk_minutes`) are 3.x-era names; in 4.0 they are runtime overrides (`--skip denoise`,
+> `--quality`, `--device`) or automatic. The measured results still apply.
 
 
 **Scene:** `jutilities-package.mp4`, 4956-5076 s (120 s), Moroccan-dialect Arabic tech talk.

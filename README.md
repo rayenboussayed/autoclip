@@ -6,7 +6,7 @@ Free, local, one command. Runs on **Linux, macOS and Windows** (Python 3.11+). N
 ```bash
 pip install -r requirements.txt
 pip install -U "Pillow>=12.3"          # security fixes; MoviePy's "<12" pin is only conservative (CI tests both)
-python -m autoclip --init config.json  # tiny starter config   (--init-full lists every option and default)
+python -m autoclip --init config.json  # starter config (seven keys)
 python -m autoclip config.json         # or: autoclip config.json  (after `pip install -e .`)
 python -m autoclip                     # no config: ./input.mp4 with the built-in defaults
 python -m autoclip.app                 # the desktop app (same options, explained)
@@ -17,8 +17,8 @@ python -m autoclip.app                 # the desktop app (same options, explaine
 `python -m autoclip.app` opens a native window (Tk, the look of your system) with **every option of
 the config file**:
 
-- eleven tabs - *Videos, Download, Clips, Transcript, Video, Captions, Audio, Unsilence, Skip, Speed, LLM & log* - each
-  option with a one-line summary under it;
+- three config tabs - *Videos*, *Clips*, *Download* - each option with a one-line summary under it,
+  plus a runtime output-folder control that is never written to the config file;
 - a details panel that explains the option you clicked: **what** it does, **why** you would change
   it and **when** it is the right moment;
 - *All options...* opens the same explanations in a searchable list;
@@ -48,8 +48,9 @@ is exactly what `python -m autoclip config.json` would run.
   long/{video}/    same, for the long clips                                               (16:9, 3-10 min by default)
   logs/            autoclip_<timestamp>.log
   .work/{video}/   autoclip.db (recreated empty on every start) and the transcript cache
-  .work/downloads/ originals downloaded from URLs (reused by later runs; or download.original_dir)
+  .work/downloads/ originals downloaded from URLs (reused by later runs)
 ```
+
 A kind that is not requested (or finds nothing) gets no folder. Several videos share the same `short/` and `long/` folders. A *relative* `output_dir` is resolved against the current working
 directory - not against the config file - so the output folder is independent of where your config lives. An absolute `output_dir`
 (or the default `~/Videos/clips`) is used as-is.
@@ -58,55 +59,103 @@ directory - not against the config file - so the output folder is independent of
 
 Nothing is downloaded twice on purpose:
 
-* **Whisper models** live in the normal HuggingFace cache (`transcript.model_dir` only changes where; `models pull` fills it).
-  The first run may ask to download one (`transcript.consent`).
+* **Whisper models** live in the normal HuggingFace cache. The first run may ask to download one
+  (`transcript.consent` is now always `auto`).
 * **The speech enhancement model (sherpa ONNX)** is kept in `~/.cache/autoclip/models` (on Linux; the platform's cache folder
   everywhere else) and is shared by every output folder, so changing the output location no longer re-downloads it.
 * **Transcripts** are cached per video in `{output_dir}/.work/{video}/{video}.transcript.json` and reused while input, model,
   language and settings agree; a stale cache is re-transcribed.
 * **Downloaded originals** plus a small `autoclip-cache.json` in the originals folder make a second identical run (same URL
-  and settings) succeed **without a single network call** - the originals are reused. Set `download.cache: false` to force a re-pull.
-  Image-provenance? No - just file reuse.
+  and settings) succeed **without a single network call** - the originals are reused.
 * **Caption sprites** are pre-rendered once per word and cached compressed (RAM LRU over SQLite), so re-runs are instant.
 
+## Configuration
+
+The config file has **seven keys**. Everything else is a runtime override (command-line flag or environment
+variable) or derived automatically.
+
+```json
+{
+  "input": ["talks/*.mp4", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
+  "clips": {
+    "preset": "both",
+    "scenes": "best",
+    "keywords": [],
+    "ranges": []
+  },
+  "download": {
+    "platforms": {
+      "allow": ["@popular"],
+      "deny": []
+    }
+  }
+}
+```
+
+| Key | What it controls |
+|---|---|
+| `input` | videos, globs or http(s) URLs |
+| `clips.preset` | `both`, `shorts` or `long` - which clip families to render |
+| `clips.scenes` | `best`, a list, or `all` - the scene types to pick moments for |
+| `clips.keywords` | words or phrases that boost a moment |
+| `clips.ranges` | exact cuts (`"00:01:00-00:01:45"`), one per line |
+| `download.platforms.allow` | extractor families or groups (`@popular`, …) that may be downloaded |
+| `download.platforms.deny` | families that are never downloaded, even when an allow entry covers them |
+
+The built-in clip profiles are fixed: **short** = 20-60 s at 9:16, **long** = 3-10 min at 16:9. Use `clips.ranges`
+or `--split` for other shapes. `clips.scenes` is `"all"`, one type, or a list: `best attractive exciting funny sad
+emotional inspiring calm educational controversial`.
+
+Runtime overrides (flags win over environment variables):
+
+| Flag | Env var | What it does |
+|---|---|---|
+| `--output-dir DIR` | `AUTOCLIP_OUTPUT_DIR` | output folder |
+| `--transcript FILE` | `AUTOCLIP_TRANSCRIPT` | explicit `.srt`/`.json` transcript |
+| `--cookies BROWSER\|FILE` | `AUTOCLIP_COOKIES` | cookies for downloads |
+| `--proxy URL` | `AUTOCLIP_PROXY` | proxy for downloads |
+| `--log-level …` | `AUTOCLIP_LOG_LEVEL` | log verbosity |
+| `--device auto\|cpu\|gpu` | `AUTOCLIP_DEVICE` / `AUTOCLIP_CPU=1` | GPU usage |
+| `--skip NAME` | `AUTOCLIP_SKIP` | skip pipeline steps (comma separated) |
+| `--llm-model MODEL` | `AUTOCLIP_LLM_MODEL` / `AUTOCLIP_LLM_URL` | local LLM model / URL |
+| `--offline` | `AUTOCLIP_OFFLINE=1` | forbid downloads and AI network calls |
+| `--split` | — | cut the video into equal 600 s parts |
+| `--mode …` | `AUTOCLIP_MODE` | performance / resources / balance |
+| `--quality …` | `AUTOCLIP_QUALITY` | output quality tier |
+
+Env values apply first; an explicit flag always wins. `--init` and `--init-full` both write the complete seven-key file.
+
+A wrong *type* or an unknown key is still fatal (`ConfigError`). A wrong *value* warns
+(`config: invalid value for <path>; falling back to default`) and uses the field default, so a typo in one option no
+longer aborts the run. Keys starting with `_` are ignored, so `"_comment"` entries are fine. Removed keys from 3.x
+warn and are ignored (see `docs/UPGRADING-4.0.md`).
+
+See `docs/options-reference.md` for the generated reference of the seven keys.
 
 ## Short and long clips, scene types
 
 ```json
 {
   "input": ["talks/*.mp4", "interview.mov"],
-  "output_dir": "clips",
-  "clips": {
-    "kinds": ["short", "long"],
-    "scenes": "all",
-    "short": {"count": 3, "min_seconds": 20, "target_seconds": 35, "max_seconds": 60,  "aspect": "9:16"},
-    "long":  {"count": 1, "min_seconds": 180, "target_seconds": 240, "max_seconds": 600, "aspect": "16:9"}
-  }
+  "clips": {"preset": "both", "scenes": "all", "keywords": [], "ranges": []}
 }
 ```
-* `scenes` is `"all"`, one type, or a list: `best attractive exciting funny sad emotional inspiring calm educational controversial`.
-  **Every scene type gets its own clips** (`count` is per scene type and per kind), so `"all"` with `count: 3` means up to
-  30 clips per kind. A moment picked for one scene is never reused under another label; scenes pick in the order listed,
-  so in a short video the later ones may find fewer free moments than `count`.
+
+* `scenes` is `"all"`, one type, or a list. **Every scene type gets its own clips** (`count` is per scene type and per
+  kind), so `"all"` with the default counts means up to 10 short clips and 2 long clips per scene type. A moment picked
+  for one scene is never reused under another label; scenes pick in the order listed, so in a short video the later ones
+  may find fewer free moments than `count`.
 * Each kind has its own length range, count and `aspect` (`9:16`, `1:1`, `4:5`, `16:9`, `original`).
   If a video is too short for a kind (e.g. 2-minute video, long clips from 3 minutes) that kind is skipped with a warning.
-* **The length of a clip is `clip(minimum, target, maximum)`:**
-  * `min_seconds` is a hard floor: the clip is never shorter. If the pause removal would cut it below the minimum, the
-    least important cuts are given back (the fillers first, then the shortest pauses).
-  * `target_seconds` is the *recommended* length - a preference, not a limit. Candidates near it get a small score bonus,
-    so the clips tend to have that length while the scene type still decides the content. Leave it out (`null`) to take
-    whatever length the content offers.
-  * `max_seconds` is a hard ceiling: a clip is never longer, not even by the padding around it.
-* `mode: "ranges"` cuts your own ranges per kind (`clips.short.ranges`, `clips.long.ranges`, scene type `custom`);
-  `mode: "split"` cuts equal parts into `long/{video}/`.
-* The file is validated before anything is touched: an unknown key, a wrong type or a value out of range is reported with
-  the option that caused it (`error: clips.short.count: Input should be a valid integer`) and the run stops. Keys starting
-  with `_` are ignored, so `"_comment"` entries are fine.
-* `input` is a path, a glob or a list. One broken video or clip never stops the batch. Exit status: `0` all done, `1` something
-  failed, `2` bad configuration. With several videos `transcript.file` needs `{stem}` (e.g. `subs/{stem}.srt`).
-  Unknown config keys are errors.
+* **The length of a clip is `clip(minimum, maximum)`:** `min_seconds` is a hard floor (the pause removal gives cuts back
+  rather than going below it), `max_seconds` is a hard ceiling (padding around the cut cannot push it over).
+* `clips.ranges` cuts your own ranges (scene type `custom`), applies to both kinds; `--split` cuts equal 600 s parts into
+  `long/{video}/` and cannot be combined with `clips.ranges`.
+* `input` is a path, a glob or a list. One broken video or clip never stops the batch. Exit status: `0` all done,
+  `1` something failed, `2` bad configuration. With several videos `transcript.file` needs `{stem}` (e.g. `subs/{stem}.srt`).
 
 ## Downloading URLs (YouTube, TikTok, Vimeo, ...)
+
 `input` accepts **http(s) URLs next to files and globs**. A URL is downloaded with
 [yt-dlp](https://github.com/yt-dlp/yt-dlp) (installed with autoclip) and then goes through exactly the
 same pipeline as a local file:
@@ -114,54 +163,45 @@ same pipeline as a local file:
 ```json
 {
   "input": ["talks/*.mp4", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
-  "output_dir": "clips",
-  "download": {
-    "quality": 1080,
-    "prefer": "at_most",
-    "codec": "h264",
-    "container": "mp4",
-    "platforms": {"allow": ["@popular", "vimeo"], "deny": ["tiktok"]},
-    "subtitles": {"enabled": true, "languages": ["en"], "use_as_transcript": "manual"}
-  }
+  "download": {"platforms": {"allow": ["@popular", "vimeo"], "deny": ["tiktok"]}}
 }
 ```
 
-* **Quality and format:** `quality` is a short side in pixels (144-4320) or `"best"`/`"worst"`; `fps`
-  (`null` = any), `codec` (`auto`, `h264`, `vp9`, `av1`, `h265`), `container` (`auto`, `mp4`, `mkv`,
-  `webm`; a preference, not a forced remux) and `audio_quality`/`audio_language` (`null` keeps the
-  video's original language, so a dub never wins on bitrate alone). `prefer` is `closest` (default),
-  `at_most` or `at_least`, and applies to quality and fps. A direct download beats an HLS/DASH variant
-  with the same quality and fps: the segmented one reports an inflated bitrate and throttles badly.
-* **Originals** are kept in `{output_dir}/.work/downloads/` (or `download.original_dir`) and reused
-  by later runs; the clip folders stay clips-only. The output name is `<title> [<video id>]`, and a
-  time range adds `[<start>-<end>]`.
-* **Platform policy:** `download.platforms.allow` / `deny` hold extractor families (`youtube`,
-  `tiktok`, `vimeo`, ...) or groups. `deny` wins, the default allow list is `@popular`, and the
-  `generic` family (any web page with a video) is only used when it is named - so a random link is
-  refused before a request is made. Built-in groups are `@popular`, `@social`, `@video` and `@all`;
-  define your own with `groups: {"@news": ["youtube", "vimeo"]}`. `settings` overrides options for
-  one family or group (`{"youtube": {"quality": 720}}`), and `group_by_platform` puts the originals
-  in one folder per platform.
-* **Lists and extras:** `playlist` is `single` (default; a playlist URL still expands, capped at one
-  entry) or `all` with `max_videos` (50). `metadata` writes `.info.json`/thumbnail/description next
-  to the original. `time_range` (`"MM:SS-MM:SS"`/`"HH:MM:SS-HH:MM:SS"`) downloads only that part
-  when ffmpeg *and* ffprobe are on `PATH`; otherwise the whole video is downloaded and trimmed
-  locally. `cookies` reads a browser store (`from_browser`) or a Netscape `cookies.txt` (`file`) -
-  never both and never a shell command. `network` sets proxy, rate limit, retries, socket timeout and
-  a pause between playlist entries. `js_runtime` selects/points at Deno, Node, Bun or QuickJS for
-  YouTube's signature challenges.
-* **Subtitles:** `download.subtitles` saves the platform's subtitles (`.srt` when offered, `.vtt`
-  converted) for `languages`. `use_as_transcript` is `never` (default; files only), `manual` (only
-  human-made subtitles may replace Whisper) or `always` (automatic captions too). An explicit
-  `transcript.file` always wins; `transcript.mode: "auto"` prefers a downloaded subtitle, then the
-  transcript cache, then Whisper; `"whisper"` ignores them unless `use_as_transcript` is `always`.
-* **Command line:** without a config file the built-in defaults run `./input.mp4` (a missing file is
-  reported with a hint, exit status 2, and nothing is written); `--download-only config.json` downloads
-  the URLs and stops; `--formats URL` prints every available format and the one autoclip would choose
-  (no config file needed); `--platforms [URL]` prints the allow/deny policy and where a URL would go;
-  `--allow a,b` and `--deny c` override the loaded lists for one run. Inspection modes create no
-  folders and configure no logging. A run with only local files never imports yt-dlp and makes no
-  network request.
+* **Quality and format are automatic**: the download short side follows the output quality tier (1080/720/480/360/240 for
+  highest/high/medium/low/lowest). A direct HTTP(S) format beats an HLS/DASH variant with the same quality and fps (the
+  segmented one reports an inflated bitrate and throttles badly), and the video's original audio track is kept over a
+  higher-bitrate dub. Cookies (`--cookies`/`AUTOCLIP_COOKIES`) and a proxy (`--proxy`/`AUTOCLIP_PROXY`) are runtime only.
+* **Originals** are kept in `{output_dir}/.work/downloads/` and reused by later runs; the clip folders stay clips-only.
+  The output name is `<title> [<video id>]`, and a time range adds `[<start>-<end>]`.
+* **Platform policy:** `download.platforms.allow` / `deny` hold extractor families (`youtube`, `tiktok`, `vimeo`, ...) or
+  groups. `deny` wins, the default allow list is `@popular`, and the `generic` family (any web page with a video) is only
+  used when it is named - so a random link is refused before a request is made. Built-in groups are `@popular`,
+  `@social`, `@video` and `@all`; name families or groups directly in allow/deny (there is no `groups` file key).
+* **Playlists:** a URL whose shape names a list (channel/playlist/album) downloads every entry up to 50; a watch URL stays
+  single. Metadata sidecars (`.info.json`, thumbnail, description) are always written next to the original.
+* **Subtitles:** a downloaded subtitle is used when it exists (a manual track is preferred; automatic captions are used
+  when there is no manual one). An explicit `transcript.file` always wins.
+* **Command line:** without a config file the built-in defaults run `./input.mp4` (a missing file is reported with a hint,
+  exit status 2, and nothing is written); `--download-only config.json` downloads the URLs and stops; `--formats URL`
+  prints every available format and the one autoclip would choose (no config file needed); `--platforms [URL]` prints the
+  allow/deny policy and where a URL would go; `--allow a,b` and `--deny c` override the loaded lists for one run.
+  Inspection modes create no folders and configure no logging. A run with only local files never imports yt-dlp and makes
+  no network request.
+
+## AI (optional, local)
+
+All local LLM calls (Ollama or any OpenAI-compatible server) and Stable Diffusion thumbnails go through one
+process-wide lock, so even in `performance` mode they never run concurrently. A missing backend is logged and skipped,
+never fatal; the clips keep their heuristic result.
+
+* `--llm-model MODEL` (`AUTOCLIP_LLM_MODEL`/`AUTOCLIP_LLM_URL`) selects the model and server; a local Ollama at
+  `http://localhost:11434` with `llama3.2` is the default.
+* With an LLM available, highlight moments get re-rank scores, generated titles and social captions; long clips get
+  heuristic titles otherwise. Captions are written as `<clip>.txt` sidecars.
+* Stable Diffusion thumbnails replace the frame JPEG only when `torch`/`diffusers` are installed; otherwise the frame
+  JPEG is kept.
+* `--offline` (or `AUTOCLIP_OFFLINE=1`) skips every AI call and never downloads a model. `--skip llm` disables only
+  the LLM calls.
 
 ## HTTP server (optional)
 
@@ -189,10 +229,10 @@ docker compose up --build
 | `DELETE /api/jobs/{job_id}` | remove the job and its files |
 | `WS /api/jobs/{job_id}/ws` | the current snapshot, then every step/percent update (plus keepalive frames) |
 
-The uploaded config keeps every option (clip length, scenes, captions, quality, ...); `input` and
-`output_dir` are ignored because the server owns the uploaded file and the job folder. The defaults
-are the same as the command line - notably `download.quality: "best"`, source fps, no upscaling and
-`quality: "high"` - so a server job produces high-quality clips unless the config asks for something else.
+The uploaded config keeps only the seven keys; `input` and `output_dir` are always overridden because the server owns
+the uploaded file and the job folder. The defaults are the same as the command line - notably the download short side
+follows the quality tier, source fps, no upscaling and `quality: "high"` - so a server job produces high-quality clips
+unless the config asks for something else.
 
 | environment variable | default | meaning |
 | --- | --- | --- |
@@ -209,7 +249,8 @@ server behind HTTPS when it is reachable from outside). The Docker image install
 `server` extra; `docker-compose.yml` mounts two named volumes and reads the same variables.
 
 ## Where the work runs
-`compute.device` decides whether the GPU is used at all:
+
+`--device` decides whether the GPU is used at all:
 
 | value | effect |
 | --- | --- |
@@ -217,15 +258,15 @@ server behind HTTPS when it is reachable from outside). The Docker image install
 | `cpu` | **nothing touches the GPU**: the transcriber runs on the CPU and the clips are encoded with libx264 |
 | `gpu` | the GPU is preferred (the transcriber with CUDA, the video encoder with NVENC/QSV/AMF/VideoToolbox) |
 
-`transcript.device` (`auto`/`cpu`/`cuda`) still selects the device of the transcriber alone and wins
-over `compute.device: gpu`; `compute.device: cpu` always wins. On the CPU the transcriber is much
-slower: `large-v3` needs roughly ten times the time of `small`, so pick a smaller
-`transcript.model` for long videos on a CPU-only machine.
+On the CPU the transcriber is much slower: `large-v3` needs roughly ten times the time of `small`, so pick a smaller
+model tier (via `--quality`) for long videos on a CPU-only machine. `--quality` also selects the transcription model:
+highest/high use `large-v3` (high drops to `small` with no GPU), medium `small`, low `base`, lowest `tiny`.
 
-## Media quality (`quality`)
-`quality` is the single global output-quality control instead of low-level encoder knobs:
+## Media quality (`--quality`)
 
-| value | resolution vs `video.short_side` | frame rate | audio |
+`--quality` is the single global output-quality control instead of low-level encoder knobs:
+
+| value | resolution vs 1080 short side | frame rate | audio |
 | --- | --- | --- | --- |
 | `highest` | 100% | source | 256 kbps AAC |
 | `high` (default) | 80% | source | 192 kbps AAC |
@@ -233,123 +274,97 @@ slower: `large-v3` needs roughly ten times the time of `small`, so pick a smalle
 | `low` | 40% | capped at 24 fps | 96 kbps AAC |
 | `lowest` | 20% | capped at 15 fps | 64 kbps AAC |
 
-Dimensions are rounded to even numbers and the source is never enlarged unless `video.upscale` is on. The chosen level also selects CPU/GPU encoder arguments; users no longer configure CRF, FFmpeg presets, bitrate caps or audio bitrates. An explicit `video.fps` remains a manual override and wins over the automatic cap.
+Dimensions are rounded to even numbers and the source is never enlarged. The chosen level also selects CPU/GPU encoder
+arguments; users no longer configure CRF, FFmpeg presets, bitrate caps or audio bitrates.
 
 ## GPU acceleration (automatic, with CPU fallback)
-`video.gpu` is `auto` (default), `off`, or one of `nvenc` (NVIDIA), `videotoolbox` (macOS), `qsv` (Intel), `amf` (AMD).
-An encoder is used only if ffmpeg can **actually encode a test clip with it on this machine** (ffmpeg builds list
+
+The encoder is used only if ffmpeg can **actually encode a test clip with it on this machine** (ffmpeg builds list
 encoders such as `h264_nvenc` even on computers without that GPU); otherwise libx264 on the CPU is used and the log says so.
 * GPU workers are capped at 3 (consumer GPUs limit simultaneous encode sessions).
-* Transcription uses the GPU too when CUDA is available (`transcript.device: auto`). A GPU that
-  fails mid-file (missing cuBLAS, out of memory, ...) is retried on the CPU for that chunk; if
-  the CPU also fails the step is skipped and logged ("transcription skipped (...): selecting on
-  audio only; captions and titles need a transcript") instead of aborting the run. Voice-activity
-  detection is retried without VAD when its model is unavailable.
+* Transcription uses the GPU too when CUDA is available. A GPU that fails mid-file (missing cuBLAS, out of memory, ...) is
+  retried on the CPU for that chunk; if the CPU also fails the step is skipped and logged ("transcription skipped (...):
+  selecting on audio only; captions and titles need a transcript") instead of aborting the run. Voice-activity detection is
+  retried without VAD when its model is unavailable.
 * Only the **encode** step is on the GPU: decoding and compositing (captions, blur, layout) stay on the CPU, so expect a
   speed-up in encoding, not a 10x end-to-end gain.
 
 ## Very long videos
+
 The transcript is produced in **fixed 5-minute chunks chosen automatically**; the boundaries move to the quietest
 moment nearby and the language is detected once and reused. Neither the denoiser nor Whisper ever holds more than one
 chunk in memory, so a 3-hour file no longer needs 3 hours of audio at once. Analysis already streams, noise reduction
 works in 60 s pieces, and selection stays **global**, so a clip is never cut at a chunk edge and a long clip may be
 longer than a chunk. Very short videos are transcribed in a single chunk; chunking is not user-tunable.
 
-## Unsilencing media before processing (optional)
+## Unsilencing (automatic)
 
-```json
-"unsilence": {
-  "enabled": true
-}
-```
-
-When enabled, the media is copied to `<output>/long/<video>/unsilence_<video>.mp4` using
-pydub silence detection and a conservative MoviePy cut. Every later stage, including
-transcription, selection and rendering, then operates only on the audible stretches and uses the
-preserved high-quality intermediate. pydub needs FFmpeg to load the audio, and the feature fails
-softly to the original file when that dependency or the audio itself are unavailable.
+Silence removal is always attempted before processing: the media is copied to `{output}/.work/{stem}/unsilence_{stem}.mp4`
+using pydub silence detection and a conservative MoviePy cut. Every later stage, including transcription, selection and
+rendering, then operates only on the audible stretches. pydub needs FFmpeg to load the audio, and the feature fails
+softly to the original file when that dependency or the audio itself are unavailable (and platform subtitles are dropped,
+since the new timeline is no longer aligned).
 
 ## Clear speech for the transcriber (on by default)
-Before the audio is transcribed it is **enhanced**, so the ASR model hears clear words instead of room noise,
-keyboard clicks or hum. `transcript.enhance` is enabled by default:
 
-| option | default | meaning |
-| --- | --- | --- |
-| `enabled` | `true` | denoise the audio before transcription |
-| `backend` | `sherpa` | `sherpa` (small ONNX denoiser) or `noisereduce` (spectral gating, no model) |
-| `model` | `gtcrn` | `gtcrn` (0.5 MB, fastest) or `dpdfnet_baseline` / `dpdfnet2` / `dpdfnet4` / `dpdfnet8` (16 kHz, better) |
-| `attenuation_limit_db` | `12.0` | how much noise may be removed (0 = off, 100 = no suppression) |
-| `denoise_strength` | `0.75` | only for the `noisereduce` backend |
-| `snr_threshold_db` | `20.0` | only enhance a chunk whose speech-to-noise ratio is below this (`null` = always) |
-| `model_dir` | empty (shared per-user cache, e.g. `~/.cache/autoclip/models` on Linux) | where the ONNX model is kept |
-* The denoiser thread count is now chosen internally from the active mode and available CPU cores.
-* The `sherpa` backend needs the optional package `sherpa-onnx` (`pip install sherpa-onnx`); its model is downloaded
-  once from the sherpa-onnx release. Without the package the run continues with the original audio and says so.
+Before the audio is transcribed it is **enhanced**, so the ASR model hears clear words instead of room noise,
+keyboard clicks or hum. Enhancement is automatic:
+
+* `sherpa` (small ONNX denoiser) or `noisereduce` (spectral gating, no model) is chosen internally; `gtcrn` is the
+  fastest model, `dpdfnet8` the best.
 * **Denoising only helps when there is noise.** A clean recording is damaged by it and the ASR model then drifts into
-  the wrong language, so every chunk is measured first and left alone when it is clean enough (`snr_threshold_db`).
+  the wrong language, so every chunk is measured first and left alone when it is clean enough.
 * Enhancement is part of the transcript cache key: changing it re-transcribes the video.
-* Set `transcript.enhance.enabled: false` to transcribe the untouched audio.
+* `--skip denoise` transcribes the untouched audio (and changes the cache key).
+* `--skip audio_enhance` leaves the clip audio untouched (no high-pass, loudness or limiter).
 
 ## Transcription
-* `transcript.model` is `large-v3` (the most accurate multilingual model); `tiny`, `base`, `small` and `medium` are
-  faster and smaller. On the CPU a model that does not fit into the free RAM is replaced by a smaller one.
+
+* The model follows `--quality` (highest/high `large-v3`, medium `small`, low `base`, lowest `tiny`; high drops to
+  `small` with no GPU). On the CPU a model that does not fit into the free RAM is replaced by a smaller one.
 * The audio is transcribed in fixed 5-minute chunks: neither the denoiser nor Whisper ever holds more than that,
   and the language is detected once and reused for the remaining chunks.
+* `--transcript FILE` loads an explicit `.srt`/`.json` (`{stem}` is replaced); `--skip stt` stops before Whisper (an
+  explicit, downloaded or cached transcript is still used).
 
 ## What it does
-1. Enhances the audio and transcribes it with faster-whisper (auto language) or loads `.srt` / `.json`.
+
+1. Enhances the audio and transcribes it with faster-whisper (auto language), or loads `.srt` / `.json` (or a downloaded subtitle).
 2. Scores sentence-aligned windows per scene type from audio energy, speech rate, hooks and lexicons; optional local-LLM re-rank.
 3. Renders each clip: denoise + loudness, cuts long pauses and "um/uh", blurred background, word-highlighted captions inside
-   the app-UI safe zone, fades, H.264 High + AAC (`+faststart`, capped bitrate).
+   the safe zone, fades, H.264 + AAC (`+faststart`).
 
 ## Skipping steps
-Every step runs by default. `skip.*` leaves individual steps out without changing the rest of the
-config - useful for a quick render, a silent clip or a run that must not download a model:
 
-```json
-{
-  "skip": {
-    "stt": false,
-    "denoise": false,
-    "audio_enhance": false,
-    "audio": false,
-    "pauses": false,
-    "caption": false,
-    "title": false,
-    "fade": false,
-    "thumbnail": false,
-    "llm": false,
-    "snap": false
-  }
-}
-```
+Every step runs by default. `--skip NAME` (or `AUTOCLIP_SKIP=a,b`) leaves individual steps out without changing the
+rest of the config - useful for a quick render, a silent clip or a run that must not download a model:
 
-| option | what is left out |
+| name | what is left out |
 | --- | --- |
-| `stt` | Whisper. An explicit `transcript.file`, a downloaded subtitle or a cached transcript is still used; without one the run continues without text (highlight selection then falls back to audio-only windows). Cannot be combined with `transcript.mode: "whisper"`. |
-| `denoise` | Speech enhancement before Whisper **and** noise reduction of the clip audio. The transcript cache key changes, so an enhanced cache is not reused for raw audio. |
-| `audio_enhance` | High-pass, loudness normalisation and the limiter of the clip audio; the audio stays at its original level. Denoising is controlled separately. |
+| `stt` | Whisper. An explicit, downloaded or cached transcript is still used; without one the run continues without text (highlight selection then falls back to audio-only windows). |
+| `denoise` | Speech enhancement before Whisper **and** noise reduction of the clip audio. The transcript cache key changes. |
+| `audio_enhance` | High-pass, loudness normalisation and the limiter of the clip audio; the audio stays at its original level. |
 | `audio` | The audio track: clips are muted and the audio is not decoded (so pauses cannot be removed either). |
-| `pauses` | Pause shortening and filler-word removal; the clip keeps its whole selected window. |
-| `caption` | Burned-in captions (even when `captions.enabled` is true). |
-| `title` | The hook title (even when `title.enabled` is true). |
-| `fade` | Video and audio fades at the clip edges. |
-| `thumbnail` | The `.jpg` cover next to each clip. |
-| `llm` | The optional local-LLM re-rank; the heuristic ranking is used and no request is made. |
-| `snap` | Snapping a text-selected window to shot cuts; audio-only quiet snapping still applies. |
+| `pauses` | Keep long pauses and filler sounds in the clips. |
+| `caption` | No burned-in captions. |
+| `title` | No overlay title, even when the model generated one. |
+| `fade` | No video or audio fades. |
+| `thumbnail` | Keep the frame JPEG instead of generating an AI thumbnail. |
+| `llm` | No Ollama calls (ranking, titles, social captions). |
+| `snap` | Do not snap cut points to shot changes. |
 
-`audio.enhance: false` remains the master switch for all clip-audio processing and turns both
-`audio_enhance` and `denoise` off. Skipping `stt`, `caption` and `title` also lets ranges/split runs
+`--skip audio` mutes the clips and stops audio decoding. Setting `--skip caption`/`--skip title` lets ranges/split runs
 avoid transcription entirely when no text is needed.
 
-## Automatic performance mode (`mode`)
-`compute.mode` decides how the run balances throughput against resource usage:
+## Automatic performance mode (`--mode`)
+
+`--mode` decides how the run balances throughput against resource usage:
 
 | value | meaning | typical use |
 | --- | --- | --- |
-| `performance` | Use as much CPU and memory as the configured limits allow; keep parallelism high and threads bounded only by the encoder cap | dedicated machine / servers |
+| `performance` | Use as much CPU and memory as the configured limits allow | dedicated machine / servers |
 | `resources` | Stay as lean as possible; render in-process and keep memory pressure low | laptops, shared machines |
-| `balance` | Start in the middle and adapt after every batch | default |
+| `balance` | Start in the middle and adapt after every batch (default) | default |
 
 The mode is **adaptive, not static**: before each render batch the worker plan is recomputed from current free
 memory and CPU, and after each completed batch the monitor smooths the observed utilisation (EMA) and nudges the
@@ -357,16 +372,17 @@ CPU budget up or down. If memory becomes tight or a worker dies, parallelism dro
 is below target and memory is calm, budget is raised (within the mode's bounds). Containers/cgroups are honoured
 on Linux, and macOS/Windows/Linux all use the same affinity/`psutil`-based accounting. Automatic values are logged
 as `automation ...`, and the current CPU-budget choice is persisted under `<output_dir>/.work/adaptive.json` so the
-next run starts close to the learned optimum. It is an internal tuning mechanism — no manual resource knobs are required.
+next run starts close to the learned optimum.
 
 ## Resources, storage, logs
+
 * Before and after every operation the script re-reads CPU count (affinity + container quota) and *free* RAM. The number
   of parallel renders, encoder threads, cache size and CPU budget are derived automatically from these readings and the
-  active `compute.mode`; they shrink under memory pressure and recover when memory is available again. A smaller Whisper
+  active `--mode`; they shrink under memory pressure and recover when memory is available again. A smaller Whisper
   model is chosen if the requested one will not fit in free RAM.
 * One SQLite database (WAL) per video, recreated empty at every start. Only the transcript JSON is kept between runs.
 * Every production function is wrapped with `traced`: callers get `[START]` / `[END]` output, `START` /
-  `END` / `FAIL` log records with machine state, and post-operation memory rebalancing. nested calls are
+  `END` / `FAIL` log records with machine state, and post-operation memory rebalancing. Nested calls are
   not double-logged, keeping the file usable instead of exploding it.
 * `os.fsync()` is called after every `.log` record (after Python-level flush), so completed log lines
   are on disk before the caller regains control. See [`docs/logging.md`](docs/logging.md) for design,
@@ -427,6 +443,7 @@ Without an argument the AppImage and the snap open the desktop app, with one the
 line - so `./autoclip-x86_64.AppImage config.json` still cuts clips.
 
 ## Platform notes
+
 * **ffmpeg**: decoding uses the one on `PATH` if present, otherwise the binary bundled with `imageio-ffmpeg`. Encoding goes
   through MoviePy, which uses `FFMPEG_BINARY` if you set it, else its bundled binary - and the encoder is probed with that
   same binary, so a GPU encoder is only chosen when the build that will really encode can use it.
@@ -437,30 +454,26 @@ line - so `./autoclip-x86_64.AppImage config.json` still cuts clips.
 
 See `docs/options-reference.md` for every option and its explanation (this is the complete reference).
 
+## Upgrading from 3.x
+
+See `docs/UPGRADING-4.0.md` for the seven-key schema, the removed-key → runtime replacement table, the
+`--flag`/`AUTOCLIP_*` equivalents, and the behaviour that is automatic now. `UPGRADING-3.0.md` covers the 2.x → 3.0
+changes and is kept as history. 4.0 is a breaking config-schema release: old config files still load (removed keys warn
+and are ignored), but their settings must move to flags or environment variables.
+
 ## Upgrading from 2.1
 
-See `docs/UPGRADING-3.0.md` for the 3.0 command-line, `autoclip cfg.json` compatibility, trim rename and other upgrade details.
-2.2 is additive: the new `download` section has defaults, so a 2.1 config runs unchanged, and a run whose
-`input` holds only local files never imports yt-dlp and makes no network request. What is new:
-
-* `input` also accepts http(s) URLs; files and globs keep their old meaning. A URL is downloaded first and
-  then goes through the usual pipeline.
-* `download.*` controls quality and format, platform allow/deny, playlists, metadata, time ranges, cookies,
-  network settings, the JavaScript runtime and subtitles (see [Downloading URLs](#downloading-urls-youtube-tiktok-vimeo-)).
-* The command line gained `--download-only`, `--formats URL`, `--platforms [URL]`, `--allow` and `--deny`.
-* The desktop app gained the *Download* tab, *Copy error* / *Copy log* and `AUTOCLIP_DEBUG=1`; a
-  missing config file now starts from the built-in defaults in memory instead of asking where to save.
-* `skip.*` leaves individual pipeline steps out (all eleven switches are `false` by default, so
-  nothing changes unless you ask for it).
-
-Nothing was removed or renamed, so a 2.1 config is a valid 2.2 config.
+2.2 was additive: the new `download` section had defaults, so a 2.1 config ran unchanged. Nothing was removed or renamed,
+so a 2.1 config is a valid 2.2 config.
 
 ## Upgrading from 2.0
+
 `clips.style/count/min_seconds/max_seconds/ranges` -> `clips.scenes` and `clips.short` / `clips.long`; `video.aspect` and
-`video.size` -> each kind's `aspect`; `clips.snap_scenes` -> `clips.snap_to_cuts`; clips now go to `{output_dir}/{short|long}/{video}/`.
+`video.size` -> each kind's `aspect`; `clips.snap_to_cuts` -> `clips.snap_to_cuts`; clips now go to `{output_dir}/{short|long}/{video}/`.
 A list of styles used to be *blended* into one ranking; now each gets separate clips.
 
 ## Security
+
 Config files are trusted input, but: no shell is ever invoked (argument lists only), `llm.base_url` must be http(s), the API key is
 never logged, SQL is parameterised, cached arrays load with `allow_pickle=False`, ruff's bandit rules are enforced.
 
@@ -472,14 +485,14 @@ command. Metadata files (`.info.json`, thumbnail, description) are written next 
 
 ## Changelog
 
-See [`CHANGELOG.md`](CHANGELOG.md) for release-by-release notes (from 2.1.0 to
-the current release). The current code is version `3.0.11`.
+See [`CHANGELOG.md`](CHANGELOG.md) for release-by-release notes. The current code is version `4.0.0`.
 
 ## Development
+
 ```bash
 pip install -r requirements-dev.txt
 ruff check . && ruff format --check . && mypy autoclip tests tools
-pytest            # fails below 95% branch coverage (currently 100%); real ffmpeg, real worker processes
+pytest            # fails below 100% branch coverage (currently 100%); real ffmpeg, real worker processes
 pre-commit install   # the same checks on every commit (ruff, mypy and the test suite)
 ```
 

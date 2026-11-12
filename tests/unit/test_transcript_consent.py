@@ -1,4 +1,4 @@
-"""Download consent: cached models run, uncached ones need an explicit yes (and offline never downloads)."""
+"""Download consent: cached models run, uncached ones need an explicit yes (and ``consent: "never"`` never downloads)."""
 
 from __future__ import annotations
 
@@ -41,7 +41,6 @@ def _run(
     monkeypatch: pytest.MonkeyPatch,
     downloader: Downloader,
     *,
-    offline: bool = False,
     consent: str = "ask",
     answer: Any = None,
     assume_yes: bool = False,
@@ -55,11 +54,7 @@ def _run(
         media,
         tmp_path / "out",
         transcript={
-            "model": "small",
-            "model_dir": str(tmp_path / "models"),
-            "offline": offline,
             "consent": consent,
-            "auto_downgrade": False,
         },
     )
     info: MediaInfo = probe(media.video)
@@ -71,14 +66,13 @@ def test_a_cached_model_needs_no_prompt_and_no_download(media: Any, tmp_path: Pa
     segs = _run(media, tmp_path, monkeypatch, downloader, answer=lambda *a, **k: pytest.fail("cached: no prompt"))
     assert [s.text for s in segs] == SENTENCES
     assert len(downloader.calls) == 1 and downloader.calls[0]["local_files_only"] is True
-    assert downloader.calls[0]["cache_dir"] == str(tmp_path / "models")
     assert downloader.online == []
 
 
-def test_offline_with_an_uncached_model_fails_without_prompting(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_consent_never_with_an_uncached_model_fails_without_prompting(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     downloader = Downloader()
-    with pytest.raises(AutoclipError, match="offline"):
-        _run(media, tmp_path, monkeypatch, downloader, offline=True, answer=lambda *a, **k: pytest.fail("offline: no prompt"))
+    with pytest.raises(AutoclipError, match="consent is 'never'"):
+        _run(media, tmp_path, monkeypatch, downloader, consent="never", answer=lambda *a, **k: pytest.fail("never: no prompt"))
     assert len(downloader.calls) == 1 and downloader.calls[0]["local_files_only"] is True
     assert downloader.online == []
 
@@ -110,7 +104,7 @@ def test_yes_downloads_the_model_once_and_then_transcribes(media: Any, tmp_path:
     segs = _run(media, tmp_path, monkeypatch, downloader, answer=lambda *a, **k: "yes please")
     assert [s.text for s in segs] == SENTENCES
     assert [call["local_files_only"] for call in downloader.calls] == [True, False]
-    assert downloader.online[0]["model"] == "small" and downloader.online[0]["cache_dir"] == str(tmp_path / "models")
+    assert downloader.online[0]["model"] == "tiny"
 
 
 def test_autoclip_assume_yes_downloads_without_prompting(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -130,16 +124,18 @@ def test_the_seams_ask_faster_whisper_with_the_right_flags(monkeypatch: pytest.M
     """The two module-level seams are the only place that imports the real downloader."""
     calls: list[dict[str, Any]] = []
 
+    cached = {"v": False}
+
     def download_model(model_name: str, **kwargs: Any) -> None:
         calls.append({"model": model_name, **kwargs})
-        if kwargs["local_files_only"] and not (tmp_path / "models").exists():
+        if kwargs["local_files_only"] and not cached["v"]:
             raise RuntimeError("not cached")
 
     _utils(monkeypatch, download_model)
-    assert transcript._model_is_cached("small", str(tmp_path / "models")) is False
-    (tmp_path / "models").mkdir()
-    assert transcript._model_is_cached("small", str(tmp_path / "models")) is True
-    transcript._download_model("small", str(tmp_path / "models"))
+    assert transcript._model_is_cached("small") is False
+    cached["v"] = True
+    assert transcript._model_is_cached("small") is True
+    transcript._download_model("small")
     assert [call["local_files_only"] for call in calls] == [True, True, False]
     assert all(call["model"] == "small" for call in calls)
 

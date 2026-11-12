@@ -17,7 +17,7 @@ import traceback
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from types import TracebackType
-from typing import Any, cast
+from typing import cast
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -31,8 +31,12 @@ except Exception:  # pragma: no cover - depends on the installed extras
     _DND_FILES = None
 
 import threading
+from collections.abc import Callable
 
+from ..core.config import JsonValue
 from ..core.errors import ConfigError
+from ..core.events import CancelToken
+from ..core.transcript import ConsentProvider
 from .fields import SECTIONS, Option
 from .form import Form, ScrollFrame, unflatten
 from .session import (
@@ -40,6 +44,7 @@ from .session import (
     cancel_pipeline,
     check_config,
     default_config_path,
+    default_output_dir,
     default_values,
     open_folder,
     read_config,
@@ -86,8 +91,8 @@ FOOTER_BUTTON_PADDING = (12, 8)
 def _sashpos(pane: ttk.PanedWindow, index: int, position: int | None = None) -> int:
     """Read (or set) one sash position of a paned window."""
     if position is None:
-        return int(cast(Any, pane).sashpos(index))
-    cast(Any, pane).sashpos(index, position)
+        return int(pane.sashpos(index))  # type: ignore[no-untyped-call]
+    pane.sashpos(index, position)  # type: ignore[no-untyped-call]
     return position
 
 
@@ -101,7 +106,7 @@ def clamp_panes(pane: ttk.PanedWindow) -> None:
     """
     try:
         total = pane.winfo_height()
-        count = len(cast(Any, pane).panes())
+        count = len(pane.panes())  # type: ignore[no-untyped-call]
     except tk.TclError:  # the window is closing
         return
     if total <= 1 or count < 2:
@@ -159,11 +164,12 @@ class AutoclipApp(tk.Tk):
         self._configure_style()
 
         self.config_path = Path(config_path) if config_path is not None else default_config_path()
-        self.values: dict[str, Any] = default_values()
+        self.output_dir = default_output_dir()
+        self.values: dict[str, JsonValue] = default_values()
         self._forms: list[Form] = []
         self._handle: PipelineHandle | None = None
         self._lines: queue.Queue[str] = queue.Queue()
-        self._consent_queue: queue.Queue[Any] = queue.Queue()
+        self._consent_queue: queue.Queue[tuple[str, str, threading.Event, dict[str, bool]]] = queue.Queue()
 
         self._build_header()
         self._build_body()
@@ -206,6 +212,15 @@ class AutoclipApp(tk.Tk):
         entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
         entry.bind("<FocusOut>", lambda _e: self._remember_path(self._path_var.get()))
         ttk.Button(row, text="Browse...", command=self._choose_config).pack(side="left")
+
+        out_row = ttk.Frame(self, padding=(14, 0, 14, 8))
+        out_row.pack(fill="x")
+        ttk.Label(out_row, text="Output folder", width=12, anchor="w").pack(side="left")
+        self._output_var = tk.StringVar(value=str(self.output_dir))
+        out_entry = ttk.Entry(out_row, textvariable=self._output_var)
+        out_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        out_entry.bind("<FocusOut>", lambda _e: self._remember_output())
+        ttk.Button(out_row, text="Browse...", command=self._choose_output).pack(side="left")
 
     def _build_body(self) -> None:
         """The notebook with the option groups and the details panel."""
@@ -302,9 +317,9 @@ class AutoclipApp(tk.Tk):
 
     # -- values ------------------------------------------------------------------------------
 
-    def _on_change(self, path: str, value: Any) -> None:
+    def _on_change(self, path: str, value: object) -> None:
         """A value changed: remember it and update the options that depend on it."""
-        self.values[path] = value
+        self.values[path] = value  # type: ignore[assignment]
         for form in self._forms:
             form.refresh_visibility()
 
@@ -318,6 +333,17 @@ class AutoclipApp(tk.Tk):
         """The config file the user typed."""
         if text.strip():
             self.config_path = Path(text.strip()).expanduser()
+
+    def _remember_output(self) -> None:
+        """Keep the output folder the entry shows (an empty entry means the platform default)."""
+        self.output_dir = Path(self._output_var.get().strip() or default_output_dir()).expanduser()
+
+    def _choose_output(self) -> None:
+        """Pick the output folder (it never becomes a config-file key)."""
+        picked = filedialog.askdirectory(title="Choose the output folder", initialdir=str(self.output_dir))
+        if picked:
+            self.output_dir = Path(picked)
+            self._output_var.set(str(self.output_dir))
 
     def _choose_config(self) -> None:
         """Pick the config file."""
@@ -342,9 +368,9 @@ class AutoclipApp(tk.Tk):
         self._load_into_form()
         self._set_status(f"Loaded {path.name}")
 
-    def _config_data(self) -> dict[str, Any]:
+    def _config_data(self) -> dict[str, JsonValue]:
         """The current form as a nested config dict."""
-        return unflatten({path: field.value() for form in self._forms for path, field in form.fields.items()})
+        return unflatten({path: cast(JsonValue, field.value()) for form in self._forms for path, field in form.fields.items()})
 
     def _save_to(self, path: Path) -> bool:
         """Write the form to a config file; return whether it was written."""
@@ -428,9 +454,16 @@ class AutoclipApp(tk.Tk):
 
         self._consent = ask
 
+        self._remember_output()
         worker = threading.Thread(
             target=self._run_worker,
-            kwargs={"config_path": self.config_path, "cancel": cancel, "on_line": on_line, "consent": ask},
+            kwargs={
+                "config_path": self.config_path,
+                "cancel": cancel,
+                "on_line": on_line,
+                "consent": ask,
+                "output_dir": self.output_dir,
+            },
             daemon=True,
         )
         handle = PipelineHandle(cancel=cancel, thread=worker)
@@ -445,13 +478,20 @@ class AutoclipApp(tk.Tk):
         # Output is produced by the worker thread through self._lines directly; nothing to read here.
         return
 
-    def _run_worker(self, config_path: Any, cancel: Any, on_line: Any, consent: Any = None) -> None:
+    def _run_worker(
+        self,
+        config_path: Path,
+        cancel: CancelToken,
+        on_line: Callable[[str], None],
+        consent: ConsentProvider | None = None,
+        output_dir: Path | str | None = None,
+    ) -> None:
         import contextlib
 
         with contextlib.suppress(Exception):
             pass
         try:
-            run_pipeline(config_path, cancel=cancel, on_line=on_line, consent=consent)
+            run_pipeline(config_path, cancel=cancel, on_line=on_line, consent=consent, output_dir=output_dir)
         except Exception as exc:  # pragma: no cover - defensive
             on_line(f"error: {type(exc).__name__}: {exc}")
             on_line("")
@@ -504,7 +544,8 @@ class AutoclipApp(tk.Tk):
 
     def _open_output(self) -> None:
         """Open the output folder in the file manager."""
-        target = Path(self.values.get("output_dir") or "clips")
+        self._remember_output()
+        target = self.output_dir
         if not target.is_absolute():
             target = (self.config_path.parent / target).resolve()
         try:
@@ -624,7 +665,7 @@ class ReferenceWindow(tk.Toplevel):
         self.options = {o.path: o for s in SECTIONS for o in s.options}
         self._filter("")
 
-    def _filter(self, *_args: Any) -> None:
+    def _filter(self, *_args: object) -> None:
         """Show the options that match the search."""
         needle = self._query.get().lower().strip()
         for item in self.tree.get_children():

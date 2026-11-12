@@ -8,6 +8,7 @@ import os
 import sys
 import types
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pytest
@@ -15,15 +16,15 @@ from numpy.typing import NDArray
 
 from autoclip.core import log as log_module
 from autoclip.core import resources
-from autoclip.core.config import Config, parse
+from autoclip.core.config import Config, JsonValue, parse
 from autoclip.core.log import LOG, setup_logging, speed_text, traced
 from autoclip.core.models import Moment, Segment, Word
 from autoclip.core.resources import MB, ResourceMonitor, Snapshot, cgroup_cpu_quota, cgroup_memory_available
 from autoclip.core.store import Cache, MemoryLRU, Store, is_boundary
 
 
-def cfg_with(**sections: dict[str, object]) -> Config:
-    return parse(Config, sections)
+def cfg_with(**sections: object) -> Config:
+    return parse(Config, cast(dict[str, JsonValue], sections))
 
 
 # ---- resources -----------------------------------------------------------------------------------
@@ -114,6 +115,30 @@ def test_mode_resources_is_in_process_and_lean(monkeypatch: pytest.MonkeyPatch, 
     assert plan.workers == 1
 
 
+def test_configure_ignores_state_from_another_mode(tmp_path: Path) -> None:
+    import json
+
+    state_dir = tmp_path / ".work"
+    state_dir.mkdir()
+    (state_dir / "adaptive.json").write_text(json.dumps({"mode": "resources", "cpu_percent": 20.0}), encoding="utf-8")
+    cfg = parse(Config, {"mode": "performance", "output_dir": str(tmp_path)})
+    mon = ResourceMonitor()
+    mon.configure(cfg)
+    assert mon.max_cpu_percent == mon.profile.cpu_percent_default  # the other mode's state is ignored
+
+
+def test_configure_ignores_a_non_numeric_persisted_cpu_percent(tmp_path: Path) -> None:
+    import json
+
+    state_dir = tmp_path / ".work"
+    state_dir.mkdir()
+    (state_dir / "adaptive.json").write_text(json.dumps({"mode": "performance", "cpu_percent": "high"}), encoding="utf-8")
+    cfg = parse(Config, {"mode": "performance", "output_dir": str(tmp_path)})
+    mon = ResourceMonitor()
+    mon.configure(cfg)
+    assert mon.max_cpu_percent == mon.profile.cpu_percent_default  # unreadable state is ignored, not a crash
+
+
 def test_mode_adapt_raises_on_low_utilisation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cfg = parse(Config, {"mode": "performance", "output_dir": str(tmp_path)})
     mon = ResourceMonitor()
@@ -141,6 +166,48 @@ def test_mode_adapt_backs_off_under_high_pressure(monkeypatch: pytest.MonkeyPatc
     assert mon.max_cpu_percent < old
 
 
+def test_notify_oom_backs_off_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    cfg = parse(Config, {"mode": "performance", "output_dir": str(tmp_path)})
+    mon = ResourceMonitor()
+    mon.configure(cfg)
+    mon.cpus = 8
+    monkeypatch.setattr(mon, "snapshot", lambda: Snapshot(10.0, 32_000 * MB, 30_000 * MB, 100 * MB))
+    old = mon.max_cpu_percent
+    mon._adapt_ts = 0.0
+    mon.notify_oom()
+    mon.adapt()
+    assert mon.max_cpu_percent < old
+    assert mon._oom is False  # the OOM only backs off one step
+
+
+@pytest.mark.parametrize(
+    ("mode", "samples"),
+    [
+        ("performance", [80.0, 82.0, 84.0, 86.0]),  # rising, mid-range -> step_up * 0.5
+        ("performance", [96.0, 96.0, 96.0, 96.0]),  # above target -> step_down
+        ("performance", [85.0, 85.0, 85.0, 85.0]),  # flat, mid-range -> unchanged
+        ("resources", [40.0, 40.0, 40.0, 40.0]),  # above target -> step_down
+        ("resources", [10.0, 10.0, 10.0, 10.0]),  # below target -> step_up * 0.5
+        ("resources", [25.0, 25.0, 25.0, 25.0]),  # flat, mid-range -> unchanged
+        ("balance", [40.0, 40.0, 40.0, 40.0]),  # below target -> step_up
+        ("balance", [76.0, 76.0, 76.0, 76.0]),  # above target -> step_down
+        ("balance", [56.0, 58.0, 60.0, 62.0]),  # rising, mid-range -> step_up * 0.5
+        ("balance", [70.0, 68.0, 66.0, 64.0]),  # falling, mid-range -> step_down * 0.5
+        ("balance", [65.0, 65.0, 65.0, 65.0]),  # flat, mid-range -> unchanged
+    ],
+)
+def test_adapt_covers_every_mode_branch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str, samples: list[float]) -> None:
+    cfg = parse(Config, {"mode": mode, "output_dir": str(tmp_path)})
+    mon = ResourceMonitor()
+    mon.configure(cfg)
+    mon.cpus = 8
+    monkeypatch.setattr(mon, "snapshot", lambda: Snapshot(10.0, 32_000 * MB, 30_000 * MB, 100 * MB))
+    mon._cpu_samples.clear()
+    mon._cpu_samples.extend(samples)
+    mon._adapt_ts = 0.0
+    mon.adapt()  # exercises the branch; the exact value is clamped to the mode range
+
+
 def test_worker_plan_scales_with_free_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     per_job = 400 * MB
     plenty = make_monitor(monkeypatch, 12000).plan_workers(per_job, 6)
@@ -155,8 +222,8 @@ def test_worker_plan_scales_with_free_memory(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_cache_budget_follows_memory(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert make_monitor(monkeypatch, 100).cache_budget() == 8 * MB
-    assert 16 * MB <= make_monitor(monkeypatch, 12000).cache_budget() <= 768 * MB
+    assert make_monitor(monkeypatch, 100).cache_budget() == 4 * MB
+    assert 8 * MB <= make_monitor(monkeypatch, 12000).cache_budget() <= 256 * MB
     fixed = ResourceMonitor()
     fixed.configure()
     # No hard-coded tier remains now: runtime auto caps the cache from usable memory.
@@ -384,6 +451,23 @@ def test_kv_roundtrip_and_lru_eviction(tmp_path: Path) -> None:
     s.close()
 
 
+def test_kv_evict_evicts_everything_when_the_cap_is_zero(tmp_path: Path) -> None:
+    s = Store(tmp_path / "s2.db", fresh=True)
+    s.kv_put("a", b"x")
+    s.kv_evict(0)
+    assert s.kv_get("a") is None
+    s.close()
+
+
+def test_kv_evict_keeps_deleting_and_exhausts_the_table_under_a_negative_cap(tmp_path: Path) -> None:
+    s = Store(tmp_path / "s3.db", fresh=True)
+    s.kv_put("a", b"x")
+    s.kv_put("b", b"y")
+    s.kv_evict(-1000)  # a negative budget can never be reached: every row goes
+    assert s.kv_get("a") is None and s.kv_get("b") is None
+    s.close()
+
+
 @pytest.mark.parametrize(
     "text, gap, expected",
     [
@@ -485,3 +569,81 @@ def test_log_redaction_helpers() -> None:
     assert "ram_total=" in summary and "os=" in summary and "cpus=" in summary
     assert "password" not in summary.lower()
     assert "/home/" not in summary or summary.lower().startswith("os=")
+    # A URL without a query/fragment is returned unchanged; an unparsable one is returned verbatim.
+    assert redact_url("https://example.com/plain") == "https://example.com/plain"
+    assert redact_url("http://[::1") == "http://[::1"
+
+
+def test_system_profile_and_health_include_cgroup(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core import log as log_module
+    from autoclip.core import resources
+
+    monkeypatch.setattr(resources, "cgroup_memory_available", lambda: 123 * MB)
+    assert "cgroup_free=123MB" in log_module.system_profile()
+    assert "cgroup_free=123MB" in log_module.health_check("x")
+
+
+def test_traced_covers_async_and_bootstrap_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    from autoclip.core import log as log_module
+
+    @log_module.traced("async-op")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    assert asyncio.run(add(1, 2)) == 3
+
+    @log_module.traced("async-fail")
+    async def boom() -> int:
+        raise RuntimeError("no")
+
+    with pytest.raises(RuntimeError, match="no"):
+        asyncio.run(boom())
+
+    monkeypatch.setattr(log_module, "_resources", lambda: None)
+
+    @log_module.traced("bootstrap-op")
+    def plain() -> str:
+        return "ok"
+
+    assert plain() == "ok"
+
+    @log_module.traced("bootstrap-async")
+    async def plain_async() -> str:
+        return "ok"
+
+    assert asyncio.run(plain_async()) == "ok"
+
+
+def test_stdout_tee_mirrors_and_survives_broken_streams() -> None:
+    import io
+
+    from autoclip.core.log import _StdoutTee
+
+    mirror = io.StringIO()
+    logger = logging.getLogger("autoclip.tee-test")
+    tee = _StdoutTee(mirror, logger)
+    assert tee.write("hello\nworld\n") == 12
+    assert "hello" in mirror.getvalue() and "world" in mirror.getvalue()
+    tee.write("\n\n")  # empty lines are dropped
+    tee.write("partial line")  # no newline: flush must emit the buffered text
+    tee.flush()
+    assert tee.isatty() is False
+
+    # A mirror that raises must not break the tee.
+    class Broken:
+        def write(self, s: str) -> int:
+            raise OSError("closed")
+
+        def flush(self) -> None:
+            raise ValueError("closed")
+
+        def isatty(self) -> bool:
+            raise OSError("closed")
+
+    broken = _StdoutTee(Broken(), logger)  # type: ignore[arg-type]
+    assert broken.write("x\n") == 2
+    broken.flush()
+    assert broken.isatty() is False
+    assert _StdoutTee(None, logger).isatty() is False

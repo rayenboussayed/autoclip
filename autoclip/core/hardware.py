@@ -19,7 +19,7 @@ from .media import external_env
 from .models import Encoder
 
 log = logging.getLogger("autoclip")
-#: GPU encoders to try per operating system, best first (``video.gpu = "auto"``).
+#: GPU encoders to try per operating system, best first.
 PRIORITY = {"Darwin": ("videotoolbox",), "Windows": ("nvenc", "qsv", "amf"), "Linux": ("nvenc", "qsv")}
 #: Consumer GPUs limit the number of simultaneous encode sessions; never run more workers than this on a GPU.
 HW_MAX_WORKERS = 3
@@ -145,7 +145,7 @@ def works(encoder: Encoder) -> bool:
 
 
 def pick_encoder(cfg: VideoCfg, quality: str, system: str | None = None, allow_gpu: bool = True) -> Encoder:
-    """The encoder to use: the first working GPU encoder (``video.gpu``), otherwise the CPU's libx264/libx265.
+    """The encoder to use: the first working GPU encoder of this OS, otherwise the CPU's libx264/libx265.
 
     ``allow_gpu`` is false when ``compute.device`` is ``"cpu"``: then the GPU is not touched at all.
     """
@@ -153,16 +153,11 @@ def pick_encoder(cfg: VideoCfg, quality: str, system: str | None = None, allow_g
     if not allow_gpu:
         log.info("compute.device is 'cpu': using %s on the CPU", cpu.name)
         return cpu
-    if cfg.gpu == "off":
-        return cpu
-    names = PRIORITY.get(system or platform.system(), ()) if cfg.gpu == "auto" else (cfg.gpu,)
-    for name in names:
+    for name in PRIORITY.get(system or platform.system(), ()):
         candidate = HARDWARE[name](cfg, quality)
         if works(candidate):
             log.info("GPU video encoder: %s", candidate.name)
             return candidate
         log.debug("GPU encoder %s is not usable on this machine", candidate.name)
-    if cfg.gpu != "auto":
-        log.warning("video.gpu = '%s' is not usable on this machine: falling back to the CPU encoder", cfg.gpu)
     log.info("no usable GPU video encoder: using %s on the CPU", cpu.name)
     return cpu

@@ -8,10 +8,11 @@ with the version installed: the scheduled ``network`` workflow runs them every w
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
-from autoclip.core.config import Config, parse
+from autoclip.core.config import Config, JsonValue, parse
 from autoclip.core.download import Downloader
 
 pytestmark = pytest.mark.network
@@ -21,9 +22,9 @@ URL = "https://www.youtube.com/watch?v=jNQXAC9IVRw"  # "Me at the zoo", up since
 
 def make_downloader(tmp_path: Path, **download: object) -> Downloader:
     """A downloader that may only use YouTube, writing under ``tmp_path``."""
-    section: dict[str, object] = {"platforms": {"allow": ["youtube"]}, "metadata": {"info_json": True}}
+    section: dict[str, object] = {"platforms": {"allow": ["youtube"]}}
     section.update(download)
-    return Downloader(parse(Config, {"output_dir": str(tmp_path), "input": [URL], "download": section}))
+    return Downloader(parse(Config, {"output_dir": str(tmp_path), "input": [URL], "download": cast(dict[str, JsonValue], section)}))
 
 
 def test_formats_of_a_real_video(tmp_path: Path) -> None:

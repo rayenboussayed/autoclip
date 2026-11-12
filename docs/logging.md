@@ -32,7 +32,7 @@ setup path) to avoid infinite recursion.
 
 ## Files and durability
 
-Logs live at `{output_dir}/logs/autoclip_<timestamp>.log` when `logging.enabled: true`.
+Logs live at `{output_dir}/logs/autoclip_<timestamp>.log` when logging is enabled (`--log-level DEBUG|INFO|...`, default `INFO`; `--log-level OFF` disables both file and console).
 
 Both stdout print lines and logging records use the same file handler. The file handler:
 

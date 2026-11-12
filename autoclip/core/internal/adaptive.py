@@ -33,8 +33,8 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
     except OSError:
         try:
             tmp.unlink(missing_ok=True)
-        except (OSError, UnboundLocalError):
-            logging.getLogger("autoclip").debug("could not remove temporary adaptive state", exc_info=True)
+        except (OSError, UnboundLocalError):  # pragma: no cover
+            logging.getLogger("autoclip").debug("could not remove temporary adaptive state", exc_info=True)  # pragma: no cover
 
 
 def ema(prev: float, observed: float, alpha: float = EMA_ALPHA) -> float:

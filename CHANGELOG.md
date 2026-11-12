@@ -4,6 +4,20 @@ All notable changes to autoclip, oldest to newest. Release timestamps come from
 Git tags (and commit metadata for untagged but version-stamped commits). Each
 release mentions the source tag/commit for traceability.
 
+## [4.0.0] — 2026-11-06 14:15:01 +0100 (commit `92d47c7`)
+
+- feat: reduce the config file to seven keys; everything else is derived at run time or passed as a runtime override
+- feat: invalid config *values* now warn and fall back to the default instead of aborting the run
+- feat: optional Ollama re-ranking, titles and social captions through one serialized AI queue
+- feat: optional Stable Diffusion thumbnails (serialized in the same queue; frame JPEG kept otherwise)
+- feat: social captions as `<clip>.txt` sidecars and `clips.json` entries
+- feat: URL-shape playlist handling (single for watch/shorts/video URLs, all otherwise, capped at 50)
+- feat: automatic download format policy (quality tier, direct HTTPS over HLS/DASH, original audio track)
+- feat: automatic silence removal, speech enhancement, captions, titles and thumbnails
+- refactor: runtime `Config` keeps every field; `FileConfig` owns the file schema; `RuntimeOverrides` for CLI/env/app/server
+- docs: rewrite README/AGENTS/docs for the seven-key schema and the 4.0 upgrade notes
+- chore: bump version to 4.0.0
+
 ## [2.1.0] — 2026-10-24 14:01:53 +0100 (tag `v2.1.0`, commit `780850e`)
 
 - feat: speech enhancement before transcription and a global device switch
