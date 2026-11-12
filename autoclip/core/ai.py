@@ -32,6 +32,10 @@ except Exception:  # pragma: no cover - optional dependency
 #: One queue for every AI model call in this process (Ollama and Stable Diffusion share it).
 _AI_LOCK = threading.Lock()
 
+#: Set when an AI call fails mid-run: every later AI call in this process is skipped and the
+#: heuristic result is kept. A hung server would otherwise cost LLM_TIMEOUT per clip.
+_RUN_TRIPPED = threading.Event()
+
 
 def _model_names(payload: object) -> set[str]:
     """The model names from an ``/api/tags`` response (both the list and dict shapes)."""
@@ -71,8 +75,12 @@ def llm_available(base_url: str, model: str = "") -> bool:
 
     The answer is cached per (base_url, model), so a whole run asks once instead of per clip;
     a local Ollama without the configured model reports ``False`` and the run keeps its
-    heuristic ranking instead of failing inside every clip.
+    heuristic ranking instead of failing inside every clip. Once any AI call has failed in
+    this run, the answer is ``False`` for the rest of the run (the offending backend is not
+    retried per clip).
     """
+    if _RUN_TRIPPED.is_set():
+        return False
     names = _tags(base_url)
     if not model:
         return bool(names)
@@ -91,11 +99,18 @@ def _chat(base_url: str, model: str, messages: list[dict[str, str]], *, fmt: Jso
     return str((response.get("message") or {}).get("content", "")).strip()
 
 
+def _disable_for_this_run(error: BaseException) -> None:
+    """Switch AI off for the rest of this run (one log line, no spam)."""
+    if not _RUN_TRIPPED.is_set():
+        _RUN_TRIPPED.set()
+        log.warning("AI disabled for the rest of this run (%s: %s)", type(error).__name__, error)
+
+
 def llm_rerank(top: list[Moment], cfg: Config, scene: str) -> dict[int, tuple[float, str]]:
     """Ask Ollama for a 0-10 fit score and a title for each candidate."""
     from .styles import STYLE_HELP
 
-    if cfg.skip.llm:
+    if cfg.skip.llm or _RUN_TRIPPED.is_set():
         return {}
     lc = cfg.llm
     items = "\n".join(f"[{k}] ({m.end - m.start:.0f}s) {m.text[:700]}" for k, m in enumerate(top))
@@ -111,8 +126,12 @@ def llm_rerank(top: list[Moment], cfg: Config, scene: str) -> dict[int, tuple[fl
         {"role": "system", "content": system},
         {"role": "user", "content": prompt},
     ]
-    content = _chat(lc.base_url, lc.model, messages, fmt=_RERANK_SCHEMA)
-    parsed = _RerankReply.model_validate_json(content)  # pydantic raises on any deviation; the caller falls back
+    try:
+        content = _chat(lc.base_url, lc.model, messages, fmt=_RERANK_SCHEMA)
+        parsed = _RerankReply.model_validate_json(content)  # pydantic raises on any deviation; the caller falls back
+    except Exception as e:
+        _disable_for_this_run(e)
+        raise
     out: dict[int, tuple[float, str]] = {}
     for item in parsed.scores:
         if 0 <= item.id < len(top):  # an id outside the candidate list is ignored
@@ -122,26 +141,28 @@ def llm_rerank(top: list[Moment], cfg: Config, scene: str) -> dict[int, tuple[fl
 
 def generate_title(cfg: Config, text: str) -> str:
     """A punchy title for ``text`` (empty when Ollama is unavailable, offline or errors)."""
-    if cfg.skip.llm or not text or not llm_available(cfg.llm.base_url, cfg.llm.model):
+    if cfg.skip.llm or not text or _RUN_TRIPPED.is_set() or not llm_available(cfg.llm.base_url, cfg.llm.model):
         return ""
     prompt = "Write a punchy title (max 8 words) in the same language as the text. Return only the title.\n\n" + text[:500]
     messages = _messages(cfg, prompt)
     try:
         return _chat(cfg.llm.base_url, cfg.llm.model, messages)[:80]
     except Exception as e:
+        _disable_for_this_run(e)
         log.warning("AI title failed (%s: %s)", type(e).__name__, e)
         return ""
 
 
 def generate_caption(cfg: Config, text: str) -> str:
     """A short social-media caption for ``text`` (empty when Ollama is unavailable, offline or errors)."""
-    if cfg.skip.llm or not text or not llm_available(cfg.llm.base_url, cfg.llm.model):
+    if cfg.skip.llm or not text or _RUN_TRIPPED.is_set() or not llm_available(cfg.llm.base_url, cfg.llm.model):
         return ""
     prompt = "Write a short social-media caption (max 2 sentences) for this clip transcript. Return only the caption.\n\n" + text[:500]
     messages = _messages(cfg, prompt)
     try:
         return _chat(cfg.llm.base_url, cfg.llm.model, messages)
     except Exception as e:
+        _disable_for_this_run(e)
         log.warning("AI caption failed (%s: %s)", type(e).__name__, e)
         return ""
 

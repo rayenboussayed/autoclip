@@ -89,7 +89,8 @@ autoclip/
     models.py       small slotted dataclasses: Span/Word/Segment/Moment, MediaInfo, Encoder, RenderJob, Downloaded
     errors.py       AutoclipError, ConfigError, DownloadError
     resources.py    ResourceMonitor + RESOURCES singleton: CPU/RAM -> worker plan, cache budget, adaptive tuning
-    internal/       derived runtime decisions and constants (mode profiles, adaptive helpers, decision logs);
+    internal/       derived runtime decisions and constants (mode profiles, adaptive helpers, decision logs,
+                    admission policy for the render pool);
                     not user-facing configuration, logged as `automation ...`
     log.py          LOG, setup_logging, traced decorator, speed_text
     store.py        SQLite Store (WAL), MemoryLRU, Cache (RAM LRU in front of SQLite kv), is_boundary

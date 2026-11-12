@@ -431,3 +431,65 @@ def test_generate_title_swallows_a_failing_backend(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(ai, "_chat", boom)
     assert ai.generate_title(parse(Config, {}), "some text") == ""
+
+
+def test_generate_title_flips_the_breaker_once_and_later_calls_never_reach_the_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autoclip.core import ai as _ai  # noqa: PLC0415
+
+    calls: list[int] = []
+
+    def boom(*args: Any, **kwargs: Any) -> str:
+        calls.append(1)
+        raise RuntimeError("server died")
+
+    monkeypatch.setattr(ai, "_tags", lambda url: {"bonsai-2:2b"})
+    monkeypatch.setattr(ai, "_chat", boom)
+    first = ai.generate_title(parse(Config, {}), "some text")
+    second = ai.generate_title(parse(Config, {}), "other text")
+    assert first == "" and second == ""
+    assert calls == [1]  # one failed call tripped the breaker; the second never reached the backend
+    assert ai.llm_available("http://x", "bonsai-2:2b") is False
+    _ai._RUN_TRIPPED.clear()  # this test is deliberately not isolated (the suite fixture resets it anyway)
+
+
+def test_rerank_flips_the_breaker_when_the_backend_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core import ai as _ai  # noqa: PLC0415
+    from autoclip.core.models import Moment  # noqa: PLC0415
+
+    def boom(*args: Any, **kwargs: Any) -> str:
+        raise RuntimeError("server died")
+
+    monkeypatch.setattr(ai, "_tags", lambda url: {"bonsai-2:2b"})
+    monkeypatch.setattr(ai, "_chat", boom)
+    with pytest.raises(RuntimeError):
+        ai.llm_rerank([Moment(0, 10, "one", score=1.0)], parse(Config, {}), "funny")
+    assert _ai._RUN_TRIPPED.is_set()
+    _ai._RUN_TRIPPED.clear()
+
+
+def test_generate_caption_flips_the_breaker_on_backend_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core import ai as _ai  # noqa: PLC0415
+
+    def boom(*args: Any, **kwargs: Any) -> str:
+        raise RuntimeError("server died")
+
+    monkeypatch.setattr(ai, "_tags", lambda url: {"bonsai-2:2b"})
+    monkeypatch.setattr(ai, "_chat", boom)
+    assert ai.generate_caption(parse(Config, {}), "some text") == ""
+    assert _ai._RUN_TRIPPED.is_set()
+    assert ai.llm_available("http://x", "bonsai-2:2b") is False
+    _ai._RUN_TRIPPED.clear()
+
+
+def test_the_breaker_logs_only_the_first_failure(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    from autoclip.core import ai as _ai  # noqa: PLC0415
+
+    _ai._RUN_TRIPPED.set()
+    with caplog.at_level(logging.WARNING, logger="autoclip"):
+        _ai._disable_for_this_run(RuntimeError("second failure"))
+    assert "AI disabled" not in caplog.text
+    _ai._RUN_TRIPPED.clear()

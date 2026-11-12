@@ -208,6 +208,18 @@ never fatal; the clips keep their heuristic result.
   (empty keeps the built-in editor messages); `image.prompt` (file) sets the Stable Diffusion prompt of the AI thumbnails.
 * `--skip llm` skips every Ollama call. Whisper model downloads are automatic; `--skip stt` avoids Whisper entirely (a sidecar, downloaded or cached transcript is used instead).
 
+## Automatic resource use
+
+The engine watches its own headroom and degrades gracefully instead of dying:
+
+* The render pool re-checks memory **before every submission**; when another clip is already in flight and RAM
+  is tight (or an OOM was seen), the next submission waits until a clip finishes. An idle pool always starts the
+  batch - no machine configuration can deadlock the run.
+* Once an Ollama call fails (timeout, missing model, off-schema reply), the AI helpers are switched off for the
+  rest of the run with one log line; the heuristic result is kept.
+* The resource history (peak RSS, CPU) feeds the adaptive CPU budget, so the engine gets quieter or louder on its
+  own as the machine's condition changes - see the `automation ...` log lines and `AUTOCLIP_DEBUG=1` for the details.
+
 ## HTTP server (optional)
 
 The same pipeline runs as a small FastAPI service for a web front end or another program: upload a
