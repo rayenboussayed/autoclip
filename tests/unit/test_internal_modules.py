@@ -116,7 +116,6 @@ def test_adaptive_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     p = tmp_path / "state.json"
     adaptive.save_state(p, {"a": 1})
     assert adaptive.load_state(p) == {"a": 1}
-    assert adaptive.ema(0.0, 10.0) == 3.0
     from collections import deque
 
     assert adaptive.trend(deque([1.0, 2.0])) == 0  # too few samples

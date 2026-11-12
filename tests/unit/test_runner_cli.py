@@ -8,6 +8,7 @@ import os
 import re
 import runpy
 import sys
+import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -548,6 +549,16 @@ def test_render_all_cancel_during_pool_completion(media: Media, tmp_path: Path, 
 
     jobs, store, _ = parallel_jobs(media, tmp_path, 2, cpus=8)
     tok = CancelToken()
+
+    # the second clip is slower, so the cancel from the first completion lands while it is still in flight
+    real_render_job = runner.render_job
+
+    def slow_second(job: Any) -> Any:
+        if job.clip_id == 2:
+            time.sleep(0.2)
+        return real_render_job(job)
+
+    monkeypatch.setattr(runner, "render_job", slow_second)
 
     def sink(p: Any) -> None:
         if getattr(p, "stage", "") == "render" and str(getattr(p, "message", "")).endswith("1/2"):

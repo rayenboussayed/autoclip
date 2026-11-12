@@ -118,7 +118,8 @@ def render_all(
                 break
             t0 = time.perf_counter()
             render_job(replace(job, threads=RESOURCES.encoding_thread_budget()))
-            RESOURCES.record_job(time.perf_counter() - t0, peak_rss=0, threads=RESOURCES.encoding_thread_budget(), workers=1)
+            rss = RESOURCES.snapshot().rss
+            RESOURCES.record_job(time.perf_counter() - t0, peak_rss=rss, threads=RESOURCES.encoding_thread_budget(), workers=1)
             finished += 1
             if report is not None:
                 report("render", finished / total, f"clip {finished}/{total}")
@@ -152,12 +153,13 @@ def render_all(
                     wall = time.perf_counter() - started_at.pop(future, time.perf_counter())
                     try:
                         future.result()
-                        RESOURCES.record_job(wall, peak_rss=0, threads=job.threads, workers=plan.workers)
+                        RESOURCES.record_job(wall, peak_rss=RESOURCES.snapshot().rss, threads=job.threads, workers=plan.workers)
                     except BrokenProcessPool:
                         log.warning("worker for clip %d died (probably out of memory): retrying it alone", job.clip_id)
                         RESOURCES.notify_oom()
                         retry.append(job)
-                    finished += 1
+                    else:
+                        finished += 1
                     if report is not None:
                         report("render", finished / total, f"clip {finished}/{total}")
                 if retry and not running:
@@ -181,7 +183,8 @@ def render_all(
             break  # pragma: no cover
         t0 = time.perf_counter()
         render_job(replace(job, threads=RESOURCES.encoding_thread_budget()))
-        RESOURCES.record_job(time.perf_counter() - t0, peak_rss=0, threads=RESOURCES.encoding_thread_budget(), workers=1)
+        rss = RESOURCES.snapshot().rss
+        RESOURCES.record_job(time.perf_counter() - t0, peak_rss=rss, threads=RESOURCES.encoding_thread_budget(), workers=1)
         finished += 1
         if report is not None:
             report("render", finished / total, f"clip {finished}/{total}")  # pragma: no cover

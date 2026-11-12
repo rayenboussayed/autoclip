@@ -498,7 +498,9 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     `tests/results/<timestamp>/` (`run.json`, `environment.json`, per-case `case.json`); the run also gets a flat
     `clips/` folder with every rendered `.mp4` and its `.srt`/`.jpg` sidecars, a `clips.json` index and
     `clips/index.html` (a gallery that plays them in a browser). The folder is ignored by git.
-    `AUTOCLIP_E2E_RESULTS`, `AUTOCLIP_E2E_URL` and `AUTOCLIP_E2E_COOKIES` override the defaults. Never mark a
+    `AUTOCLIP_E2E_RESULTS`, `AUTOCLIP_E2E_URL` and `AUTOCLIP_E2E_COOKIES` override the defaults. **The results
+    folder is the source of truth for a run, not a tee'd stdout file**: a second session writing the same
+    log path (shared `/tmp` folders are shared between OpenCode sessions) clobbers it mid-run. Never mark a
     fake-based test `e2e`.
   * E2E ladder: every manifest case downloads the first `AUTOCLIP_E2E_LEVEL * 360` seconds of its video (default
     level 1 = six minutes; the last level is the full video) into `tests/.cache/e2e/<id>/level_<n>` (or

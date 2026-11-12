@@ -647,3 +647,33 @@ def test_stdout_tee_mirrors_and_survives_broken_streams() -> None:
     broken.flush()
     assert broken.isatty() is False
     assert _StdoutTee(None, logger).isatty() is False
+
+
+def test_record_job_folds_own_current_rss_into_the_peak() -> None:
+    mon = ResourceMonitor()
+    mon.configure()
+    assert mon.peak_rss == 0
+    mon.record_job(1.0, peak_rss=0, threads=1, workers=1)
+    assert mon.peak_rss > 0  # the parent always folds in its own RSS
+
+
+def test_record_job_keeps_an_external_peak_when_it_is_larger() -> None:
+    mon = ResourceMonitor()
+    mon.configure()
+    mon.record_job(1.0, peak_rss=10**12, threads=1, workers=1)
+    assert mon.peak_rss == 10**12
+
+
+def test_configure_restores_persisted_samples(tmp_path: Path) -> None:
+    import json
+
+    state_dir = tmp_path / ".work"
+    state_dir.mkdir()
+    (state_dir / "adaptive.json").write_text(
+        json.dumps({"mode": "balance", "cpu_percent": 50.0, "samples": [10.0, 20.0, 30.0, 999.0, "bad"]}),
+        encoding="utf-8",
+    )
+    cfg = parse(Config, {"mode": "balance", "output_dir": str(tmp_path)})
+    mon = ResourceMonitor()
+    mon.configure(cfg)
+    assert list(mon._cpu_samples) == [10.0, 20.0, 30.0, 999.0]  # strings and overflow are dropped

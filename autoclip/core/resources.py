@@ -126,6 +126,10 @@ class ResourceMonitor:
                 persisted = state.get("cpu_percent")
                 if isinstance(persisted, (int, float)):
                     self.max_cpu_percent = adaptive.clamp(float(persisted), self.profile.cpu_percent_min, self.profile.cpu_percent_max)
+                persisted_samples = state.get("samples")
+                if isinstance(persisted_samples, list):
+                    restored = [float(x) for x in persisted_samples[-adaptive.SAMPLE_CAP :] if isinstance(x, (int, float))]
+                    self._cpu_samples = deque(restored, maxlen=adaptive.SAMPLE_CAP)
 
     def snapshot(self) -> Snapshot:
         """Measure now (a few cheap syscalls)."""
@@ -181,12 +185,20 @@ class ResourceMonitor:
         return int(min(max(self.usable_memory() * 0.15, 8 * MB), 256 * MB))
 
     def record_job(self, wall: float, peak_rss: int = 0, threads: int = 1, workers: int = 1) -> None:
-        """Feed one finished job's outcome into the adaptive history (best-effort)."""
+        """Feed one finished job's outcome into the adaptive history (best-effort).
+
+        There is no trustworthy per-job CPU signal in the parent process, so the utilization
+        history is a coarse thread/core upper bound, not a measurement. The RSS history is honest:
+        the caller may pass the job's own peak (a spawned worker knows it); the parent always
+        folds in its own current RSS, which bounds in-process runs and retry loops.
+        """
         try:
             observed = min(100.0, (max(threads, 1) * max(workers, 1) / max(self.cpus, 1)) * 100.0)
             self._cpu_samples.append(observed)
-            if peak_rss and peak_rss > self.peak_rss:
-                self.peak_rss = peak_rss
+            own = self._proc.memory_info().rss
+            for sample in (own, peak_rss):
+                if sample and sample > self.peak_rss:
+                    self.peak_rss = sample
         except Exception as e:  # best-effort  # pragma: no cover
             log.debug("record_job failed: %s", e)  # pragma: no cover
 

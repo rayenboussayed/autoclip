@@ -14,6 +14,10 @@ release mentions the source tag/commit for traceability.
 - feat: every Ollama call has a 180 s timeout and an 8k context window (a server-side overflow silently truncated the prompt before)
 - feat: the LLM re-rank constrains the reply with a JSON schema and validates it (scores clamped to 0-10, titles cut to 80 characters, ids outside the candidate list dropped)
 - feat: the run asks Ollama once for its model list (`/api/tags`); a missing model disables the AI helpers instead of failing inside every clip
+- fix: a worker killed by the OS (out of memory) is no longer counted as finished before the in-process retry runs — progress could over-count otherwise
+- fix: `record_job` now folds the current RSS of the process into the peak history; the adaptive budget no longer sees only the synthetic utilization of in-process runs
+- chore: the dead EMA helper was removed; the `silence_threshold` runtime decision is labelled accurately; persisted utilization samples are restored on configure()
+- refactor: the desktop app lost the unused control kinds and the advanced/visible_when machinery; the option catalogue stays exactly the nine file keys
 - feat: a sidecar `.json`/`.srt` next to the video (`<stem>.json` preferred) is the transcript; `--transcript`, `AUTOCLIP_TRANSCRIPT` and `transcript_file` are gone
 - feat: downloaded subtitles are fetched for the video's original language; the `subtitles` option is gone
 - feat: language for downloads always follows the video's original track

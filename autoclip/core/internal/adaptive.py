@@ -1,4 +1,4 @@
-"""Adaptive tuning helpers: samples, EMA smoothing, persistence and trend detection.
+"""Adaptive tuning helpers: samples, persistence and trend detection.
 
 Pure helpers only; the mutable state lives in ``ResourceMonitor``.
 """
@@ -12,7 +12,6 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-EMA_ALPHA = 0.3
 SAMPLE_CAP = 8
 
 
@@ -37,10 +36,6 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
             logging.getLogger("autoclip").debug("could not remove temporary adaptive state", exc_info=True)  # pragma: no cover
 
 
-def ema(prev: float, observed: float, alpha: float = EMA_ALPHA) -> float:
-    return alpha * observed + (1.0 - alpha) * prev
-
-
 def trend(samples: deque[float]) -> int:
     """-1 falling, 0 flat, +1 rising over the recent samples."""
     if len(samples) < 3:
@@ -58,4 +53,4 @@ def clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
-__all__ = ["EMA_ALPHA", "SAMPLE_CAP", "clamp", "ema", "load_state", "save_state", "trend"]
+__all__ = ["SAMPLE_CAP", "clamp", "load_state", "save_state", "trend"]

@@ -108,5 +108,5 @@ def runtime_decisions(quality: str = "high", mode: str = "balance", device: str 
         RuntimeDecision("transcript_model", transcript_model_for(quality, device), f"derived from quality={quality}, device={device}"),
         RuntimeDecision("transcription_beam_size", transcription_beam_size(quality), f"derived from quality={quality}"),
         RuntimeDecision("denoiser_threads", denoiser_threads(mode), f"derived from mode={mode}"),
-        RuntimeDecision("silence_threshold", "auto", "per-input percentile of the recorded audio"),
+        RuntimeDecision("silence_threshold", "auto", "per-input percentile for pause removal (the unsilence pre-pass uses a fixed -40 dB)"),
     ]
