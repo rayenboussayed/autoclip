@@ -167,6 +167,18 @@ def llm_server() -> Iterator[dict[str, Any]]:
             self.end_headers()
             self.wfile.write(data)
 
+        def do_GET(self) -> None:  # noqa: N802
+            # an Ollama server lists its installed models at /api/tags; the default model is llama3.2
+            if self.path == "/api/tags":
+                payload = {"models": [{"name": "bonsai-2:2b"}, {"name": "llama3.2:latest"}, {"name": "qwen2.5:7b"}]}
+            else:
+                payload = {"models": []}
+            data = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
         def log_message(self, *args: object) -> None:
             pass
 
@@ -188,7 +200,8 @@ def test_llm_rerank_ollama_and_openai_styles(llm_server: dict[str, Any]) -> None
     out = llm_rerank(top, cfg(llm={"base_url": llm_server["url"] + "/"}), "funny")
     assert out[0][0] == 9 and out[0][1].startswith("LLM title 0") and len(out[0][1]) <= 80
     path, auth, body = llm_server["requests"][-1]
-    assert path == "/api/chat" and body["format"] == "json" and "funny" in body["messages"][1]["content"]
+    assert path == "/api/chat" and body["format"]["type"] == "object" and "funny" in body["messages"][1]["content"]
+    assert body["options"] == {"num_ctx": 8192, "temperature": 0}
     assert "humorous" in body["messages"][1]["content"]  # the scene's description is part of the prompt
 
 

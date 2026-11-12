@@ -29,6 +29,7 @@ __all__ = [
     "ENHANCE_ATTENUATION_DB",
     "ENHANCE_SNR_THRESHOLD_DB",
     "JS_RUNTIME_ORDER",
+    "LLM_NUM_CTX",
     "LLM_TIMEOUT",
     "LLM_TOP_K",
     "PLAYLIST_MAX_VIDEOS",
@@ -166,6 +167,9 @@ DEFAULT_TRANSCRIPT_MODELS = {
 
 LLM_TOP_K = 12
 """How many candidates the local LLM is asked to choose from."""
+
+LLM_NUM_CTX = 8192
+"""Context window requested from Ollama (the server default can be as low as 4096, and an overflow silently truncates the prompt)."""
 
 LLM_TIMEOUT = 180.0
 """How long to wait for the local LLM before falling back to the heuristic order."""

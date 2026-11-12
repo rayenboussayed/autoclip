@@ -586,6 +586,13 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     clip keeps its heuristic result. Stable Diffusion thumbnails are generated after `render_all` in the
     main process and replace the frame JPEG only when they succeed. LLM calls carry the file's
     `llm.system_prompt` (empty keeps the built-in messages); the thumbnails use the file's `image.prompt`.
+    Every Ollama call is made with a 180 s timeout and an 8k context window (`LLM_TIMEOUT` / `LLM_NUM_CTX`), and
+    the temperature is 0, so the response never depends on a sampling seed. The run asks the server once for its
+    model list (`llm_available(base_url, model)`, cached) and disables the AI helpers when the configured model is
+    missing instead of erroring per clip; the old per-call probing is gone. Re-rank replies are constrained with a
+    JSON schema (`_RERANK_SCHEMA`) and validated with pydantic: scores are clamped to 0-10, titles are cut to 80
+    characters, ids outside the candidate list are ignored, and an off-schema reply raises - `moments._rerank`
+    catches it and keeps the heuristic order.
 19. **The Linux packages wrap the same build.** The AppImage and the snap do not compile anything:
     they stage the PyInstaller folder. So the entry point is a *script* (without arguments the
     desktop app opens, with arguments the command line runs) and the payload keeps its place - a

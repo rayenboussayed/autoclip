@@ -66,7 +66,7 @@ def ranges_moments(
         fillers = frozenset()
     from . import ai
 
-    use_llm = not cfg.skip.llm and ai.llm_available(cfg.llm.base_url)
+    use_llm = not cfg.skip.llm and ai.llm_available(cfg.llm.base_url, cfg.llm.model)
     out = []
     for span in kcfg.ranges:
         lo, hi = (min(parse_hms(x), info.duration) for x in span.split("-"))

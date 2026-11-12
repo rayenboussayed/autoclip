@@ -38,7 +38,6 @@ from ..core.errors import ConfigError
 from ..core.events import CancelToken
 from .fields import SECTIONS, Option
 from .form import Form, ScrollFrame
-from .session import unflatten
 from .session import (
     PipelineHandle,
     cancel_pipeline,
@@ -49,6 +48,7 @@ from .session import (
     open_folder,
     read_config,
     run_pipeline,
+    unflatten,
     write_config,
 )
 

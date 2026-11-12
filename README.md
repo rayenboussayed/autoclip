@@ -194,7 +194,12 @@ process-wide lock, so even in `performance` mode they never run concurrently. A 
 never fatal; the clips keep their heuristic result.
 
 * `--llm-model MODEL` (`AUTOCLIP_LLM_MODEL`/`AUTOCLIP_LLM_URL`) selects the model and server; a local Ollama at
-  `http://localhost:11434` with `llama3.2` is the default.
+  `http://localhost:11434` with `bonsai-2:2b` is the default. At the start of a run autoclip asks the server once for
+  its model list (`/api/tags`, cached) and keeps the heuristic ranking when the configured model is not installed.
+* Every Ollama call is made with a 180 s request timeout and an 8k context window (the server default can be as low
+  as 4096, and an overflow silently truncates the prompt); the temperature is 0. Re-rank replies are constrained with
+  a JSON schema and validated: scores are clamped to 0-10, titles are cut to 80 characters, ids outside the candidate
+  list are ignored; anything invalid falls back to the heuristic ranking.
 * With an LLM available, highlight moments get re-rank scores, generated titles and social captions; long clips get
   heuristic titles otherwise. Captions are written as `<clip>.txt` sidecars.
 * Stable Diffusion thumbnails replace the frame JPEG only when `torch`/`diffusers` are installed; otherwise the frame

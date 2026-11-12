@@ -159,7 +159,9 @@ def test_llm_available_falls_back_to_a_plain_http_probe() -> None:
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        assert ai.llm_available(f"http://127.0.0.1:{server.server_port}", timeout=1.0) is True
+        ai._tags.cache_clear()
+        # "not a model list" is not a usable Ollama: the preflight must say the model is not there
+        assert ai.llm_available(f"http://127.0.0.1:{server.server_port}") is False
     finally:
         server.shutdown()
         server.server_close()
@@ -248,9 +250,9 @@ def test_llm_calls_include_the_configured_system_prompt(monkeypatch: pytest.Monk
     monkeypatch.setattr(ai, "llm_available", lambda *a, **k: True)
     captured: dict[str, Any] = {}
 
-    def fake_chat(base_url: str, model: str, messages: list[dict[str, str]], *, fmt: str = "") -> str:
+    def fake_chat(base_url: str, model: str, messages: list[dict[str, str]], *, fmt: object = None) -> str:
         captured["messages"] = messages
-        if fmt == "json":
+        if isinstance(fmt, dict):  # the re-rank constrains the reply with a JSON schema
             return json.dumps({"scores": [{"id": 0, "score": 5, "title": "t"}]})
         return "ok"
 
@@ -281,3 +283,152 @@ def test_llm_rerank_falls_back_to_the_editor_prompt_when_unset(monkeypatch: pyte
     ai.llm_rerank([Moment(0, 10, "some text", score=1.0)], parse(Config, {}), "funny")
     assert captured["messages"][0]["role"] == "system"
     assert "short-form video editor" in captured["messages"][0]["content"]
+
+
+def _stub_ollama(model_names: list[str]) -> dict[str, Any]:
+    """A local HTTP server answering /api/tags like Ollama (the port is fresh, so the ``_tags`` cache is)."""
+    import http.server
+    import threading
+
+    calls: dict[str, int] = {"tags": 0}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path == "/api/tags":
+                calls["tags"] += 1
+                body = json.dumps({"models": [{"name": name} for name in model_names]}).encode()
+            else:
+                body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    ai._tags.cache_clear()
+    return {"url": f"http://127.0.0.1:{server.server_port}", "calls": calls, "server": server}
+
+
+def test_llm_available_requires_the_configured_model_to_be_installed() -> None:
+    state = _stub_ollama(["llama3.2:latest"])
+    try:
+        assert ai.llm_available(state["url"]) is True  # the server answers and lists models
+        assert ai.llm_available(state["url"], "llama3.2") is True
+        assert ai.llm_available(state["url"], "llama3.2:latest") is True
+        assert ai.llm_available(state["url"], "bonsai-2:2b") is False  # model not installed: AI is off for this run
+        assert ai.llm_available(state["url"], "qwen") is False
+    finally:
+        state["server"].shutdown()
+        state["server"].server_close()
+    ai._tags.cache_clear()
+
+
+def test_llm_available_is_false_when_no_server_answers() -> None:
+    assert ai.llm_available("http://127.0.0.1:1") is False
+
+
+class _FakeClient:
+    """A stand-in for ``ollama.Client``: records the constructor and the chat call."""
+
+    def __init__(self, host: str, *, timeout: float = 2.0) -> None:
+        self.host = host
+        self.timeout = timeout
+        self.last: dict[str, Any] = {}
+
+    def chat(self, **kwargs: Any) -> dict[str, Any]:
+        self.last = kwargs
+        content = json.dumps(
+            {
+                "scores": [
+                    {"id": 0, "score": 99, "title": "x" * 200},
+                    {"id": 1, "score": -4, "title": ""},
+                    {"id": 99, "score": 8, "title": "ghost"},
+                ]
+            }
+        )
+        return {"message": {"role": "assistant", "content": content}}
+
+
+def _ollama_module(client_cls: type) -> Any:
+    class _Ollama:
+        Client = client_cls
+
+    return _Ollama()
+
+
+def test_rerank_clamps_scores_and_ignores_unknown_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core.models import Moment  # noqa: PLC0415
+
+    monkeypatch.setattr(ai, "ollama", _ollama_module(_FakeClient))
+    top = [Moment(0, 10, "one", score=1.0), Moment(0, 10, "two", score=1.0)]
+    out = ai.llm_rerank(top, parse(Config, {}), "funny")
+    assert out == {0: (10.0, "x" * 80), 1: (0.0, "")}
+
+
+def test_rerank_rejects_an_off_schema_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core.models import Moment  # noqa: PLC0415
+
+    class _OffSchema(_FakeClient):
+        def chat(self, **kwargs: Any) -> dict[str, Any]:
+            return {"message": {"role": "assistant", "content": "not json at all"}}
+
+    monkeypatch.setattr(ai, "ollama", _ollama_module(_OffSchema))
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ai.llm_rerank([Moment(0, 10, "one", score=1.0)], parse(Config, {}), "funny")
+
+
+def test_chat_passes_the_configured_timeout_and_context_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict[str, Any] = {}
+
+    class _RecordingClient(_FakeClient):
+        def __init__(self, host: str, *, timeout: float = 2.0) -> None:
+            recorded["timeout"] = timeout
+            super().__init__(host)
+
+        def chat(self, **kwargs: Any) -> dict[str, Any]:
+            recorded.update(kwargs)
+            return {"message": {"role": "assistant", "content": "ok"}}
+
+    monkeypatch.setattr(ai, "ollama", _ollama_module(_RecordingClient))
+    assert ai._chat("http://x", "bonsai-2:2b", [{"role": "user", "content": "hi"}]) == "ok"
+    assert recorded["timeout"] == 180.0
+    assert recorded["options"] == {"num_ctx": 8192, "temperature": 0}
+
+
+def test_model_names_handles_odd_shapes() -> None:
+    assert ai._model_names({"models": [{"name": ""}, {"model": "picked:latest"}, "bare"]}) == {"picked:latest", "bare"}
+    assert ai._model_names({"models": None}) == set()
+    assert ai._model_names("nonsense") == set()
+
+
+def test_tags_uses_the_python_client_when_it_works(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Client:
+        def __init__(self, host: str, *, timeout: float = 2.0) -> None:
+            pass
+
+        def list(self) -> dict[str, Any]:
+            return {"models": [{"name": "bonsai-2:2b"}]}
+
+    class _Ollama:
+        Client = _Client
+
+    monkeypatch.setattr(ai, "ollama", _Ollama())
+    ai._tags.cache_clear()
+    assert ai.llm_available("http://whatever.local", "bonsai-2:2b") is True
+    ai._tags.cache_clear()
+
+
+def test_generate_title_swallows_a_failing_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ai, "llm_available", lambda *a, **k: True)
+
+    def boom(*args: Any, **kwargs: Any) -> str:
+        raise RuntimeError("the server died mid-request")
+
+    monkeypatch.setattr(ai, "_chat", boom)
+    assert ai.generate_title(parse(Config, {}), "some text") == ""

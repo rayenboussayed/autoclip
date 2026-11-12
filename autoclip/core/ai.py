@@ -12,10 +12,14 @@ import logging
 import threading
 import urllib.error
 import urllib.request
+from functools import cache
 from pathlib import Path
-from typing import Literal
+
+from pydantic import BaseModel
+from pydantic.json_schema import JsonSchemaValue
 
 from .config import Config
+from .internal.automation import LLM_NUM_CTX, LLM_TIMEOUT
 from .models import Moment
 
 log = logging.getLogger("autoclip")
@@ -29,31 +33,61 @@ except Exception:  # pragma: no cover - optional dependency
 _AI_LOCK = threading.Lock()
 
 
-def llm_available(base_url: str, timeout: float = 2.0) -> bool:
-    """True when an Ollama server answers at ``base_url``."""
-    if ollama is None:
-        return False
+def _model_names(payload: object) -> set[str]:
+    """The model names from an ``/api/tags`` response (both the list and dict shapes)."""
+    models: object = payload
+    if isinstance(payload, dict):
+        models = payload.get("models") or []
+    names: set[str] = set()
+    if isinstance(models, list):
+        for item in models:
+            name = item.get("name") or item.get("model") if isinstance(item, dict) else str(item)
+            if isinstance(name, str) and name:
+                names.add(name)
+    return names
+
+
+@cache
+def _tags(base_url: str) -> set[str]:
+    """The model names the server at ``base_url`` has installed (empty when it cannot be asked)."""
+    url = base_url.rstrip("/") + "/api/tags"
+    if ollama is not None:
+        try:
+            names = _model_names(ollama.Client(host=base_url).list())
+            if names:
+                return names
+        except Exception as e:
+            log.debug("the ollama python client could not list models (%s: %s); trying a plain HTTP probe", type(e).__name__, e)
     try:
-        ollama.Client(host=base_url).list()
-        return True
+        with urllib.request.urlopen(url, timeout=2.0) as response:  # noqa: S310
+            data = json.loads(response.read().decode("utf-8"))
     except Exception:
-        # A server that only answers some paths is still up (the tests use a minimal stub).
-        url = base_url.rstrip("/")
-        for path in ("", "/v1/models", "/api/tags"):
-            try:
-                urllib.request.urlopen(url + path, timeout=timeout)  # noqa: S310
-                return True
-            except urllib.error.HTTPError:  # pragma: no cover
-                return True  # pragma: no cover
-            except (OSError, ValueError):
-                continue
-        return False
+        return set()
+    return _model_names(data)
 
 
-def _chat(base_url: str, model: str, messages: list[dict[str, str]], *, fmt: Literal["", "json"] | None = None) -> str:
+def llm_available(base_url: str, model: str = "") -> bool:
+    """True when an Ollama server answers AND the requested model is installed.
+
+    The answer is cached per (base_url, model), so a whole run asks once instead of per clip;
+    a local Ollama without the configured model reports ``False`` and the run keeps its
+    heuristic ranking instead of failing inside every clip.
+    """
+    names = _tags(base_url)
+    if not model:
+        return bool(names)
+    wanted = model.strip().lower()
+    for name in names:
+        lowered = name.lower()
+        if lowered == wanted or lowered.startswith(wanted + ":") or lowered.split(":", 1)[0] == wanted:
+            return True
+    return False
+
+
+def _chat(base_url: str, model: str, messages: list[dict[str, str]], *, fmt: JsonSchemaValue | None = None) -> str:
     with _AI_LOCK:
-        client = ollama.Client(host=base_url)
-        response = client.chat(model=model, messages=messages, format=fmt if fmt else None)
+        client = ollama.Client(host=base_url, timeout=LLM_TIMEOUT)
+        response = client.chat(model=model, messages=messages, format=fmt, options={"num_ctx": LLM_NUM_CTX, "temperature": 0})
     return str((response.get("message") or {}).get("content", "")).strip()
 
 
@@ -77,14 +111,18 @@ def llm_rerank(top: list[Moment], cfg: Config, scene: str) -> dict[int, tuple[fl
         {"role": "system", "content": system},
         {"role": "user", "content": prompt},
     ]
-    content = _chat(lc.base_url, lc.model, messages, fmt="json")
-    parsed = json.loads(content)
-    return {int(x["id"]): (float(x["score"]), str(x.get("title", ""))[:80]) for x in parsed["scores"]}
+    content = _chat(lc.base_url, lc.model, messages, fmt=_RERANK_SCHEMA)
+    parsed = _RerankReply.model_validate_json(content)  # pydantic raises on any deviation; the caller falls back
+    out: dict[int, tuple[float, str]] = {}
+    for item in parsed.scores:
+        if 0 <= item.id < len(top):  # an id outside the candidate list is ignored
+            out[item.id] = (max(0.0, min(10.0, item.score)), item.title[:80])
+    return out
 
 
 def generate_title(cfg: Config, text: str) -> str:
     """A punchy title for ``text`` (empty when Ollama is unavailable, offline or errors)."""
-    if cfg.skip.llm or not text or not llm_available(cfg.llm.base_url):
+    if cfg.skip.llm or not text or not llm_available(cfg.llm.base_url, cfg.llm.model):
         return ""
     prompt = "Write a punchy title (max 8 words) in the same language as the text. Return only the title.\n\n" + text[:500]
     messages = _messages(cfg, prompt)
@@ -97,7 +135,7 @@ def generate_title(cfg: Config, text: str) -> str:
 
 def generate_caption(cfg: Config, text: str) -> str:
     """A short social-media caption for ``text`` (empty when Ollama is unavailable, offline or errors)."""
-    if cfg.skip.llm or not text or not llm_available(cfg.llm.base_url):
+    if cfg.skip.llm or not text or not llm_available(cfg.llm.base_url, cfg.llm.model):
         return ""
     prompt = "Write a short social-media caption (max 2 sentences) for this clip transcript. Return only the caption.\n\n" + text[:500]
     messages = _messages(cfg, prompt)
@@ -106,6 +144,23 @@ def generate_caption(cfg: Config, text: str) -> str:
     except Exception as e:
         log.warning("AI caption failed (%s: %s)", type(e).__name__, e)
         return ""
+
+
+class _RerankItem(BaseModel):
+    """One scored candidate of the re-rank request."""
+
+    id: int
+    score: float
+    title: str = ""
+
+
+class _RerankReply(BaseModel):
+    """The shape the local LLM is constrained to answer for a re-rank."""
+
+    scores: list[_RerankItem]
+
+
+_RERANK_SCHEMA: JsonSchemaValue = _RerankReply.model_json_schema()
 
 
 def _messages(cfg: Config, prompt: str) -> list[dict[str, str]]:
