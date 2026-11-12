@@ -321,6 +321,7 @@ step, percent, outputs); nothing else is persisted except the job folder and the
     *what* it does, *why* you would change it and *when*. `tests/unit/test_app.py` compares it with the config
     dataclasses, so a new option that is not in the catalogue (or an entry that is not in the config) fails
     the suite. The app writes the same config file the command line reads - never a second format.
+    The catalogue is capped at **30 options maximum** - no more; adding one requires removing another.
 12. **A local-only run never imports yt-dlp and never makes a network request.** `is_url` decides what is downloaded;
     `yt_dlp` is imported inside `Downloader.__init__`/`platforms` helpers, and `Downloader` is only constructed when
     `input` holds a URL (inspection modes included). `tests/unit/test_cli_download.py` proves it with a poisoned
@@ -400,6 +401,9 @@ inflated bitrates and throttle); `audio_language: null` follows `info["language"
   (a missing yt-dlp is a `DownloadError`). The `generic` family (any web page) is only used when named.
 
 ### Adding a config option (checklist)
+
+The catalogue holds at most 30 options - no more. Adding one requires removing another.
+
 1. Add a typed field with a default (and a comment) to the right dataclass. Put the constraint in the type
    (`Field(ge=..., le=...)`, `StringConstraints(pattern=...)`, `Annotated[int, Strict()]`) or, for a rule that spans
    fields, in a `model_validator(mode="after")` that raises `ConfigError` - never in a hand-written type check.
@@ -700,6 +704,7 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
   `.work/downloads/`, never next to the clips.
 * Keep the downloader policy (allow/deny, groups, aliases, format choice) offline-testable: no test in the normal
   suite may need the network.
+* Keep the config option count at or below 30 (max 30 options, no more).
 
 **Ask first**
 * Adding or upgrading dependencies; raising the minimum Python version.
