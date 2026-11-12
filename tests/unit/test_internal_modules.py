@@ -233,10 +233,10 @@ def test_ai_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ai.llm_available("http://127.0.0.1:1") is False
     assert ai.generate_title(cfg, "hello") == ""
     assert ai.generate_caption(cfg, "hello") == ""
-    # offline is a hard stop: no probe, no chat, no re-rank
-    offline = parse(Config, {"offline": True})
-    monkeypatch.setattr(ai, "llm_available", lambda *a, **k: pytest.fail("an offline run must not probe the LLM"))
-    monkeypatch.setattr(ai, "_chat", lambda *a, **k: pytest.fail("an offline run must not chat"))
-    assert ai.generate_title(offline, "hello") == ""
-    assert ai.generate_caption(offline, "hello") == ""
-    assert ai.llm_rerank([], offline, "best") == {}
+    # skip.llm is a hard stop: no probe, no chat, no re-rank
+    skip_llm = parse(Config, {"skip": {"llm": True}})
+    monkeypatch.setattr(ai, "llm_available", lambda *a, **k: pytest.fail("a skip.llm run must not probe the LLM"))
+    monkeypatch.setattr(ai, "_chat", lambda *a, **k: pytest.fail("a skip.llm run must not chat"))
+    assert ai.generate_title(skip_llm, "hello") == ""
+    assert ai.generate_caption(skip_llm, "hello") == ""
+    assert ai.llm_rerank([], skip_llm, "best") == {}

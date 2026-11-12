@@ -6,18 +6,16 @@ import contextlib
 import json
 import logging
 import math
-import os
 import re
-import sys
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from .config import Config, TranscriptCfg
+from .config import Config
 from .denoise import SpeechEnhancer, default_models_dir, snr_db
 from .errors import AutoclipError
 from .internal import CHUNK_MINUTES as _CHUNK_MINUTES
@@ -31,7 +29,6 @@ from .store import Store
 
 log = logging.getLogger("autoclip")
 
-ConsentProvider = Callable[[str, str], bool]
 WHISPER_SR = 16000  # Whisper models expect 16 kHz mono audio
 CJK = "\u3040-\u30ff\u3400-\u9fff\u0e00-\u0e7f"  # scripts written without spaces: Japanese, Chinese, Thai
 SRT_TIME = re.compile(r"(\d+):(\d\d):(\d\d)[,.](\d{1,3})\s*-->\s*(\d+):(\d\d):(\d\d)[,.](\d{1,3})")
@@ -158,7 +155,7 @@ def fit_whisper_model(name: str, device: str) -> str:
 
 def transcript_model(cfg: Config) -> str:
     """The Whisper model chosen for this run, after the free-memory fit is applied."""
-    device = asr_device(cfg)
+    device = asr_device()
     return fit_whisper_model(transcript_model_for(cfg.quality, device), device)
 
 
@@ -171,12 +168,8 @@ def chunk_bounds(duration: float, db: F32, chunk_seconds: float) -> list[tuple[f
     return list(pairwise(cuts))
 
 
-def asr_device(cfg: Config) -> str:
-    """The device the ASR model runs on (GPU only when CUDA is present; can be pinned to CPU with AUTOCLIP_CPU=1)."""
-    import os
-
-    if os.environ.get("AUTOCLIP_CPU", "").strip().lower() in {"1", "true", "yes"}:
-        return "cpu"
+def asr_device() -> str:
+    """The device the ASR model runs on (the GPU when CUDA is present, otherwise the CPU)."""
     import ctranslate2
 
     return "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
@@ -194,7 +187,7 @@ def _model_is_cached(model_name: str) -> bool:
 
 
 def _download_model(model_name: str) -> None:
-    """Download ``model_name`` into the default cache (called only after the user consented)."""
+    """Download ``model_name`` into the default cache (called automatically on first use)."""
     from faster_whisper.utils import download_model
 
     download_model(model_name, local_files_only=False)
@@ -245,36 +238,15 @@ def transcribe(
     enhancer: SpeechEnhancer | None = None,
     *,
     model_name_override: str | None = None,
-    consent: ConsentProvider | None = None,
 ) -> list[Segment]:
     from faster_whisper import WhisperModel
 
-    tc = cfg.transcript
-    device = asr_device(cfg)
+    device = asr_device()
     model_name = model_name_override or transcript_model(cfg)
     model_name = fit_whisper_model(model_name, device)
     threads = RESOURCES.cpu_budget()
-    # consent for a first download (consent "never" is also the offline mode)
+    # Whisper models download automatically on first use (consent is not a configuration option)
     if not _model_is_cached(model_name):
-        if tc.consent == "never":
-            raise AutoclipError(f"model '{model_name}' not cached and transcript.consent is 'never'")
-        auto = tc.consent == "auto" or os.environ.get("AUTOCLIP_ASSUME_YES") == "1"
-        if not auto and tc.consent == "ask":
-            if consent is not None:
-                answer = consent("autoclip", f"Download Whisper model '{model_name}' now?")
-                ok = bool(answer)
-            elif sys.stdin is not None and sys.stdin.isatty():
-                try:
-                    ok = input(f"Download Whisper model '{model_name}' now? [y/N] ").strip().lower().startswith("y")
-                except (EOFError, OSError):
-                    ok = False
-            else:
-                ok = False
-            if not ok:
-                raise AutoclipError(
-                    f"model '{model_name}' not cached; run 'autoclip models pull {model_name}' or set "
-                    "transcript.consent: auto (or AUTOCLIP_ASSUME_YES=1)"
-                )
         _download_model(model_name)
 
     attempts: list[tuple[str, Exception]] = []
@@ -311,7 +283,7 @@ def transcribe(
     log.info("whisper model=%s device=%s%s cpu_threads=%d", model_name, device, " (GPU)" if device == "cuda" else "", threads)
     # Chunking is now automatic once the audio is long enough for memory safety.
     bounds = chunk_bounds(info.duration, db, _CHUNK_MINUTES * 60.0)
-    language, raw, t0 = tc.language, [], time.perf_counter()
+    language, raw, t0 = None, [], time.perf_counter()
     # `vad_filter` is applied eagerly by faster-whisper; a missing/broken VAD model (or a provider that
     # rejects it) must not abort the run - retry the same chunk with VAD disabled.
     vad = True
@@ -377,13 +349,13 @@ def transcribe(
     return to_segments(raw)
 
 
-def _cache_key(src: Path, cfg: TranscriptCfg, model: str, *, enhance: bool = True) -> dict[str, Any]:
+def _cache_key(src: Path, model: str, *, enhance: bool = True) -> dict[str, Any]:
     """Identity of a transcription run: the cached transcript is reused only while this is unchanged."""
     st = src.stat()
     return {
         "source": f"{src.name}:{st.st_size}:{st.st_mtime_ns}",
         "model": model,
-        "language": cfg.language,
+        "language": None,
         "multilingual": True,
         "word_timestamps": True,
         "enhance": (
@@ -407,7 +379,7 @@ def get_transcript(
     subtitle: Path | None = None,
     subtitle_manual: bool = False,
     name: str | None = None,
-    consent: ConsentProvider | None = None,
+    transcript_file: str | None = None,
 ) -> bool:
     """Put the transcript of ``src`` into ``store`` (file, downloaded subtitles, disk cache or Whisper).
 
@@ -419,15 +391,15 @@ def get_transcript(
     and a run without any of them simply continues without text. ``skip.denoise`` builds no speech
     enhancer (and changes the cache key, so an enhanced cache is not reused for raw audio).
     """
-    tc = cfg.transcript
     if not need_text:
         return False
     stem = name or src.stem
-    if tc.file:
+    transcript_file = transcript_file if transcript_file is not None else getattr(cfg, "transcript_file", None)
+    if transcript_file:
         try:
-            segments = load_transcript_file(Path(tc.file.replace("{stem}", stem)))
+            segments = load_transcript_file(Path(transcript_file.replace("{stem}", stem)))
         except Exception as e:
-            raise AutoclipError(f"cannot use transcript.file '{tc.file}': {type(e).__name__}: {e}") from e
+            raise AutoclipError(f"cannot use transcript file '{transcript_file}': {type(e).__name__}: {e}") from e
         log.info("loaded transcript: %d segments", len(segments))
         store.put_segments(segments)
         return bool(segments)
@@ -437,7 +409,7 @@ def get_transcript(
             store.put_segments(downloaded)
             return True
     selected_model = transcript_model(cfg)
-    cache_file, key = work_dir / f"{stem}.transcript.json", _cache_key(src, tc, selected_model, enhance=True)
+    cache_file, key = work_dir / f"{stem}.transcript.json", _cache_key(src, selected_model, enhance=True)
     segments = []
     if cache_file.exists():
         data = json.loads(cache_file.read_text(encoding="utf-8"))
@@ -454,7 +426,7 @@ def get_transcript(
         make = snr_db(noisy) < ENHANCE_SNR_THRESHOLD_DB
         enhancer = SpeechEnhancer(True, default_models_dir()) if make else None
         try:
-            segments = transcribe(src, cfg, info, db, enhancer, model_name_override=selected_model, consent=consent)
+            segments = transcribe(src, cfg, info, db, enhancer, model_name_override=selected_model)
         except Exception as e:
             detail = str(e) if isinstance(e, AutoclipError) else f"{type(e).__name__}: {e}"
             log.warning("transcription skipped (%s): selecting on audio only; captions and titles need a transcript", detail)

@@ -8,6 +8,14 @@ release mentions the source tag/commit for traceability.
 
 - feat: reduce the config file to seven keys; everything else is derived at run time or passed as a runtime override
 - feat: invalid config *values* now warn and fall back to the default instead of aborting the run
+- feat: remove the LLM api_key field (Ollama is local and needs no API key)
+- feat: Whisper model downloads run automatically on first use; the consent prompt and `consent` option are gone
+- feat: `--transcript` remains an explicit transcript override; language is always auto-detected
+- feat: downloaded subtitles are fetched for the video's original language; the `subtitles` option is gone
+- feat: language for downloads always follows the video's original track
+- feat: explicit device selection is removed; GPU use is probed and automatic (no `--device` flag)
+- feat: `--offline` is removed; AI is controlled by `--skip llm` and Whisper downloads are automatic
+- feat: `NetworkCfg` is removed; `--proxy` / `AUTOCLIP_PROXY` remain runtime overrides
 - feat: optional Ollama re-ranking, titles and social captions through one serialized AI queue
 - feat: optional Stable Diffusion thumbnails (serialized in the same queue; frame JPEG kept otherwise)
 - feat: social captions as `<clip>.txt` sidecars and `clips.json` entries

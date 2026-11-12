@@ -25,7 +25,6 @@ from typing import cast
 from ..core.config import Config, FileConfig, JsonValue, RuntimeOverrides, _default_output_dir, is_url, load_config, parse
 from ..core.errors import AutoclipError, ConfigError
 from ..core.events import CancelToken
-from ..core.transcript import ConsentProvider
 from .fields import JSON_PATHS
 
 #: The folder of the project (the parent of the package), used to run the pipeline from a source checkout.
@@ -183,7 +182,6 @@ def run_pipeline(
     *,
     cancel: CancelToken,
     on_line: Callable[[str], None],
-    consent: ConsentProvider | None = None,
     output_dir: Path | str | None = None,
 ) -> int:
     """Run one config file entirely in-process (no CLI subprocess).
@@ -301,7 +299,6 @@ def run_pipeline(
             log_file=log_file,
             report=reporter,
             cancel=cancel,
-            consent=consent,
         )
         on_line(f"finished: {result.clips_done} done, {result.clips_failed} failed")
         _cleanup_handlers(_LOG, (adapter,))
@@ -335,7 +332,7 @@ def cancel_pipeline(handle: PipelineHandle) -> None:
     handle.done = True
 
 
-def start_pipeline(config_path: Path, consent: ConsentProvider | None = None) -> PipelineHandle:
+def start_pipeline(config_path: Path) -> PipelineHandle:
     """Compatibility shim: spawn a handle whose worker runs ``run_pipeline`` in-process."""
     from ..core.events import CancelToken
 
@@ -346,7 +343,7 @@ def start_pipeline(config_path: Path, consent: ConsentProvider | None = None) ->
         lines.put(line)
 
     def worker() -> None:
-        code = run_pipeline(config_path, cancel=cancel, on_line=on_line, consent=consent)
+        code = run_pipeline(config_path, cancel=cancel, on_line=on_line)
         handle.result = code
         handle.done = True
 

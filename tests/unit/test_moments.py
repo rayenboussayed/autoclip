@@ -213,7 +213,7 @@ def test_offline_selection_skips_the_llm(media: Media, pipeline: Any, tmp_path: 
     store, cache, info, db = pipeline
     load_segments(store, media)
     cfg = make_cfg(media, tmp_path, None, clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 12, "max_seconds": 30}})
-    cfg.offline = True
+    cfg.skip.llm = True
     picks = select_moments(media.video, info, store, cache, cfg, "short", db, True)
     assert picks and all(not m.caption for m in picks)
 

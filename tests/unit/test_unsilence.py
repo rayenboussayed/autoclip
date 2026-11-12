@@ -86,7 +86,7 @@ def test_process_video_runs_after_unsilence(media: Media, tmp_path: Path) -> Non
     cfg = make_cfg(media, tmp_path, None)
     out = tmp_path / "out"
     cfg.output_dir = str(out)
-    (done, failed) = process_video(media.video, cfg, None, cpu_encoder(cfg.video, cfg.quality), name=media.video.stem, consent=None)
+    (done, failed) = process_video(media.video, cfg, None, cpu_encoder(cfg.video, cfg.quality), name=media.video.stem)
     assert failed == 0
     assert done > 0
     expected = out / ".work" / media.video.stem / f"unsilence_{media.video.stem}.mp4"

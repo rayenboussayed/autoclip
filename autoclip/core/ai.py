@@ -61,7 +61,7 @@ def llm_rerank(top: list[Moment], cfg: Config, scene: str) -> dict[int, tuple[fl
     """Ask Ollama for a 0-10 fit score and a title for each candidate."""
     from .styles import STYLE_HELP
 
-    if cfg.offline:
+    if cfg.skip.llm:
         return {}
     lc = cfg.llm
     items = "\n".join(f"[{k}] ({m.end - m.start:.0f}s) {m.text[:700]}" for k, m in enumerate(top))
@@ -83,7 +83,7 @@ def llm_rerank(top: list[Moment], cfg: Config, scene: str) -> dict[int, tuple[fl
 
 def generate_title(cfg: Config, text: str) -> str:
     """A punchy title for ``text`` (empty when Ollama is unavailable, offline or errors)."""
-    if cfg.offline or not text or not llm_available(cfg.llm.base_url):
+    if cfg.skip.llm or not text or not llm_available(cfg.llm.base_url):
         return ""
     prompt = "Write a punchy title (max 8 words) in the same language as the text. Return only the title.\n\n" + text[:500]
     try:
@@ -95,7 +95,7 @@ def generate_title(cfg: Config, text: str) -> str:
 
 def generate_caption(cfg: Config, text: str) -> str:
     """A short social-media caption for ``text`` (empty when Ollama is unavailable, offline or errors)."""
-    if cfg.offline or not text or not llm_available(cfg.llm.base_url):
+    if cfg.skip.llm or not text or not llm_available(cfg.llm.base_url):
         return ""
     prompt = "Write a short social-media caption (max 2 sentences) for this clip transcript. Return only the caption.\n\n" + text[:500]
     try:

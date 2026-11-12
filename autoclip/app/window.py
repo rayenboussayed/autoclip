@@ -36,7 +36,6 @@ from collections.abc import Callable
 from ..core.config import JsonValue
 from ..core.errors import ConfigError
 from ..core.events import CancelToken
-from ..core.transcript import ConsentProvider
 from .fields import SECTIONS, Option
 from .form import Form, ScrollFrame, unflatten
 from .session import (
@@ -169,7 +168,6 @@ class AutoclipApp(tk.Tk):
         self._forms: list[Form] = []
         self._handle: PipelineHandle | None = None
         self._lines: queue.Queue[str] = queue.Queue()
-        self._consent_queue: queue.Queue[tuple[str, str, threading.Event, dict[str, bool]]] = queue.Queue()
 
         self._build_header()
         self._build_body()
@@ -443,17 +441,6 @@ class AutoclipApp(tk.Tk):
         def on_line(line: str) -> None:
             self._lines.put(line)
 
-        consent_queue = self._consent_queue
-
-        def ask(title: str, message: str) -> bool:
-            event = threading.Event()
-            result = {"value": False}
-            consent_queue.put((title, message, event, result))
-            event.wait()
-            return bool(result["value"])
-
-        self._consent = ask
-
         self._remember_output()
         worker = threading.Thread(
             target=self._run_worker,
@@ -461,7 +448,6 @@ class AutoclipApp(tk.Tk):
                 "config_path": self.config_path,
                 "cancel": cancel,
                 "on_line": on_line,
-                "consent": ask,
                 "output_dir": self.output_dir,
             },
             daemon=True,
@@ -483,7 +469,6 @@ class AutoclipApp(tk.Tk):
         config_path: Path,
         cancel: CancelToken,
         on_line: Callable[[str], None],
-        consent: ConsentProvider | None = None,
         output_dir: Path | str | None = None,
     ) -> None:
         import contextlib
@@ -491,7 +476,7 @@ class AutoclipApp(tk.Tk):
         with contextlib.suppress(Exception):
             pass
         try:
-            run_pipeline(config_path, cancel=cancel, on_line=on_line, consent=consent, output_dir=output_dir)
+            run_pipeline(config_path, cancel=cancel, on_line=on_line, output_dir=output_dir)
         except Exception as exc:  # pragma: no cover - defensive
             on_line(f"error: {type(exc).__name__}: {exc}")
             on_line("")
@@ -504,19 +489,8 @@ class AutoclipApp(tk.Tk):
     def _process(self, value: PipelineHandle | None) -> None:
         self._handle = value
 
-    def _drain_consent(self) -> None:
-        """Answer any consent request made by the worker on the main thread."""
-        try:
-            while True:
-                title, message, event, result = self._consent_queue.get_nowait()
-                result["value"] = bool(messagebox.askyesno(str(title), str(message)))
-                event.set()
-        except queue.Empty:
-            pass
-
     def _drain_log(self) -> None:
         """Move the lines of the pipeline into the log window (on the main thread)."""
-        self._drain_consent()
         try:
             if not self.winfo_exists():
                 return

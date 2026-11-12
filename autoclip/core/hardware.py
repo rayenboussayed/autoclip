@@ -147,11 +147,11 @@ def works(encoder: Encoder) -> bool:
 def pick_encoder(cfg: VideoCfg, quality: str, system: str | None = None, allow_gpu: bool = True) -> Encoder:
     """The encoder to use: the first working GPU encoder of this OS, otherwise the CPU's libx264/libx265.
 
-    ``allow_gpu`` is false when ``compute.device`` is ``"cpu"``: then the GPU is not touched at all.
+    ``allow_gpu`` is false when the GPU is not wanted (or not available): then the GPU is not touched at all.
     """
     cpu = cpu_encoder(cfg, quality)
     if not allow_gpu:
-        log.info("compute.device is 'cpu': using %s on the CPU", cpu.name)
+        log.info("GPU disabled: using %s on the CPU", cpu.name)
         return cpu
     for name in PRIORITY.get(system or platform.system(), ()):
         candidate = HARDWARE[name](cfg, quality)

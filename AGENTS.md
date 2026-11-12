@@ -194,13 +194,14 @@ main()
                                                  reused when the prefix (title [id] [format] + range) exists
   for each input item (isolated: one failure never stops the batch):
     local file -> one source; URL -> the downloaded entries (names deduplicated across the batch)
-    process_video(src, cfg, log_file, encoder, name=name, subtitle=subtitle, subtitle_manual=...)
+    process_video(src, cfg, log_file, encoder, name=name, subtitle=subtitle, subtitle_manual=..., transcript_file=cfg.transcript_file)
       probe(src)                                   PyAV: duration, audio?, size, fps
       mode == "split": ffmpeg stream-copy parts -> {out}/long/{video}/   (done)
       Store(.work/{video}/autoclip.db, fresh=True) + Cache      ({video} = name or src.stem)
       energy_track(src)                            0.5 s loudness track (cached in kv)
-      get_transcript(..., needs_text(cfg))        file | downloaded subtitle | disk cache | faster-whisper (5 min
-                                             chunks) -> SQLite (each chunk is enhanced by `SpeechEnhancer` first);
+      get_transcript(..., needs_text(cfg))        explicit file | downloaded subtitle | disk cache | faster-whisper
+                                             (5 min chunks) -> SQLite (each chunk enhanced by `SpeechEnhancer` first);
+                                             subtitles follow the video's original language; consent is always auto;
                                              `skip.stt` stops before Whisper, `skip.denoise` skips the enhancer
       for kind in cfg.clips.kinds ("short", "long"):
         moments = ranges_moments(...)  if mode == "ranges"   (scene "custom")
@@ -235,7 +236,7 @@ clipped too). `--download-only` stops after this stage.
    `clips.keywords`), then `pick()` greedily takes the best candidates that overlap neither each other nor `taken`
    windows of earlier scenes (1 s gap). **Scene order therefore means priority.**
 4. Optional LLM re-rank per scene (`_rerank`: `0.4*z(heuristic) + 0.6*(llm-5)/2`; any failure keeps heuristic order);
-   `skip.llm` or `cfg.offline` turns it off. Padding for text picks uses the internal constants `CLIP_PAD_START` and
+   `skip.llm` turns it off. Padding for text picks uses the internal constants `CLIP_PAD_START` and
    `CLIP_PAD_END`; audio-only picks snap to quiet frames; optional snap to shot cuts is controlled by
    `skip.snap`.
 
@@ -305,7 +306,7 @@ step, percent, outputs); nothing else is persisted except the job folder and the
 6. **GPU encoders are used only if proven.** `hardware.works()` really encodes a 0.4 s test clip with the exact arguments
    MoviePy will use (preset first, then `Encoder.params`) *and the binary MoviePy writes with* (`encoding_ffmpeg()`, not
    the `PATH` ffmpeg used for decoding). Listing an encoder in `ffmpeg -encoders` proves nothing.
-   `device: "cpu"` keeps the GPU out of the run entirely (the encoder and the transcriber).
+   GPU use is probed automatically; never enabled blindly (no `--device` flag exists).
 7. **Config is strict, with a soft fallback for values.** Unknown keys and wrong JSON types raise `ConfigError` at
    load; invalid *values* warn and fall back to the field default (`_coerce_defaults`); `"_comment"` keys are
    ignored. All defaults live in the dataclass fields (single source of truth for `--init`/`--init-full`).
@@ -366,13 +367,18 @@ The **file** schema is exactly seven keys (`FileConfig`): `input`, `clips.preset
 `_strip_removed` with a warning via `REMOVED_KEYS` (see `docs/UPGRADING-4.0.md`); unknown keys still raise
 `ConfigError`.
 
-`Config` (runtime) = `input`, `output_dir`, `mode`, `quality`, `device`, `offline`, `download`, `clips`, `transcript`,
+`Config` (runtime) = `input`, `output_dir`, `mode`, `quality`, `download`, `clips`, `transcript_file`,
 `llm`, `video`, `captions`, `title`, `skip`, `logging`. `KindCfg` = `count`, `min_seconds`, `max_seconds`, `aspect`,
 `ranges` (no `target_seconds` in 4.0). `SkipCfg` = `stt`, `denoise`, `audio_enhance`, `audio`, `pauses`, `caption`,
-`title`, `fade`, `thumbnail`, `llm`, `snap` (all `false`; see invariant 16). `DownloadCfg` = `cookies`, `network`,
-`platforms` (derived from the allow/deny lists). `PlatformsCfg` = `allow`, `deny` only in the file; `groups`,
+`title`, `fade`, `thumbnail`, `llm`, `snap` (all `false`; see invariant 16). `DownloadCfg` = `cookies`, `time_range`,
+`proxy`, `platforms` (all runtime overrides or derived from the allow/deny lists; never file keys). `PlatformsCfg` = `allow`, `deny` only in the file; `groups`,
 `settings`, `group_by_platform` are gone (groups are named directly in allow/deny). Runtime values are derived
 internally and logged, never accepted from the config file.
+
+The transcript comes from: an explicit `--transcript FILE` (`{stem}` is replaced), then a downloaded subtitle (manual
+track preferred, automatic captions otherwise), then the disk cache, then Whisper. The language is always auto-detected
+and consent is always `auto`; there is no `TranscriptCfg`. Subtitles are downloaded for the video's original language
+when available; there is no `SubtitlesCfg`. `--skip stt` stops before Whisper.
 
 Invalid *values* fall back: `_coerce_defaults` replaces a value that fails validation with the field default and logs
 `config: invalid value for <path>; falling back to default`. Wrong *types* and unknown keys remain fatal (`ConfigError`).
@@ -420,8 +426,8 @@ The catalogue holds at most 30 options - no more. Adding one requires removing a
 * **Docstrings:** every public function/class has one (what, args that are not obvious, returns). Comments explain *why*.
 * **Logging:** use the `autoclip` logger (`log = logging.getLogger("autoclip")`). Every production function is
   wrapped with `@traced` (nested calls are intentionally not double-logged, so the inner tree does not drown
-  callers). `.log` records are flushed and fsync'ed before the caller returns. Never log the LLM API key
-  (`LlmCfg.api_key` has `repr=False`).
+  callers). `.log` records are flushed and fsync'ed before the caller returns. The LLM is a local
+  Ollama server and needs no API key.
 * **Errors:** raise `AutoclipError` (or `ConfigError`) for expected, user-fixable problems; let real bugs raise.
   Never `except:`; catching `Exception` is allowed only at isolation boundaries (per video, per clip, best-effort hooks) and must log.
 * **The desktop app is native Tk:** `ttk` widgets with the platform theme (`system_theme()`), no custom colours
@@ -704,7 +710,7 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
   `.work/downloads/`, never next to the clips.
 * Keep the downloader policy (allow/deny, groups, aliases, format choice) offline-testable: no test in the normal
   suite may need the network.
-* Keep the config option count at or below 30 (max 30 options, no more).
+* Keep the config option count at or below 5 (max 5 options, no more).
 
 **Ask first**
 * Adding or upgrading dependencies; raising the minimum Python version.

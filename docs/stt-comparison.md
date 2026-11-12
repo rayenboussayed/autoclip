@@ -5,7 +5,7 @@
 >
 > The settings referenced below (`transcript.enhance`, `transcript.model`, `compute.device`,
 > `processing.chunk_minutes`) are 3.x-era names; in 4.0 they are runtime overrides (`--skip denoise`,
-> `--quality`, `--device`) or automatic. The measured results still apply.
+> `--quality` (GPU use is automatic)) or automatic. The measured results still apply.
 
 
 **Scene:** `jutilities-package.mp4`, 4956-5076 s (120 s), Moroccan-dialect Arabic tech talk.
@@ -84,7 +84,7 @@ run where there is noise to remove.
   and Whisper never hold more than that, and the language is detected once and reused.
 * `transcript.model` is now `large-v3`.
 * The enhancement settings are part of the transcript cache key, so changing them re-transcribes.
-* `compute.device` ("cpu" / "gpu" / "auto") decides whether the GPU is used at all: with "cpu" the
+* GPU use is probed automatically (there is no `--device` flag): with no CUDA the
   transcriber runs on the CPU and the clips are encoded with libx264.
 
 ## 5. Cost of the denoisers (CPU only - the sherpa-onnx wheel has no CUDA provider)
@@ -107,6 +107,6 @@ Measured on this machine (16 cores, RTX 3070):
 | `base` | 25 s / 120 s (4.8x realtime) | 176 s / 90 s (**0.51x realtime**) |
 | `large-v3` | 16 s / 120 s (7.4x realtime) | ~0.1x realtime (extrapolated: ~13 h for 112 min) |
 
-With `compute.device: "cpu"` a 112-minute video therefore needs a much smaller
+With no CUDA a 112-minute video therefore needs a much smaller
 `transcript.model` - `base` still takes about 3.7 hours there.  The GPU is what makes
 `large-v3` practical.

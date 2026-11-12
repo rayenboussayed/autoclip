@@ -1,4 +1,4 @@
-"""Download consent: cached models run, uncached ones need an explicit yes (and ``consent: "never"`` never downloads)."""
+"""Whisper models download automatically: a cached model runs offline, an uncached one is fetched on first use."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import numpy as np
 import pytest
 
 from autoclip.core import transcript
-from autoclip.core.errors import AutoclipError
 from autoclip.core.media import probe
 from autoclip.core.models import MediaInfo, Segment
 from tests.support import SENTENCES, install_stub_whisper, make_cfg
@@ -35,83 +34,27 @@ class Downloader:
         return [call for call in self.calls if not call.get("local_files_only")]
 
 
-def _run(
-    media: Any,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    downloader: Downloader,
-    *,
-    consent: str = "ask",
-    answer: Any = None,
-    assume_yes: bool = False,
-    consent_provider: Any = None,
-) -> list[Segment]:
+def _run(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, downloader: Downloader, **sections: Any) -> list[Segment]:
     install_stub_whisper(monkeypatch, media, {}, download_model=downloader)
-    monkeypatch.setenv("AUTOCLIP_ASSUME_YES", "1" if assume_yes else "0")
-    if answer is not None:
-        monkeypatch.setattr("builtins.input", answer)
-    cfg = make_cfg(
-        media,
-        tmp_path / "out",
-        transcript={
-            "consent": consent,
-        },
-    )
+    cfg = make_cfg(media, tmp_path / "out", transcript_file=None, **sections)
     info: MediaInfo = probe(media.video)
-    return transcript.transcribe(media.video, cfg, info, np.zeros(10, dtype=np.float32), None, consent=consent_provider)
+    return transcript.transcribe(media.video, cfg, info, np.zeros(10, dtype=np.float32), None)
 
 
-def test_a_cached_model_needs_no_prompt_and_no_download(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_cached_model_needs_no_download(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     downloader = Downloader(cached=True)
-    segs = _run(media, tmp_path, monkeypatch, downloader, answer=lambda *a, **k: pytest.fail("cached: no prompt"))
+    segs = _run(media, tmp_path, monkeypatch, downloader)
     assert [s.text for s in segs] == SENTENCES
     assert len(downloader.calls) == 1 and downloader.calls[0]["local_files_only"] is True
     assert downloader.online == []
 
 
-def test_consent_never_with_an_uncached_model_fails_without_prompting(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_uncached_model_downloads_on_first_use(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     downloader = Downloader()
-    with pytest.raises(AutoclipError, match="consent is 'never'"):
-        _run(media, tmp_path, monkeypatch, downloader, consent="never", answer=lambda *a, **k: pytest.fail("never: no prompt"))
-    assert len(downloader.calls) == 1 and downloader.calls[0]["local_files_only"] is True
-    assert downloader.online == []
-
-
-@pytest.mark.parametrize(
-    "answer",
-    [
-        lambda *a, **k: "n",
-        lambda *a, **k: "",
-        lambda *a, **k: (_ for _ in ()).throw(EOFError()),
-        lambda *a, **k: (_ for _ in ()).throw(OSError("stdin is unavailable")),
-    ],
-    ids=["no", "empty", "eof", "no-stdin"],
-)
-def test_an_uncached_model_is_not_downloaded_without_consent(
-    media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: Any
-) -> None:
-    downloader = Downloader()
-    with pytest.raises(AutoclipError, match="not cached"):
-        _run(media, tmp_path, monkeypatch, downloader, answer=answer)
-    assert len(downloader.calls) == 1 and downloader.calls[0]["local_files_only"] is True
-    assert downloader.online == []
-
-
-def test_yes_downloads_the_model_once_and_then_transcribes(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Pretend the stubbed stdin is a real terminal so the prompt branch runs.
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
-    downloader = Downloader()
-    segs = _run(media, tmp_path, monkeypatch, downloader, answer=lambda *a, **k: "yes please")
+    segs = _run(media, tmp_path, monkeypatch, downloader)
     assert [s.text for s in segs] == SENTENCES
     assert [call["local_files_only"] for call in downloader.calls] == [True, False]
     assert downloader.online[0]["model"] == "tiny"
-
-
-def test_autoclip_assume_yes_downloads_without_prompting(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    downloader = Downloader()
-    segs = _run(media, tmp_path, monkeypatch, downloader, assume_yes=True, answer=lambda *a, **k: pytest.fail("assume yes"))
-    assert [s.text for s in segs] == SENTENCES
-    assert [call["local_files_only"] for call in downloader.calls] == [True, False]
 
 
 def _utils(monkeypatch: pytest.MonkeyPatch, download_model: Any) -> None:
@@ -138,57 +81,3 @@ def test_the_seams_ask_faster_whisper_with_the_right_flags(monkeypatch: pytest.M
     transcript._download_model("small")
     assert [call["local_files_only"] for call in calls] == [True, True, False]
     assert all(call["model"] == "small" for call in calls)
-
-
-def test_auto_downloads_without_prompting(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    downloader = Downloader()
-    segs = _run(media, tmp_path, monkeypatch, downloader, consent="auto", answer=lambda *a, **k: pytest.fail("auto: no prompt"))
-    assert [s.text for s in segs] == SENTENCES
-    assert [call["local_files_only"] for call in downloader.calls] == [True, False]
-
-
-def test_never_fails_without_downloading(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    downloader = Downloader()
-    with pytest.raises(AutoclipError, match="consent is 'never'"):
-        _run(media, tmp_path, monkeypatch, downloader, consent="never", answer=lambda *a, **k: pytest.fail("never: no prompt"))
-    assert downloader.online == []
-
-
-def test_ask_with_a_consent_provider_false_fails(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    downloader = Downloader()
-    provider_calls: list[tuple[str, str]] = []
-
-    def provider(title: str, message: str) -> bool:
-        provider_calls.append((title, message))
-        return False
-
-    with pytest.raises(AutoclipError, match="not cached"):
-        _run(media, tmp_path, monkeypatch, downloader, consent_provider=provider, answer=lambda *a, **k: pytest.fail("ask: no TTY input"))
-    assert provider_calls and "Download Whisper" in provider_calls[0][1]
-    assert downloader.online == []
-
-
-def test_ask_with_a_consent_provider_true_downloads(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    downloader = Downloader()
-
-    def provider(title: str, message: str) -> bool:
-        return True
-
-    segs = _run(
-        media, tmp_path, monkeypatch, downloader, consent_provider=provider, answer=lambda *a, **k: pytest.fail("ask: no TTY input")
-    )
-    assert [s.text for s in segs] == SENTENCES
-    assert [call["local_files_only"] for call in downloader.calls] == [True, False]
-
-
-def test_an_uncached_model_on_a_tty_with_input_failure(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
-
-    def throw(*a: Any, **k: Any) -> str:
-        raise OSError("stdin is unavailable")
-
-    monkeypatch.setattr("builtins.input", throw)
-    downloader = Downloader()
-    with pytest.raises(AutoclipError, match="not cached"):
-        _run(media, tmp_path, monkeypatch, downloader, consent="ask")
-    assert downloader.online == []

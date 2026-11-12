@@ -6,11 +6,6 @@ whole per-video flow and never raises for a single broken clip.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from autoclip.core.transcript import ConsentProvider
-
 import json
 import logging
 import math
@@ -71,7 +66,7 @@ def ranges_moments(
         fillers = frozenset()
     from . import ai
 
-    use_llm = not cfg.offline and ai.llm_available(cfg.llm.base_url)
+    use_llm = not cfg.skip.llm and ai.llm_available(cfg.llm.base_url)
     out = []
     for span in kcfg.ranges:
         lo, hi = (min(parse_hms(x), info.duration) for x in span.split("-"))
@@ -104,7 +99,7 @@ def process_video(
     name: str | None = None,
     subtitle: Path | None = None,
     subtitle_manual: bool = False,
-    consent: ConsentProvider | None = None,
+    transcript_file: str | None = None,
     config_dir: Path | None = None,
     report: Reporter | None = None,
     cancel: CancelToken | None = None,
@@ -175,7 +170,7 @@ def process_video(
             subtitle=subtitle,
             subtitle_manual=subtitle_manual,
             name=stem,
-            consent=consent,
+            transcript_file=transcript_file,
         )
         if needs_text(cfg):
             reporter("transcribe", 1.0, "transcript ready" if have_text else "transcription skipped - selecting on audio only")
@@ -243,7 +238,7 @@ def process_video(
         cache.close()
         store.close()
     # Optional Stable Diffusion thumbnails (serialized in the AI queue; skipped when unavailable or offline).
-    if not cfg.skip.thumbnail and not cfg.offline:
+    if not cfg.skip.thumbnail and not cfg.skip.llm:
         try:
             from . import ai as _ai
 

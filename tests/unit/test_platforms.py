@@ -117,7 +117,7 @@ def test_check_families_accepts_known_names_aliases_and_groups() -> None:
         ["@popular", "html5", "X"],  # x is the twitter alias, html5 the generic one
         ["@social"],
         {"@news": ["youtube", "@video", "archive.org"]},
-        {"youtube": {"audio_language": "en"}, "@news": {"subtitles": {"languages": ["fr"]}}},
+        {"youtube": {"cookies": "chrome"}, "@news": {"cookies": "firefox"}},
     )
 
 
@@ -127,7 +127,7 @@ def test_check_families_accepts_known_names_aliases_and_groups() -> None:
         (["youtube", "youtubee"], [], {}, {}, "allow: unknown platform 'youtubee' (did you mean 'youtube'?)"),
         (["@popular"], ["tiktokk"], {}, {}, "deny: unknown platform 'tiktokk' (did you mean 'tiktok'?)"),
         (["@popular"], [], {"@news": ["youtube", "vimeoo"]}, {}, "groups.@news: unknown platform 'vimeoo'"),
-        (["@popular"], [], {}, {"instgram": {"audio_language": "en"}}, "settings: unknown platform 'instgram'"),
+        (["@popular"], [], {}, {"instgram": {"cookies": "chrome"}}, "settings: unknown platform 'instgram'"),
     ],
 )
 def test_check_families_rejects_an_unknown_name(
@@ -199,7 +199,7 @@ def test_download_config_accepts_aliases_groups_and_settings() -> None:
                 "platforms": {
                     "allow": ["@popular", "generic"],
                     "groups": {"@news": ["youtube", "@social"], "@mine": ["@news", "@news"]},
-                    "settings": {"x": {"audio_language": "de"}, "@news": {"subtitles": {"languages": ["fr"]}}},
+                    "settings": {"x": {"cookies": "chrome"}, "@news": {"time_range": "1:00-2:00"}},
                 },
             },
         },
@@ -207,7 +207,7 @@ def test_download_config_accepts_aliases_groups_and_settings() -> None:
     assert cfg.download.platforms.allow == ["@popular", "generic"]
     assert cfg.download.platforms.groups["@news"] == ["youtube", "@social"]
     assert cfg.download.platforms.groups["@mine"] == ["@news", "@news"]  # a group visited twice is only checked once
-    assert cfg.download.platforms.settings["x"] == {"audio_language": "de"}
+    assert cfg.download.platforms.settings["x"] == {"cookies": "chrome"}
 
 
 @pytest.mark.parametrize(

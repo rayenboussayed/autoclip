@@ -234,39 +234,16 @@ def _missing_model_downloader(*a: Any, **k: Any) -> bool:
     return True
 
 
-def _transcribe_without_consent(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: Any) -> None:
-    """Run Whisper with an uncached model and the given stdin behaviour; consent must be refused."""
+def test_an_uncached_model_downloads_on_first_use(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Whisper downloads the model automatically: no prompt, no stdin needed."""
     from autoclip.core import transcript
-    from autoclip.core.errors import AutoclipError
     from autoclip.core.media import probe
     from tests.support import install_stub_whisper, make_cfg
 
     install_stub_whisper(monkeypatch, media, {}, cuda=0, download_model=_missing_model_downloader)
-    monkeypatch.setenv("AUTOCLIP_ASSUME_YES", "0")
-    monkeypatch.setattr("builtins.input", answer, raising=False)
-    cfg = make_cfg(media, tmp_path / "o", transcript={"file": None})
-    with pytest.raises(AutoclipError, match="not cached"):
-        transcript.transcribe(media.video, cfg, probe(media.video), np.zeros(10, dtype=np.float32), None)
-
-
-def test_transcript_consent_reject(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _transcribe_without_consent(media, tmp_path, monkeypatch, lambda _: "n")
-
-
-def test_transcript_consent_eof(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def boom(*a: Any, **k: Any) -> str:
-        raise EOFError
-
-    _transcribe_without_consent(media, tmp_path, monkeypatch, boom)
-
-
-def test_transcript_consent_without_stdin(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A GUI or service has no readable stdin: that is a refusal, not an OSError escaping transcribe."""
-
-    def no_stdin(*a: Any, **k: Any) -> str:
-        raise OSError("stdin is unavailable")
-
-    _transcribe_without_consent(media, tmp_path, monkeypatch, no_stdin)
+    cfg = make_cfg(media, tmp_path / "o", transcript_file=None)
+    segments = transcript.transcribe(media.video, cfg, probe(media.video), np.zeros(10, dtype=np.float32), None)
+    assert segments
 
 
 def test_reporter_cancel_before(monkeypatch: pytest.MonkeyPatch) -> None:

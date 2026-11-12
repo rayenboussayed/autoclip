@@ -127,21 +127,11 @@ class ClipsCfg(Section):
 
 
 @dataclass(config=SCHEMA)
-class TranscriptCfg(Section):
-    """Where the transcript comes from (a platform subtitle or the disk cache are tried before Whisper)."""
-
-    file: str | None = None  # .srt/.json; '{stem}' is replaced by the video's file name without extension
-    consent: Literal["ask", "auto", "never"] = "ask"  # ask = prompt (TTY/GUI), auto = download without asking, never = fail fast
-    language: str | None = None  # None = auto-detect
-
-
-@dataclass(config=SCHEMA)
 class LlmCfg(Section):
-    """Optional local re-ranking (Ollama or any OpenAI-compatible server)."""
+    """Optional local re-ranking (Ollama or any OpenAI-compatible server). Ollama is local and needs no API key."""
 
     base_url: Url = "http://localhost:11434"
     model: str = "llama3.2"
-    api_key: str | None = field(default=None, repr=False)
 
 
 @dataclass(config=SCHEMA)
@@ -227,32 +217,6 @@ SKIP_NAMES: tuple[SkipName, ...] = (
 
 
 @dataclass(config=SCHEMA)
-class SubtitlesCfg(Section):
-    """Subtitles downloaded from the platform (a manual track is preferred over automatic captions)."""
-
-    enabled: Bool = True  # download the subtitles the platform offers; they are used before Whisper
-    languages: list[str] = field(default_factory=list)  # empty = follow the video's original language, then en
-
-    @model_validator(mode="after")
-    def _languages_are_names(self) -> SubtitlesCfg:
-        """Language codes are normalized to lower-case and de-duplicated."""
-        cleaned = []
-        for value in self.languages:
-            if not isinstance(value, str) or not value.strip():
-                raise ConfigError("download.subtitles.languages must contain non-empty language codes")
-            cleaned.append(value.strip().lower())
-        self.languages = list(dict.fromkeys(cleaned))
-        return self
-
-
-@dataclass(config=SCHEMA)
-class NetworkCfg(Section):
-    """Network behaviour of the downloader."""
-
-    proxy: Proxy | None = None
-
-
-@dataclass(config=SCHEMA)
 class PlatformsCfg(Section):
     """Which platforms may be downloaded, and their per-platform overrides."""
 
@@ -318,11 +282,9 @@ class PlatformsCfg(Section):
 class DownloadCfg(Section):
     """Downloading the http(s) URLs found in ``input`` with yt-dlp."""
 
-    audio_language: str | None = None  # e.g. "en"; None = the video's original language
-    subtitles: SubtitlesCfg = field(default_factory=SubtitlesCfg)
     time_range: Range | None = None  # "MM:SS-MM:SS" / "HH:MM:SS-HH:MM:SS"
     cookies: str | None = None  # a browser name (chrome, firefox, ...) or a Netscape-format cookies.txt
-    network: NetworkCfg = field(default_factory=NetworkCfg)
+    proxy: Proxy | None = None  # runtime override (never in the file)
     platforms: PlatformsCfg = field(default_factory=PlatformsCfg)
 
     @model_validator(mode="after")
@@ -385,11 +347,9 @@ class Config(Section):
     output_dir: str = field(default_factory=_default_output_dir)  # one sub-folder per video is created inside
     mode: Literal["performance", "resources", "balance"] = "balance"  # performance/resource/balance policy
     quality: Literal["highest", "high", "medium", "low", "lowest"] = "high"  # encode resolution/fps/audio quality
-    device: Literal["auto", "cpu", "gpu"] = "auto"  # runtime override (automatic unless the user forces one)
-    offline: Bool = False  # runtime override: forbid downloads and AI network calls
     download: DownloadCfg = field(default_factory=DownloadCfg)
     clips: ClipsCfg = field(default_factory=ClipsCfg)
-    transcript: TranscriptCfg = field(default_factory=TranscriptCfg)
+    transcript_file: str | None = None  # runtime override: explicit .srt/.json transcript
     llm: LlmCfg = field(default_factory=LlmCfg)
     video: VideoCfg = field(default_factory=VideoCfg)
     captions: CaptionsCfg = field(default_factory=CaptionsCfg)
@@ -465,11 +425,13 @@ REMOVED_KEYS: dict[str, str] = {
     "clips.pad_start": "padding is chosen automatically",
     "clips.pad_end": "padding is chosen automatically",
     "clips.split_seconds": "pass --split",
-    "transcript": "pass --transcript PATH and AUTOCLIP_OFFLINE=1 (consent is automatic)",
+    "transcript": "pass --transcript PATH (consent is automatic; language is auto-detected)",
+    "transcript_file": "pass --transcript PATH",
     "llm": "pass --llm-model (or AUTOCLIP_LLM_MODEL/AUTOCLIP_LLM_URL); a local Ollama is detected automatically",
-    "compute": "pass --device cpu|gpu|auto (or AUTOCLIP_CPU=1)",
-    "device": "pass --device cpu|gpu|auto (or AUTOCLIP_CPU=1)",
-    "offline": "pass --offline or AUTOCLIP_OFFLINE=1",
+    "llm.api_key": "Ollama is local and needs no API key",
+    "compute": "the GPU is probed and used automatically (there is no --device flag)",
+    "device": "the GPU is probed and used automatically (there is no --device flag)",
+    "offline": "removed: AI is controlled by --skip llm; Whisper downloads models automatically",
     "video": "the output stack (layout, background, codec, fps) is chosen automatically",
     "captions": "captions use the automatic social style; pass --skip caption to disable",
     "title": "titles follow the LLM/kind policy; pass --skip title to disable",
@@ -496,6 +458,7 @@ REMOVED_KEYS: dict[str, str] = {
     "download.time_range": "cut the source beforehand or use clips.ranges",
     "download.cookies": "pass --cookies BROWSER|FILE or AUTOCLIP_COOKIES",
     "download.network": "pass --proxy URL or AUTOCLIP_PROXY",
+    "download.proxy": "pass --proxy URL or AUTOCLIP_PROXY",
     "download.js_runtime": "the JavaScript runtime is probed automatically",
     "download.cache": "originals are always cached",
     "download.platforms.groups": "name families directly in download.platforms.allow/deny",
@@ -543,11 +506,9 @@ class RuntimeOverrides(Section):
     cookies: str | None = None  # a browser name or a Netscape cookies file
     proxy: Proxy | None = None
     log_level: Level | None = None
-    device: Literal["auto", "cpu", "gpu"] | None = None
     skip: list[SkipName] | None = None
     llm_base_url: Url | None = None
     llm_model: str | None = None
-    offline: Bool | None = None
     split: Bool | None = None
     mode: Literal["performance", "resources", "balance"] | None = None
     quality: Literal["highest", "high", "medium", "low", "lowest"] | None = None
@@ -565,7 +526,6 @@ class RuntimeOverrides(Section):
             "AUTOCLIP_LOG_LEVEL": "log_level",
             "AUTOCLIP_LLM_URL": "llm_base_url",
             "AUTOCLIP_LLM_MODEL": "llm_model",
-            "AUTOCLIP_DEVICE": "device",
             "AUTOCLIP_MODE": "mode",
             "AUTOCLIP_QUALITY": "quality",
         }
@@ -573,10 +533,6 @@ class RuntimeOverrides(Section):
             value = env.get(variable, "").strip()
             if value:
                 data[field_name] = value
-        if env.get("AUTOCLIP_CPU", "").strip().lower() in ("1", "true", "yes", "on"):
-            data["device"] = "cpu"
-        if env.get("AUTOCLIP_OFFLINE", "").strip().lower() in ("1", "true", "yes", "on"):
-            data["offline"] = True
         skips = [name.strip() for name in env.get("AUTOCLIP_SKIP", "").split(",") if name.strip()]
         if skips:
             data["skip"] = skips  # type: ignore[assignment]
@@ -647,7 +603,7 @@ class FileConfig(Section):
         )
         download = DownloadCfg(
             cookies=ov.cookies,
-            network=NetworkCfg(proxy=ov.proxy),
+            proxy=ov.proxy,
             platforms=PlatformsCfg(allow=list(self.download.platforms.allow), deny=list(self.download.platforms.deny)),
         )
         return Config(
@@ -655,11 +611,9 @@ class FileConfig(Section):
             output_dir=ov.output_dir or _default_output_dir(),
             mode=ov.mode or "balance",
             quality=ov.quality or "high",
-            device=ov.device or "auto",
-            offline=bool(ov.offline),
             download=download,
             clips=clips,
-            transcript=TranscriptCfg(file=ov.transcript, consent="auto"),
+            transcript_file=ov.transcript,
             llm=LlmCfg(base_url=ov.llm_base_url or "http://localhost:11434", model=ov.llm_model or "llama3.2"),
             video=VideoCfg(),
             captions=CaptionsCfg(enabled=not skip.caption),
@@ -836,10 +790,10 @@ def load_config(path: str | Path, overrides: RuntimeOverrides | None = None) -> 
     cfg = file_cfg.to_config(RuntimeOverrides.combined(overrides, os.environ))
     cfg.input = expand_inputs(cfg.input, base)
     cfg.output_dir = _abs(Path.cwd(), cfg.output_dir)  # independent of where the config file lives
-    if cfg.transcript.file:
-        cfg.transcript.file = _abs(base, cfg.transcript.file)
-        if len(cfg.input) > 1 and "{stem}" not in cfg.transcript.file:
-            raise ConfigError("with several videos transcript.file must contain '{stem}' (e.g. 'subs/{stem}.srt')")
+    if cfg.transcript_file:
+        cfg.transcript_file = _abs(base, cfg.transcript_file)
+        if len(cfg.input) > 1 and "{stem}" not in cfg.transcript_file:
+            raise ConfigError("with several videos transcript_file must contain '{stem}' (e.g. 'subs/{stem}.srt')")
     if cfg.download.cookies:
         cfg.download.cookies = _cookie_source(base, cfg.download.cookies)
     cfg.video.background = resolve_background(cfg.video.background, base)

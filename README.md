@@ -59,8 +59,8 @@ directory - not against the config file - so the output folder is independent of
 
 Nothing is downloaded twice on purpose:
 
-* **Whisper models** live in the normal HuggingFace cache. The first run may ask to download one
-  (`transcript.consent` is now always `auto`).
+* **Whisper models** live in the normal HuggingFace cache. The model is downloaded automatically on first use
+  (or prefetched with `autoclip models pull`).
 * **The speech enhancement model (sherpa ONNX)** is kept in `~/.cache/autoclip/models` (on Linux; the platform's cache folder
   everywhere else) and is shared by every output folder, so changing the output location no longer re-downloads it.
 * **Transcripts** are cached per video in `{output_dir}/.work/{video}/{video}.transcript.json` and reused while input, model,
@@ -115,10 +115,8 @@ Runtime overrides (flags win over environment variables):
 | `--cookies BROWSER\|FILE` | `AUTOCLIP_COOKIES` | cookies for downloads |
 | `--proxy URL` | `AUTOCLIP_PROXY` | proxy for downloads |
 | `--log-level …` | `AUTOCLIP_LOG_LEVEL` | log verbosity |
-| `--device auto\|cpu\|gpu` | `AUTOCLIP_DEVICE` / `AUTOCLIP_CPU=1` | GPU usage |
 | `--skip NAME` | `AUTOCLIP_SKIP` | skip pipeline steps (comma separated) |
 | `--llm-model MODEL` | `AUTOCLIP_LLM_MODEL` / `AUTOCLIP_LLM_URL` | local LLM model / URL |
-| `--offline` | `AUTOCLIP_OFFLINE=1` | forbid downloads and AI network calls |
 | `--split` | — | cut the video into equal 600 s parts |
 | `--mode …` | `AUTOCLIP_MODE` | performance / resources / balance |
 | `--quality …` | `AUTOCLIP_QUALITY` | output quality tier |
@@ -152,7 +150,7 @@ See `docs/options-reference.md` for the generated reference of the seven keys.
 * `clips.ranges` cuts your own ranges (scene type `custom`), applies to both kinds; `--split` cuts equal 600 s parts into
   `long/{video}/` and cannot be combined with `clips.ranges`.
 * `input` is a path, a glob or a list. One broken video or clip never stops the batch. Exit status: `0` all done,
-  `1` something failed, `2` bad configuration. With several videos `transcript.file` needs `{stem}` (e.g. `subs/{stem}.srt`).
+  `1` something failed, `2` bad configuration. With several videos `--transcript` needs `{stem}` (e.g. `subs/{stem}.srt`).
 
 ## Downloading URLs (YouTube, TikTok, Vimeo, ...)
 
@@ -179,8 +177,9 @@ same pipeline as a local file:
   `@social`, `@video` and `@all`; name families or groups directly in allow/deny (there is no `groups` file key).
 * **Playlists:** a URL whose shape names a list (channel/playlist/album) downloads every entry up to 50; a watch URL stays
   single. Metadata sidecars (`.info.json`, thumbnail, description) are always written next to the original.
-* **Subtitles:** a downloaded subtitle is used when it exists (a manual track is preferred; automatic captions are used
-  when there is no manual one). An explicit `transcript.file` always wins.
+* **Subtitles:** the video's original track is downloaded (a manual track is preferred; automatic captions are used
+  when there is no manual one). A downloaded subtitle is used when it exists. An explicit `--transcript FILE`
+  always wins.
 * **Command line:** without a config file the built-in defaults run `./input.mp4` (a missing file is reported with a hint,
   exit status 2, and nothing is written); `--download-only config.json` downloads the URLs and stops; `--formats URL`
   prints every available format and the one autoclip would choose (no config file needed); `--platforms [URL]` prints the
@@ -200,8 +199,7 @@ never fatal; the clips keep their heuristic result.
   heuristic titles otherwise. Captions are written as `<clip>.txt` sidecars.
 * Stable Diffusion thumbnails replace the frame JPEG only when `torch`/`diffusers` are installed; otherwise the frame
   JPEG is kept.
-* `--offline` (or `AUTOCLIP_OFFLINE=1`) skips every AI call and never downloads a model. `--skip llm` disables only
-  the LLM calls.
+* `--skip llm` skips every Ollama call. Whisper model downloads are automatic; `--skip stt` avoids Whisper entirely (an explicit, downloaded or cached transcript is used instead).
 
 ## HTTP server (optional)
 
@@ -250,13 +248,8 @@ server behind HTTPS when it is reachable from outside). The Docker image install
 
 ## Where the work runs
 
-`--device` decides whether the GPU is used at all:
-
-| value | effect |
-| --- | --- |
-| `auto` (default) | the GPU is used when there is one and it really works |
-| `cpu` | **nothing touches the GPU**: the transcriber runs on the CPU and the clips are encoded with libx264 |
-| `gpu` | the GPU is preferred (the transcriber with CUDA, the video encoder with NVENC/QSV/AMF/VideoToolbox) |
+The GPU is used automatically when there is one and it really works (probed by encoding a test clip; NVENC/QSV/AMF/VideoToolbox,
+transcriber with CUDA). Otherwise everything runs on the CPU and the log says so. A `GPU` you cannot really use is never selected.
 
 On the CPU the transcriber is much slower: `large-v3` needs roughly ten times the time of `small`, so pick a smaller
 model tier (via `--quality`) for long videos on a CPU-only machine. `--quality` also selects the transcription model:
@@ -325,7 +318,7 @@ keyboard clicks or hum. Enhancement is automatic:
 * The audio is transcribed in fixed 5-minute chunks: neither the denoiser nor Whisper ever holds more than that,
   and the language is detected once and reused for the remaining chunks.
 * `--transcript FILE` loads an explicit `.srt`/`.json` (`{stem}` is replaced); `--skip stt` stops before Whisper (an
-  explicit, downloaded or cached transcript is still used).
+  explicit, downloaded or cached transcript is still used). The language is always auto-detected.
 
 ## What it does
 
@@ -474,8 +467,8 @@ A list of styles used to be *blended* into one ranking; now each gets separate c
 
 ## Security
 
-Config files are trusted input, but: no shell is ever invoked (argument lists only), `llm.base_url` must be http(s), the API key is
-never logged, SQL is parameterised, cached arrays load with `allow_pickle=False`, ruff's bandit rules are enforced.
+Config files are trusted input, but: no shell is ever invoked (argument lists only), `llm.base_url` must be http(s), SQL is
+parameterised, cached arrays load with `allow_pickle=False`, ruff's bandit rules are enforced.
 
 Downloading only happens for http(s) URLs in `input`; the platform policy is checked before any request, the
 `generic` family (any web page) is refused unless it is named, and `deny` always wins. The downloader exposes

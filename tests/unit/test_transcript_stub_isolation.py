@@ -2,7 +2,7 @@
 
 ``transcribe`` used to detect the test stub by failing to import ``faster_whisper.utils``.  A module
 already in ``sys.modules`` imports successfully even when the parent stub has an empty ``__path__``,
-so the real model downloader ran and the consent prompt blocked a headless run.
+so the real model downloader ran and the stub was used instead during the tests.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def test_a_cached_real_utils_module_does_not_turn_the_stub_into_a_download(
     install_stub_whisper(monkeypatch, media, {})
     # the order-dependent regression: a previous test already imported the real submodule
     monkeypatch.setitem(sys.modules, "faster_whisper.utils", real_utils)
-    monkeypatch.setattr("builtins.input", lambda *a, **k: pytest.fail("the consent prompt must not run in a stub"))
+    monkeypatch.setattr("builtins.input", lambda *a, **k: pytest.fail("a stub must not prompt for input"))
     cfg = make_cfg(
         media,
         tmp_path / "out",

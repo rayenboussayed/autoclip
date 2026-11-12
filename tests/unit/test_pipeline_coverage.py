@@ -260,7 +260,7 @@ def test_offline_run_never_calls_ai(media: Any, tmp_path: Path, monkeypatch: pyt
             "short": {"count": 1, "min_seconds": 5, "max_seconds": 10, "ranges": ["00:00:00-00:00:05"]},
         },
     )
-    cfg.offline = True
+    cfg.skip.llm = True
     rc = process_video(media.video, cfg, None, ce(cfg.video, cfg.quality))
     assert rc[0] == 1
 

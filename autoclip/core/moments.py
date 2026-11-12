@@ -256,7 +256,7 @@ def select_moments(
     feats = audio_features(cands, db) | (text_features(cands, segs, lex, kwfn) if text_mode else {})
     from . import ai
 
-    use_llm = not cfg.offline and ai.llm_available(cfg.llm.base_url)
+    use_llm = not cfg.skip.llm and ai.llm_available(cfg.llm.base_url)
     moments: list[Moment] = []
     taken: list[tuple[float, float]] = []
     for scene in cc.scene_list():

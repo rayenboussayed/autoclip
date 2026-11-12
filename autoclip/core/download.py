@@ -451,9 +451,6 @@ def _valid_srt(path: Path) -> bool:
 
 def _subtitle_languages(info: dict[str, Any], settings: DownloadCfg) -> list[str]:
     """Languages to try for a downloaded subtitle set; derived when none are configured."""
-    configured = settings.subtitles.languages
-    if configured:
-        return list(dict.fromkeys(item.strip().lower() for item in configured if item.strip()))
     candidates: list[str] = []
     for key in ("language", "original_language"):
         value = info.get(key)
@@ -603,7 +600,7 @@ class Downloader:
     # -------------------------------- zero-network cache (shared across runs) -----------------
     def _prefs(self, settings: DownloadCfg) -> DownloadPrefs:
         """The derived format preferences of one effective platform settings block."""
-        return DownloadPrefs(quality=self._quality, audio_language=settings.audio_language)
+        return DownloadPrefs(quality=self._quality, audio_language=None)
 
     def _cache_key(self, family: str, url: str, settings: DownloadCfg) -> str:
         """Fingerprint of ``url`` + the settings that decide what is downloaded (paths/policy excluded)."""
@@ -955,7 +952,7 @@ class Downloader:
         rng: tuple[float, float] | None,
     ) -> None:
         """Save the requested subtitles and the metadata next to the original."""
-        plan = self._plan(full, settings) if settings.subtitles.enabled else []
+        plan = self._plan(full, settings)
         temporary = Path(tempfile.mkdtemp(prefix=".sidecar-", dir=directory))
         try:
             info = _clean_info(full)
@@ -1029,9 +1026,7 @@ class Downloader:
         """Whether a cached original already has every requested sidecar."""
         if not (directory / f"{prefix}.info.json").is_file():
             return False
-        if settings.subtitles.enabled:
-            return self._any(directory, (f"{prefix}.manual.", f"{prefix}.auto.", f"{prefix}.subtitle."))
-        return True
+        return self._any(directory, (f"{prefix}.manual.", f"{prefix}.auto.", f"{prefix}.subtitle."))
 
     @staticmethod
     def _any(directory: Path, prefixes: tuple[str, ...]) -> bool:
@@ -1044,8 +1039,6 @@ class Downloader:
         A manual track is preferred; automatic captions are only used when no language has one.
         The requested languages follow the video's original language when the user leaves it alone.
         """
-        if not settings.subtitles.enabled:
-            return None, False
         try:
             info = _read_json(directory / f"{prefix}.info.json")
         except Exception:
@@ -1140,8 +1133,8 @@ class Downloader:
             "js_runtimes": copy.deepcopy(self.js_runtimes),
             "ffmpeg_location": bundled_ffmpeg_exe() if getattr(sys, "frozen", False) else ffmpeg_exe(),
         }
-        if settings.network.proxy:
-            params["proxy"] = settings.network.proxy
+        if settings.proxy:
+            params["proxy"] = settings.proxy
         if settings.cookies:
             if settings.cookies in COOKIE_BROWSERS:
                 params["cookiesfrombrowser"] = (settings.cookies, None, None, None)

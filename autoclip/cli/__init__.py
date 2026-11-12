@@ -59,7 +59,6 @@ def _overrides(args: argparse.Namespace) -> RuntimeOverrides:
         ("cookies", "cookies"),
         ("proxy", "proxy"),
         ("log_level", "log_level"),
-        ("device", "device"),
         ("llm_url", "llm_base_url"),
         ("llm_model", "llm_model"),
         ("mode", "mode"),
@@ -71,8 +70,6 @@ def _overrides(args: argparse.Namespace) -> RuntimeOverrides:
     skip = _csv(getattr(args, "skip", None))
     if skip:
         data["skip"] = skip  # type: ignore[assignment]
-    if getattr(args, "offline", False):
-        data["offline"] = True
     if getattr(args, "split", False):
         data["split"] = True
     return parse(RuntimeOverrides, data)
@@ -182,7 +179,6 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--cookies", metavar="BROWSER|FILE", help="browser cookie store or a Netscape cookies.txt for downloads")
     ap.add_argument("--proxy", metavar="URL", help="proxy for downloads (http(s) or SOCKS)")
     ap.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "OFF"], help="console/log verbosity")
-    ap.add_argument("--device", choices=["auto", "cpu", "gpu"], help="compute device (cpu keeps the GPU out of the run)")
     ap.add_argument(
         "--skip",
         action="append",
@@ -190,7 +186,6 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
         help="skip a step: stt, denoise, audio_enhance, audio, pauses, caption, title, fade, thumbnail, llm, snap",
     )
     ap.add_argument("--llm-model", metavar="MODEL", help="Ollama model used for ranking and social captions")
-    ap.add_argument("--offline", action="store_true", help="forbid downloads and AI network calls")
     ap.add_argument("--split", action="store_true", help="cut the sources into equal parts instead of highlights")
     ap.add_argument("--mode", choices=["performance", "resources", "balance"], help="performance/resource/balance policy")
     ap.add_argument("--quality", choices=["highest", "high", "medium", "low", "lowest"], help="encode resolution/fps/audio quality")
@@ -220,8 +215,6 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
             # no file: the built-in defaults, kept in memory (never written); runtime flags still apply
             cfg = FileConfig().to_config(RuntimeOverrides.combined(overrides))
             cfg.output_dir = str(Path(cfg.output_dir).expanduser().resolve())
-            if cfg.transcript.file:
-                cfg.transcript.file = str(Path(cfg.transcript.file).expanduser().resolve())
             built_in = True
             config_dir = Path.cwd()
         _with_policy(cfg, _csv(args.allow), _csv(args.deny))
@@ -267,9 +260,6 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
     log_decisions()
     snap = RESOURCES.snapshot()
     has_urls = any(is_url(item) for item in cfg.input)
-    if has_urls and cfg.offline:
-        print("error: input contains URLs but --offline/AUTOCLIP_OFFLINE forbids downloading", file=sys.stderr)
-        return 2
     input_labels = [redact_url(item) if is_url(item) else safe_path_text(Path(item)) for item in cfg.input]
     log.info(
         "autoclip start | %s | inputs=%d",
@@ -303,7 +293,7 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
         print("error: --download-only needs at least one URL in input", file=sys.stderr)
         return 2
 
-    encoder = pick_encoder(cfg.video, cfg.quality, allow_gpu=cfg.device != "cpu")
+    encoder = pick_encoder(cfg.video, cfg.quality, allow_gpu=True)
     from ..core.batch import run_batch
 
     events = getattr(args, "events", None)

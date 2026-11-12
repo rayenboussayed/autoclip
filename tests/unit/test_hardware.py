@@ -153,4 +153,4 @@ def test_cpu_fallback_log_names_the_selected_encoder(monkeypatch: pytest.MonkeyP
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="autoclip"):
         assert pick_encoder(VideoCfg(codec="h265"), "high", "Linux", allow_gpu=False).name == "libx265"
-    assert "compute.device is 'cpu': using libx265 on the CPU" in caplog.text
+    assert "GPU disabled: using libx265 on the CPU" in caplog.text

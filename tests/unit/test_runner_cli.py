@@ -424,27 +424,20 @@ def test_events_jsonl_emits_progress_json(media: Media, tmp_path: Path, monkeypa
     assert any("progress" in line for line in captured)
 
 
-def test_overrides_include_skip_offline_and_split() -> None:
+def test_overrides_include_skip_and_split() -> None:
     import argparse
 
     from autoclip.cli import _overrides
 
-    args = argparse.Namespace(skip=["stt", "caption"], offline=True, split=True)
+    args = argparse.Namespace(skip=["stt", "caption"], split=True)
     overrides = _overrides(args)
-    assert overrides.skip == ["stt", "caption"] and overrides.offline is True and overrides.split is True
+    assert overrides.skip == ["stt", "caption"] and overrides.split is True
 
 
 def test_main_without_arguments_defaults_to_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)  # no config.json and no input.mp4 here
     monkeypatch.setenv("AUTOCLIP_TRANSCRIPT", str(tmp_path / "subs" / "{stem}.srt"))
     assert main([]) in (1, 2)
-
-
-def test_main_refuses_offline_with_urls(media: Media, tmp_path: Path) -> None:
-    from autoclip.cli import main
-
-    cfg = write_config(tmp_path, media, inputs=["https://example.com/x.mp4"])
-    assert main(["--offline", str(cfg)]) == 2
 
 
 def test_module_entry_point(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

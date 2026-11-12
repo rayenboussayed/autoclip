@@ -56,9 +56,10 @@ A removed key no longer exists in the file. When you set it, autoclip prints
 | `clips.skip_intro_seconds`, `clips.pad_start`, `clips.pad_end` | chosen automatically |
 | `clips.snap_to_cuts` | shot-change snapping is automatic |
 | `clips.split_seconds` | `--split` |
-| `transcript` (file/consent/language) | `--transcript PATH` and `AUTOCLIP_OFFLINE=1`; consent is automatic |
+| `transcript` (file/consent/language) | `--transcript PATH`; consent is automatic and the language is auto-detected |
 | `llm` | `--llm-model MODEL` (`AUTOCLIP_LLM_MODEL`/`AUTOCLIP_LLM_URL`); a local Ollama is detected automatically |
-| `compute`, `device`, `offline` | `--device cpu\|gpu\|auto` (`AUTOCLIP_DEVICE`/`AUTOCLIP_CPU=1`), `--offline` (`AUTOCLIP_OFFLINE`) |
+| `compute`, `device` | the GPU is probed automatically and used when it works (there is no `--device` flag) |
+| `offline` | `--skip llm` controls the local LLM; Whisper model downloads are automatic |
 | `video` | the output stack (layout, background, codec, fps) is chosen automatically |
 | `captions` | the automatic social style; `--skip caption` disables |
 | `title` | titles follow the LLM/kind policy; `--skip title` disables |
@@ -87,10 +88,8 @@ Every option that used to live in the file is now a runtime override:
 | `--cookies BROWSER\|FILE` | `AUTOCLIP_COOKIES` | cookies for downloads |
 | `--proxy URL` | `AUTOCLIP_PROXY` | proxy for downloads |
 | `--log-level …` | `AUTOCLIP_LOG_LEVEL` | log verbosity |
-| `--device auto\|cpu\|gpu` | `AUTOCLIP_DEVICE` / `AUTOCLIP_CPU=1` | GPU usage |
 | `--skip NAME` | `AUTOCLIP_SKIP` | skip pipeline steps (comma separated) |
 | `--llm-model MODEL` | `AUTOCLIP_LLM_MODEL` / `AUTOCLIP_LLM_URL` | local LLM model / URL |
-| `--offline` | `AUTOCLIP_OFFLINE=1` | forbid downloads and AI network calls |
 | `--split` | — | cut the video into equal 600 s parts |
 | `--mode …` | `AUTOCLIP_MODE` | performance/resources/balance |
 | `--quality …` | `AUTOCLIP_QUALITY` | output quality tier |
@@ -118,15 +117,16 @@ longer aborts the run. Removed keys warn and are ignored.
 ## AI queue
 
 All local LLM (Ollama) calls and Stable Diffusion thumbnails go through one process-wide lock, so even in
-`performance` mode they never run concurrently. `--offline` (or `AUTOCLIP_OFFLINE=1`) skips every AI call and never
-downloads a model; the clips keep their heuristic result. A missing backend is logged and skipped, never fatal.
+`performance` mode they never run concurrently. `--skip llm` skips every Ollama call; Whisper models download on first use
+automatically. The clips keep their heuristic result. A missing
+backend is logged and skipped, never fatal.
 
 ## Notes for 3.x users
 
 - The `clips.short` / `clips.long` length/count/aspect blocks are gone: the built-in short profile is 20–60 s at 9:16
   and the long profile is 3–10 min at 16:9. Use `--split` or `clips.ranges` for other shapes.
-- `transcript.consent` is now always `auto` (no prompt); use `--offline` to forbid model downloads.
-- `compute.device` / `transcript.device` collapse into `--device`/`AUTOCLIP_DEVICE`.
+- `transcript.consent` is now always `auto` (no prompt); Whisper models download on first use.
+- GPU use is probed automatically; there is no `--device` flag or `compute.device`.
 - `--init` and `--init-full` both write the complete seven-key file now (they are identical).
 - The desktop app has three config tabs now: *Videos*, *Clips*, *Download* (plus a runtime output-folder control that is
   never written to the config file).

@@ -56,7 +56,7 @@ def test_make_cfg_uses_fast_defaults_and_merges_nested_sections(media: Media, tm
     assert cfg.output_dir == str(tmp_path / "out")
     assert cfg.clips.kinds == ["short"]
     assert (cfg.clips.short.count, cfg.clips.short.min_seconds, cfg.clips.short.max_seconds) == (3, 6, 12)
-    assert cfg.transcript.file == str(media.transcript)
+    assert cfg.transcript_file == str(media.transcript)
     assert (cfg.quality, cfg.video.codec, cfg.video.layout) == ("lowest", "h264", "fit")
     assert cfg.logging.level == "OFF"
 

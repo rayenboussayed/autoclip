@@ -70,7 +70,7 @@ def _o(
 
 # --------------------------------------------------------------------------------------------
 # The sections, in the order the app shows them. Only the seven file keys live here: everything
-# else (output folder, quality, device, transcript, AI server, ...) is a run-time choice.
+# else (output folder, quality, AI server, ...) is a run-time choice.
 # --------------------------------------------------------------------------------------------
 
 VIDEOS = Section(

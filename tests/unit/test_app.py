@@ -543,7 +543,7 @@ def test_running_starts_the_pipeline_and_shows_its_log(tmp_path: Path, monkeypat
     from autoclip.app import window
     from autoclip.app.window import AutoclipApp
 
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None, output_dir: Any = None) -> None:
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, output_dir: Any = None) -> None:
         on_line("all done")
         on_line("")
 
@@ -574,7 +574,7 @@ def test_stopping_the_pipeline_is_possible(tmp_path: Path, monkeypatch: pytest.M
 
     stopped: list[object] = []
 
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None, output_dir: Any = None) -> None:
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, output_dir: Any = None) -> None:
         on_line("")
 
     monkeypatch.setattr(window, "run_pipeline", _fake)
@@ -1197,7 +1197,7 @@ def test_closing_the_window_stops_the_pipeline(tmp_path: Path, monkeypatch: pyte
 
     stopped: list[object] = []
 
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None, output_dir: Any = None) -> None:
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, output_dir: Any = None) -> None:
         on_line("")
 
     monkeypatch.setattr(window, "run_pipeline", _fake)
@@ -1333,7 +1333,7 @@ def test_a_run_without_a_writable_config_does_not_start(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(messagebox, "showerror", lambda *a, **k: None)
 
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None, output_dir: Any = None) -> None:
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, output_dir: Any = None) -> None:
         pytest.fail("started without a config")
 
     monkeypatch.setattr(window, "run_pipeline", _fake)
@@ -1358,7 +1358,7 @@ def test_the_pipeline_cannot_be_started_twice(tmp_path: Path, monkeypatch: pytes
     from autoclip.app import window
     from autoclip.app.window import AutoclipApp
 
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None, output_dir: Any = None) -> None:
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, output_dir: Any = None) -> None:
         on_line("")
 
     monkeypatch.setattr(window, "run_pipeline", _fake)
@@ -1560,17 +1560,11 @@ def test_closing_the_window_without_a_run_just_closes_it(tmp_path: Path) -> None
 
 
 @needs_display
-def test_process_setter_and_consent_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import tkinter.messagebox as mb
-
+def test_process_setter_and_run_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from autoclip.app import window
     from autoclip.app.window import AutoclipApp
 
-    monkeypatch.setattr(mb, "askyesno", lambda *a, **k: True)
-
-    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, consent: Any = None, output_dir: Any = None) -> None:
-        if consent is not None:
-            consent("autoclip", "download?")
+    def _fake(config_path: Any = None, cancel: Any = None, on_line: Any = None, output_dir: Any = None) -> None:
         on_line("all done")
         on_line("")
 
@@ -1587,9 +1581,6 @@ def test_process_setter_and_consent_path(tmp_path: Path, monkeypatch: pytest.Mon
             import time
 
             time.sleep(0.05)
-        # drain consent queue directly too
-        if hasattr(app, "_drain_consent"):
-            app._drain_consent()
     finally:
         app.destroy()
 

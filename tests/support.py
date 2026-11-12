@@ -77,7 +77,7 @@ def merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
     return {k: merge(base[k], v) if isinstance(v, dict) and isinstance(base.get(k), dict) else v for k, v in {**base, **over}.items()}
 
 
-def make_cfg(media: Media, out: Path, source: Path | None = None, **sections: dict[str, Any]) -> Config:
+def make_cfg(media: Media, out: Path, source: Path | None = None, **sections: Any) -> Config:
     """A small, fast configuration for ``source`` (default: the fixture video) with per-section overrides."""
     data: dict[str, Any] = {
         "clips": {
@@ -85,11 +85,17 @@ def make_cfg(media: Media, out: Path, source: Path | None = None, **sections: di
             "short": {"count": 2, "min_seconds": 6, "max_seconds": 12},
             "long": {"min_seconds": 12, "max_seconds": 30},
         },
-        "transcript": {"file": str(media.transcript)},
+        "transcript_file": str(media.transcript),
         "quality": "lowest",
         "logging": {"level": "OFF"},
     }
+    _sentinel = object()
+    transcript_file = sections.pop("transcript_file", _sentinel)
     cfg = parse(Config, merge(data, sections))
+    if transcript_file is _sentinel:
+        cfg.transcript_file = str(media.transcript)
+    else:
+        cfg.transcript_file = transcript_file
     cfg.input = [str(source or media.video)]
     cfg.output_dir = str(out)
     return cfg

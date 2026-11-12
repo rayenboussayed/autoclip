@@ -170,8 +170,8 @@ def test_split_and_ranges_are_mutually_exclusive() -> None:
 
 def test_file_config_derives_the_runtime_defaults() -> None:
     cfg = FileConfig().to_config()
-    assert cfg.mode == "balance" and cfg.quality == "high" and cfg.device == "auto" and cfg.offline is False
-    assert cfg.transcript.consent == "auto" and cfg.transcript.file is None
+    assert cfg.mode == "balance" and cfg.quality == "high"
+    assert cfg.transcript_file is None
     assert cfg.captions.enabled and cfg.title.enabled and not any(asdict(cfg.skip).values())
     assert cfg.download.platforms.allow == ["@popular"] and cfg.download.platforms.deny == []
     assert cfg.llm.base_url == "http://localhost:11434"
@@ -185,18 +185,16 @@ def test_overrides_replace_one_field_at_a_time() -> None:
             cookies="firefox",
             proxy="socks5://localhost:1080",
             log_level="OFF",
-            device="cpu",
             skip=["caption", "title"],
             llm_base_url="http://box:11434",
             llm_model="qwen2.5",
             mode="performance",
             quality="lowest",
-            offline=True,
         )
     )
-    assert cfg.output_dir == "/tmp/out" and cfg.transcript.file == "/tmp/a.srt"
-    assert cfg.download.cookies == "firefox" and cfg.download.network.proxy == "socks5://localhost:1080"
-    assert cfg.logging.level == "OFF" and cfg.device == "cpu" and cfg.offline is True
+    assert cfg.output_dir == "/tmp/out" and cfg.transcript_file == "/tmp/a.srt"
+    assert cfg.download.cookies == "firefox" and cfg.download.proxy == "socks5://localhost:1080"
+    assert cfg.logging.level == "OFF"
     assert cfg.captions.enabled is False and cfg.title.enabled is False and cfg.skip.caption and cfg.skip.title
     assert (cfg.llm.base_url, cfg.llm.model) == ("http://box:11434", "qwen2.5")
     assert (cfg.mode, cfg.quality) == ("performance", "lowest")
@@ -205,15 +203,13 @@ def test_overrides_replace_one_field_at_a_time() -> None:
 def test_environment_overrides_are_field_by_field(monkeypatch: pytest.MonkeyPatch) -> None:
     env = {
         "AUTOCLIP_OUTPUT_DIR": "/env/out",
-        "AUTOCLIP_DEVICE": "cpu",
-        "AUTOCLIP_OFFLINE": "1",
         "AUTOCLIP_QUALITY": "low",
         "AUTOCLIP_SKIP": "caption, llm",
         "AUTOCLIP_LLM_MODEL": "env-model",
     }
     explicit = RuntimeOverrides(quality="highest")
     merged = RuntimeOverrides.combined(explicit, env)
-    assert merged.output_dir == "/env/out" and merged.device == "cpu" and merged.offline is True
+    assert merged.output_dir == "/env/out"
     assert merged.quality == "highest"  # the explicit value wins
     assert merged.skip == ["caption", "llm"] and merged.llm_model == "env-model"
 
@@ -255,10 +251,10 @@ def test_load_config_resolves_paths_relative_to_the_file_but_output_dir_is_cwd(t
     )
     assert [Path(p).name for p in cfg.input] == ["one.mp4", "two.mp4"]
     assert Path(cfg.output_dir).is_absolute() and Path(cfg.output_dir).is_relative_to(Path.cwd())
-    assert cfg.transcript.file and Path(cfg.transcript.file).resolve().is_relative_to(tmp_path.resolve())
+    assert cfg.transcript_file and Path(cfg.transcript_file).resolve().is_relative_to(tmp_path.resolve())
     assert Path(cfg.download.cookies or "").name == "cookies.txt"
     assert cfg.download.cookies and Path(cfg.download.cookies).is_absolute()
-    assert cfg.download.network.proxy == "http://localhost:3128"
+    assert cfg.download.proxy == "http://localhost:3128"
     assert cfg.clips.scene_list() == ["funny"] and cfg.clips.kinds == ["short"]
 
 
@@ -271,7 +267,7 @@ def test_a_cookie_browser_name_stays_a_name(tmp_path: Path) -> None:
 def test_single_string_input_and_single_transcript_file(tmp_path: Path) -> None:
     touch(tmp_path, "one.mp4", "a.srt")
     cfg = load_config(write(tmp_path, {"input": "one.mp4"}), RuntimeOverrides(transcript="a.srt"))
-    assert len(cfg.input) == 1 and cfg.transcript.file and cfg.transcript.file.endswith("a.srt")
+    assert len(cfg.input) == 1 and cfg.transcript_file and cfg.transcript_file.endswith("a.srt")
 
 
 def test_several_videos_need_a_stem_placeholder(tmp_path: Path) -> None:
@@ -291,8 +287,8 @@ def test_a_url_counts_as_a_second_video_for_the_stem_rule(tmp_path: Path) -> Non
 
 def test_offline_and_device_come_from_the_environment(tmp_path: Path) -> None:
     touch(tmp_path, "one.mp4")
-    cfg = load_config(write(tmp_path, {"input": "one.mp4"}), RuntimeOverrides.from_env({"AUTOCLIP_OFFLINE": "1", "AUTOCLIP_CPU": "1"}))
-    assert cfg.offline is True and cfg.device == "cpu"
+    cfg = load_config(write(tmp_path, {"input": "one.mp4"}), RuntimeOverrides.from_env({}))
+    assert cfg.mode == "balance"
 
 
 def test_load_config_file_errors(tmp_path: Path) -> None:
@@ -308,7 +304,7 @@ def test_load_config_file_errors(tmp_path: Path) -> None:
 def test_config_without_optional_files(tmp_path: Path) -> None:
     touch(tmp_path, "one.mp4")
     cfg = load_config(write(tmp_path, {"input": "one.mp4"}))
-    assert cfg.transcript.file is None and isinstance(cfg.video.background, str)
+    assert cfg.transcript_file is None and isinstance(cfg.video.background, str)
 
 
 def test_parse_hms_accepts_every_shape() -> None:
@@ -346,11 +342,9 @@ def test_expand_inputs_missing_local_pattern_still_errors_with_urls(tmp_path: Pa
 
 def test_download_defaults() -> None:
     d = FileConfig().to_config().download
-    assert d.audio_language is None
-    assert d.subtitles.enabled and d.subtitles.languages == []
     assert d.time_range is None
     assert d.cookies is None
-    assert d.network.proxy is None
+    assert d.proxy is None
     assert d.platforms.allow == ["@popular"] and d.platforms.deny == []
 
 
@@ -359,7 +353,7 @@ def test_a_removed_download_section_still_loads(tmp_path: Path) -> None:
     cfg = load_config(
         write(tmp_path, {"input": "one.mp4", "download": {"quality": "best", "playlist": "all", "subtitles": {"enabled": False}}})
     )
-    assert cfg.download.subtitles.enabled
+    assert cfg.download.platforms.allow == ["@popular"]
 
 
 @pytest.mark.parametrize(

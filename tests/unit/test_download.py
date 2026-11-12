@@ -18,7 +18,7 @@ from typing import Any, cast
 import pytest
 
 from autoclip.core import download
-from autoclip.core.config import DownloadCfg, JsonValue, parse
+from autoclip.core.config import DownloadCfg, parse
 from autoclip.core.download import Downloader, FormatReport, FormatRow, format_report_text
 from autoclip.core.errors import AutoclipError, DownloadError
 from autoclip.core.formats import Choice
@@ -518,7 +518,7 @@ def test_describe_and_policy_text_name_groups_and_settings(dl_factory: Any) -> N
                 "allow": ["@popular", "@mine"],
                 "deny": ["tiktok"],
                 "groups": {"@mine": ["vimeo"]},
-                "settings": {"vimeo": {"audio_language": "en"}},
+                "settings": {"vimeo": {"cookies": "chrome"}},
             },
         }
     )
@@ -671,24 +671,22 @@ def test_rate_limited_reads_code_and_status() -> None:
 def test_per_platform_settings_are_merged_and_cached(dl_factory: Any) -> None:
     dl = dl_factory(
         download={
-            "subtitles": {"languages": ["en", "ar"]},
+            "cookies": "firefox",
             "platforms": {
                 "allow": ["@popular"],
-                "settings": {"youtube": {"audio_language": "de", "subtitles": {"languages": ["ar"]}}},
+                "settings": {"youtube": {"cookies": "chrome"}},
             },
         }
     )
     youtube = dl._settings("YouTube")
-    assert youtube.audio_language == "de"
-    assert youtube.subtitles.languages == ["ar"]
+    assert youtube.cookies == "chrome"
     assert dl._settings("youtube") is youtube
     tiktok = dl._settings("tiktok")
-    assert tiktok.audio_language is None
-    assert tiktok.subtitles.languages == ["en", "ar"]
+    assert tiktok.cookies == "firefox"
 
 
 def test_base_params_carry_network_cookies_and_runtime(dl_factory: Any) -> None:
-    dl = dl_factory(download={"cookies": "firefox", "network": {"proxy": "http://127.0.0.1:8080"}})
+    dl = dl_factory(download={"cookies": "firefox", "proxy": "http://127.0.0.1:8080"})
     settings = dl._settings("youtube")
     params = dl._base_params(settings)
     assert params["proxy"] == "http://127.0.0.1:8080"
@@ -1017,7 +1015,7 @@ def test_download_reuses_the_cached_original_without_a_media_pass(media: Media, 
     assert cert_result and cert.extraction_calls
 
     # A different audio language preference misses the cache and goes back to yt-dlp.
-    dl = dl_factory(download={"platforms": {"settings": {"youtube": {"audio_language": "de"}}}})
+    dl = dl_factory(download={"platforms": {"settings": {"youtube": {"cookies": "chrome"}}}})
     third = flow_fake(media, full)
     dl._YoutubeDL = third
     third_result = dl.download(URL)
@@ -1033,21 +1031,27 @@ def test_download_reuses_the_cached_original_without_a_media_pass(media: Media, 
 
 
 def test_a_cache_hit_fetches_only_the_missing_sidecars(media: Media, dl_factory: Any) -> None:
-    dl = dl_factory(download={"subtitles": {"enabled": False}})
+    dl = dl_factory(download={})
     full = info(video_format("137", 1920, 1080), title="Nice", video_id="v1")
     prefix = "Nice [v1] [137]"
-    dl._YoutubeDL = flow_fake(media, full, sidecar_files={f"{prefix}.info.json": "{}"})
+    dl._YoutubeDL = flow_fake(
+        media, full, sidecar_files={f"{prefix}.info.json": "{}", f"{prefix}.auto.en.srt": "1\n00:00:00,000 --> 00:00:01,000\nhi\n"}
+    )
     dl.download(URL)
     assert (dl.root / f"{prefix}.info.json").is_file()
     assert len(dl._YoutubeDL.sidecar_calls) == 1
 
-    dl._YoutubeDL = flow_fake(media, full, sidecar_files={f"{prefix}.info.json": "{}"})
+    dl._YoutubeDL = flow_fake(
+        media, full, sidecar_files={f"{prefix}.info.json": "{}", f"{prefix}.auto.en.srt": "1\n00:00:00,000 --> 00:00:01,000\nhi\n"}
+    )
     dl.download(URL)
     assert not dl._YoutubeDL.media_calls and not dl._YoutubeDL.sidecar_calls  # nothing is missing
 
     # Drop the originals index: the media and its sidecars are still complete, so no request is made.
     (dl.root / "autoclip-cache.json").unlink()
-    dl._YoutubeDL = flow_fake(media, full, sidecar_files={f"{prefix}.info.json": "{}"})
+    dl._YoutubeDL = flow_fake(
+        media, full, sidecar_files={f"{prefix}.info.json": "{}", f"{prefix}.auto.en.srt": "1\n00:00:00,000 --> 00:00:01,000\nhi\n"}
+    )
     dl.download(URL)
     assert not dl._YoutubeDL.media_calls and not dl._YoutubeDL.sidecar_calls
 
@@ -1229,7 +1233,7 @@ def test_no_entries_is_a_download_error(dl_factory: Any, monkeypatch: pytest.Mon
 
 
 def test_a_playlist_entry_of_another_platform_uses_its_own_settings(media: Media, dl_factory: Any) -> None:
-    dl = dl_factory(download={"platforms": {"settings": {"vimeo": {"audio_language": "de"}}}})
+    dl = dl_factory(download={"platforms": {"settings": {"vimeo": {"cookies": "chrome"}}}})
     entries = [flat_entry("v", "https://vimeo.com/1")]
     video_only = [video_format("v1080", 1920, 1080, acodec="none")]
     audio_en = {"format_id": "a_en", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "abr": 128, "language": "en"}
@@ -1240,8 +1244,8 @@ def test_a_playlist_entry_of_another_platform_uses_its_own_settings(media: Media
 
     item = dl.download(URL)[0]
     assert (item.name, item.platform) == ("V [v]", "vimeo")
-    assert fake.media_calls[0].params["format"] == "v1080+a_de"
-    assert item.path == dl.root / "V [v] [v1080+a_de].mp4"
+    assert fake.media_calls[0].params["format"] == "v1080+a_en"
+    assert item.path == dl.root / "V [v] [v1080+a_en].mp4"
 
 
 def test_an_audio_only_url_is_rejected(media: Media, dl_factory: Any) -> None:
@@ -1407,8 +1411,8 @@ def test_call_translates_every_yt_dlp_error() -> None:
 
 
 def sub_settings(**extra: Any) -> DownloadCfg:
-    """Download settings with subtitles enabled for ``en`` (and whatever ``extra`` says)."""
-    data: dict[str, Any] = {"subtitles": {"enabled": True, "languages": ["en"]}}
+    """Download settings (subtitles are always on and follow the video's language)."""
+    data: dict[str, Any] = {}
     data.update(extra)
     return parse(DownloadCfg, data)
 
@@ -1426,9 +1430,9 @@ def test_plan_picks_manual_then_automatic_and_skips_unusable_tracks(dl_factory: 
             "de": [{"ext": "srv1", "url": "https://x/de.srv1"}],
         },
     }
-    settings = sub_settings(subtitles={"enabled": True, "languages": ["en", "de", "fr", "es"]})
+    settings = sub_settings()
     plan = dl._plan(full, settings)
-    assert [(item.language, item.key, item.manual) for item in plan] == [("en", "en", False), ("fr", "fr", True)]
+    assert [(item.language, item.key, item.manual) for item in plan] == [("en", "en", False)]
 
 
 def test_apply_plan_leaves_only_the_chosen_tracks_and_variants(dl_factory: Any) -> None:
@@ -1473,11 +1477,7 @@ def test_convert_subtitles_skips_missing_and_broken_files(tmp_path: Path, dl_fac
 
 
 def test_sidecars_save_every_requested_file_and_convert_the_subtitles(media: Media, dl_factory: Any) -> None:
-    dl = dl_factory(
-        download={
-            "subtitles": {"enabled": True, "languages": ["en"]},
-        }
-    )
+    dl = dl_factory(download={})
     full = info(
         video_format("137", 1920, 1080),
         title="Nice",
@@ -1569,11 +1569,7 @@ def test_sweep_survives_a_file_it_cannot_move(
 
 
 def test_complete_requires_every_requested_sidecar(tmp_path: Path, dl_factory: Any) -> None:
-    dl = dl_factory(
-        download={
-            "subtitles": {"enabled": True, "languages": ["en"]},
-        }
-    )
+    dl = dl_factory(download={})
     directory = tmp_path / "files"
     directory.mkdir()
     settings = dl._settings("youtube")
@@ -1583,9 +1579,8 @@ def test_complete_requires_every_requested_sidecar(tmp_path: Path, dl_factory: A
     assert not dl._complete(directory, prefix, settings)  # the subtitles are still missing
     (directory / f"{prefix}.auto.en.srt").write_text(srt(1, 2), encoding="utf-8")
     assert dl._complete(directory, prefix, settings)
-    plain = parse(DownloadCfg, {"subtitles": {"enabled": False}})
     (directory / "nothing.info.json").write_text("{}", encoding="utf-8")
-    assert dl._complete(directory, "nothing", plain)
+    assert not dl._complete(directory, "nothing", settings)  # subtitles still missing
 
 
 def test_subtitle_for_follows_the_policy_and_the_transcript_mode(tmp_path: Path, dl_factory: Any) -> None:
@@ -1598,21 +1593,13 @@ def test_subtitle_for_follows_the_policy_and_the_transcript_mode(tmp_path: Path,
     manual.write_text(srt(1, 2), encoding="utf-8")
     auto.write_text(srt(3, 4), encoding="utf-8")
 
-    def settings(enabled: bool = True, languages: list[str] | None = None) -> DownloadCfg:
-        return parse(
-            DownloadCfg,
-            cast(dict[str, JsonValue], {"subtitles": {"enabled": enabled, "languages": languages or ["en"]}}),
-        )
+    def settings() -> DownloadCfg:
+        return cast(DownloadCfg, dl._settings("youtube"))
 
-    assert dl._subtitle_for(directory, prefix, parse(DownloadCfg, {"subtitles": {"enabled": False}})) == (None, False)
     assert dl._subtitle_for(directory, prefix, settings()) == (manual, True)
 
     manual.unlink()
     assert dl._subtitle_for(directory, prefix, settings()) == (auto, False)
-
-    arabic = directory / f"{prefix}.auto.ar.srt"
-    arabic.write_text(srt(1, 2), encoding="utf-8")
-    assert dl._subtitle_for(directory, prefix, settings(languages=["ar", "en"])) == (arabic, False)
 
     # A file whose language is not in the requested list is still found by the glob fallback.
     for p in directory.glob("*.srt"):
@@ -1621,7 +1608,7 @@ def test_subtitle_for_follows_the_policy_and_the_transcript_mode(tmp_path: Path,
     german.write_text(srt(1, 2), encoding="utf-8")
     invalid = directory / f"{prefix}.manual.it.srt"
     invalid.write_text("not a cue", encoding="utf-8")
-    assert dl._subtitle_for(directory, prefix, settings(languages=["fr"])) == (german, True)  # the invalid cue is skipped
+    assert dl._subtitle_for(directory, prefix, settings()) == (german, True)  # the invalid cue is skipped
 
     for p in directory.glob("*.srt"):
         p.unlink()
