@@ -241,7 +241,7 @@ def test_an_uncached_model_downloads_on_first_use(media: Any, tmp_path: Path, mo
     from tests.support import install_stub_whisper, make_cfg
 
     install_stub_whisper(monkeypatch, media, {}, cuda=0, download_model=_missing_model_downloader)
-    cfg = make_cfg(media, tmp_path / "o", transcript_file=None)
+    cfg = make_cfg(media, tmp_path / "o")
     segments = transcript.transcribe(media.video, cfg, probe(media.video), np.zeros(10, dtype=np.float32), None)
     assert segments
 

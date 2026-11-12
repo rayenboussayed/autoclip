@@ -36,7 +36,6 @@ log = logging.getLogger("autoclip")
 #: A value that can appear in a JSON document (used instead of ``Any`` for config-shaped data).
 JsonValue = dict[str, "JsonValue"] | list["JsonValue"] | str | int | float | bool | None
 
-Level = Literal["DEBUG", "INFO", "WARNING", "ERROR", "OFF"]
 Position = Literal["top", "center", "lower", "bottom"]
 
 #: The schema: an unknown key is an error, a value keeps the type the JSON gave it.
@@ -51,8 +50,6 @@ Aspect = Annotated[str, StringConstraints(pattern=r"^(\d+(\.\d+)?:\d+(\.\d+)?|or
 Range = Annotated[str, StringConstraints(pattern=r"^[\d:.]+-[\d:.]+$")]
 #: The URL of the LLM server: http or https.
 Url = Annotated[str, StringConstraints(pattern=r"(?i)^https?://\S+$")]
-#: A proxy URL for the downloader (http(s) or SOCKS).
-Proxy = Annotated[str, StringConstraints(pattern=r"(?i)^(https?|socks[45]h?)://\S+$")]
 
 
 def parse_hms(text: str) -> float:
@@ -131,7 +128,15 @@ class LlmCfg(Section):
     """Optional local re-ranking (Ollama or any OpenAI-compatible server). Ollama is local and needs no API key."""
 
     base_url: Url = "http://localhost:11434"
-    model: str = "llama3.2"
+    model: str = "bonsai-2:2b"
+    system_prompt: str = ""  # overrides the built-in system message when set (re-ranking, titles and captions)
+
+
+@dataclass(config=SCHEMA)
+class ImageCfg(Section):
+    """Optional Stable Diffusion thumbnails (only when torch/diffusers are installed)."""
+
+    prompt: str = "cinematic thumbnail, high quality, sharp focus"  # the Stable Diffusion prompt of every thumbnail
 
 
 @dataclass(config=SCHEMA)
@@ -167,20 +172,6 @@ class CaptionsCfg(Section):
             "blur": ("#FFFFFF", "#000000", 0.6, 0, "#000000", "#FFD400"),
         }[self.theme]
         self.color, self.bg_color, self.bg_opacity, self.stroke_width, self.stroke_color, self.highlight_color = style
-
-
-@dataclass(config=SCHEMA)
-class TitleCfg(Section):
-    """Optional hook title shown at the start of each clip."""
-
-    enabled: Bool = False
-
-
-@dataclass(config=SCHEMA)
-class LoggingCfg(Section):
-    """Log file and console verbosity."""
-
-    level: Level = "INFO"  # written to the log file and the console; OFF disables both
 
 
 @dataclass(config=SCHEMA)
@@ -284,7 +275,6 @@ class DownloadCfg(Section):
 
     time_range: Range | None = None  # "MM:SS-MM:SS" / "HH:MM:SS-HH:MM:SS"
     cookies: str | None = None  # a browser name (chrome, firefox, ...) or a Netscape-format cookies.txt
-    proxy: Proxy | None = None  # runtime override (never in the file)
     platforms: PlatformsCfg = field(default_factory=PlatformsCfg)
 
     @model_validator(mode="after")
@@ -349,13 +339,11 @@ class Config(Section):
     quality: Literal["highest", "high", "medium", "low", "lowest"] = "high"  # encode resolution/fps/audio quality
     download: DownloadCfg = field(default_factory=DownloadCfg)
     clips: ClipsCfg = field(default_factory=ClipsCfg)
-    transcript_file: str | None = None  # runtime override: explicit .srt/.json transcript
     llm: LlmCfg = field(default_factory=LlmCfg)
+    image: ImageCfg = field(default_factory=ImageCfg)
     video: VideoCfg = field(default_factory=VideoCfg)
     captions: CaptionsCfg = field(default_factory=CaptionsCfg)
-    title: TitleCfg = field(default_factory=TitleCfg)
     skip: SkipCfg = field(default_factory=SkipCfg)
-    logging: LoggingCfg = field(default_factory=LoggingCfg)
 
 
 @dataclass(config=SCHEMA)
@@ -383,6 +371,20 @@ class FileClipsCfg(Section):
 
 
 @dataclass(config=SCHEMA)
+class FileLlmCfg(Section):
+    """The one thing worth setting for the local LLM (an empty string keeps the built-in editor prompt)."""
+
+    system_prompt: str = ""  # overrides the built-in system message used for re-ranking, titles and captions
+
+
+@dataclass(config=SCHEMA)
+class FileImageCfg(Section):
+    """The prompt of the optional Stable Diffusion thumbnails (used only when torch/diffusers are installed)."""
+
+    prompt: str = "cinematic thumbnail, high quality, sharp focus"
+
+
+@dataclass(config=SCHEMA)
 class FilePlatformsCfg(Section):
     """The only download policy a user ever needs to write down."""
 
@@ -393,20 +395,13 @@ class FilePlatformsCfg(Section):
     def _names(self) -> FilePlatformsCfg:
         """No empty names and no unknown built-in groups (families are checked against yt-dlp at run time)."""
         if not self.allow:
-            raise ConfigError("download.platforms.allow must name at least one platform or group")
+            raise ConfigError("download.allow must name at least one platform or group")
         for name in (*self.allow, *self.deny):
             if not name.strip():
-                raise ConfigError("download.platforms.allow/deny must not contain empty names")
+                raise ConfigError("download.allow/deny must not contain empty names")
             if name.startswith("@") and name not in BUILTIN_GROUPS:
-                raise ConfigError(f"download.platforms: unknown group {name}")
+                raise ConfigError(f"download: unknown group {name}")
         return self
-
-
-@dataclass(config=SCHEMA)
-class FileDownloadCfg(Section):
-    """Downloading URLs found in ``input`` (everything else follows the platform's own conventions)."""
-
-    platforms: FilePlatformsCfg = field(default_factory=FilePlatformsCfg)
 
 
 #: Keys older versions accepted, with the replacement to use instead. A removed *section* covers its children.
@@ -414,7 +409,7 @@ REMOVED_KEYS: dict[str, str] = {
     "output_dir": "set AUTOCLIP_OUTPUT_DIR, pass --output-dir, or choose the folder in the app",
     "mode": "pass --mode performance|resources|balance",
     "quality": "pass --quality highest|high|medium|low|lowest",
-    "logging": "pass --log-level DEBUG|INFO|WARNING|ERROR|OFF",
+    "logging": "logging is internal: DEBUG in debug mode (AUTOCLIP_DEBUG=1), INFO otherwise",
     "clips.mode": "clips.preset chooses shorts/long/both; use clips.ranges for exact cuts or pass --split",
     "clips.kinds": "use clips.preset",
     "clips.short": "use clips.preset (the short profile is built in)",
@@ -425,16 +420,17 @@ REMOVED_KEYS: dict[str, str] = {
     "clips.pad_start": "padding is chosen automatically",
     "clips.pad_end": "padding is chosen automatically",
     "clips.split_seconds": "pass --split",
-    "transcript": "pass --transcript PATH (consent is automatic; language is auto-detected)",
-    "transcript_file": "pass --transcript PATH",
-    "llm": "pass --llm-model (or AUTOCLIP_LLM_MODEL/AUTOCLIP_LLM_URL); a local Ollama is detected automatically",
+    "transcript": "a sidecar .srt/.json next to the video is used automatically (no config keys)",
+    "transcript_file": "a sidecar .srt/.json next to the video is used automatically (no config keys)",
+    "llm.base_url": "pass --llm-url (or AUTOCLIP_LLM_URL); a local Ollama is detected automatically",
+    "llm.model": "pass --llm-model (or AUTOCLIP_LLM_MODEL)",
     "llm.api_key": "Ollama is local and needs no API key",
     "compute": "the GPU is probed and used automatically (there is no --device flag)",
     "device": "the GPU is probed and used automatically (there is no --device flag)",
     "offline": "removed: AI is controlled by --skip llm; Whisper downloads models automatically",
     "video": "the output stack (layout, background, codec, fps) is chosen automatically",
     "captions": "captions use the automatic social style; pass --skip caption to disable",
-    "title": "titles follow the LLM/kind policy; pass --skip title to disable",
+    "title": "titles are automatic; pass --skip title to disable",
     "audio": "audio processing is automatic; pass --skip audio_enhance to disable",
     "unsilence": "silence removal is automatic",
     "silence": "silence removal is automatic",
@@ -442,7 +438,7 @@ REMOVED_KEYS: dict[str, str] = {
     "metadata": "metadata sidecars are always written",
     "cookies": "pass --cookies BROWSER|FILE or AUTOCLIP_COOKIES",
     "js_runtime": "the JavaScript runtime is probed automatically",
-    "network": "pass --proxy URL or AUTOCLIP_PROXY",
+    "network": "proxies are not supported; downloads use the network directly",
     "download.quality": "the best matching format is chosen automatically",
     "download.fps": "the best matching format is chosen automatically",
     "download.prefer": "the best matching format is chosen automatically",
@@ -457,11 +453,14 @@ REMOVED_KEYS: dict[str, str] = {
     "download.max_videos": "playlists are capped at 50 entries",
     "download.time_range": "cut the source beforehand or use clips.ranges",
     "download.cookies": "pass --cookies BROWSER|FILE or AUTOCLIP_COOKIES",
-    "download.network": "pass --proxy URL or AUTOCLIP_PROXY",
-    "download.proxy": "pass --proxy URL or AUTOCLIP_PROXY",
+    "download.network": "proxies are not supported; downloads use the network directly",
+    "download.proxy": "proxies are not supported; downloads use the network directly",
     "download.js_runtime": "the JavaScript runtime is probed automatically",
     "download.cache": "originals are always cached",
-    "download.platforms.groups": "name families directly in download.platforms.allow/deny",
+    "download.platforms": "use download.allow / download.deny directly",
+    "download.platforms.allow": "use download.allow",
+    "download.platforms.deny": "use download.deny",
+    "download.platforms.groups": "name families directly in download.allow/deny",
     "download.platforms.settings": "per-platform settings are chosen automatically",
 }
 
@@ -502,10 +501,7 @@ class RuntimeOverrides(Section):
 
     input: list[str] | None = None
     output_dir: str | None = None
-    transcript: str | None = None  # explicit .srt/.json transcript (overrides the file key, which does not exist)
     cookies: str | None = None  # a browser name or a Netscape cookies file
-    proxy: Proxy | None = None
-    log_level: Level | None = None
     skip: list[SkipName] | None = None
     llm_base_url: Url | None = None
     llm_model: str | None = None
@@ -520,10 +516,7 @@ class RuntimeOverrides(Section):
         data: dict[str, JsonValue] = {}
         names = {
             "AUTOCLIP_OUTPUT_DIR": "output_dir",
-            "AUTOCLIP_TRANSCRIPT": "transcript",
             "AUTOCLIP_COOKIES": "cookies",
-            "AUTOCLIP_PROXY": "proxy",
-            "AUTOCLIP_LOG_LEVEL": "log_level",
             "AUTOCLIP_LLM_URL": "llm_base_url",
             "AUTOCLIP_LLM_MODEL": "llm_model",
             "AUTOCLIP_MODE": "mode",
@@ -536,11 +529,8 @@ class RuntimeOverrides(Section):
         skips = [name.strip() for name in env.get("AUTOCLIP_SKIP", "").split(",") if name.strip()]
         if skips:
             data["skip"] = skips  # type: ignore[assignment]
-        try:
-            return parse(cls, data)
-        except ConfigError as e:
-            log.warning("config: ignoring invalid environment overrides: %s", e)
-            return cls()
+        # Every invalid value falls back to its default inside ``parse``; nothing in this curated dict can raise.
+        return parse(cls, data)
 
     @classmethod
     def combined(cls, explicit: RuntimeOverrides | None, env: Mapping[str, str] | None = None) -> RuntimeOverrides:
@@ -565,7 +555,7 @@ PRESET_KINDS: dict[str, tuple[str, ...]] = {
 
 @dataclass(config=SCHEMA)
 class FileConfig(Section):
-    """The whole configuration file: seven keys, everything else is derived at run time."""
+    """The whole configuration file: nine keys, everything else is derived at run time."""
 
     @model_validator(mode="before")
     @classmethod
@@ -575,7 +565,9 @@ class FileConfig(Section):
 
     input: list[str] = field(default_factory=lambda: ["input.mp4"])  # files, glob patterns or http(s) URLs
     clips: FileClipsCfg = field(default_factory=FileClipsCfg)
-    download: FileDownloadCfg = field(default_factory=FileDownloadCfg)
+    download: FilePlatformsCfg = field(default_factory=FilePlatformsCfg)
+    llm: FileLlmCfg = field(default_factory=FileLlmCfg)
+    image: FileImageCfg = field(default_factory=FileImageCfg)
 
     def to_config(self, overrides: RuntimeOverrides | None = None) -> Config:
         """Derive the complete runtime configuration from these few choices.
@@ -603,8 +595,7 @@ class FileConfig(Section):
         )
         download = DownloadCfg(
             cookies=ov.cookies,
-            proxy=ov.proxy,
-            platforms=PlatformsCfg(allow=list(self.download.platforms.allow), deny=list(self.download.platforms.deny)),
+            platforms=PlatformsCfg(allow=list(self.download.allow), deny=list(self.download.deny)),
         )
         return Config(
             input=list(self.input if ov.input is None else ov.input),
@@ -613,13 +604,15 @@ class FileConfig(Section):
             quality=ov.quality or "high",
             download=download,
             clips=clips,
-            transcript_file=ov.transcript,
-            llm=LlmCfg(base_url=ov.llm_base_url or "http://localhost:11434", model=ov.llm_model or "llama3.2"),
+            llm=LlmCfg(
+                base_url=ov.llm_base_url or "http://localhost:11434",
+                model=ov.llm_model or "llama3.2",
+                system_prompt=self.llm.system_prompt,
+            ),
+            image=ImageCfg(prompt=self.image.prompt),
             video=VideoCfg(),
             captions=CaptionsCfg(enabled=not skip.caption),
-            title=TitleCfg(enabled=not skip.title),
             skip=skip,
-            logging=LoggingCfg(level=ov.log_level or "INFO"),
         )
 
 
@@ -790,10 +783,6 @@ def load_config(path: str | Path, overrides: RuntimeOverrides | None = None) -> 
     cfg = file_cfg.to_config(RuntimeOverrides.combined(overrides, os.environ))
     cfg.input = expand_inputs(cfg.input, base)
     cfg.output_dir = _abs(Path.cwd(), cfg.output_dir)  # independent of where the config file lives
-    if cfg.transcript_file:
-        cfg.transcript_file = _abs(base, cfg.transcript_file)
-        if len(cfg.input) > 1 and "{stem}" not in cfg.transcript_file:
-            raise ConfigError("with several videos transcript_file must contain '{stem}' (e.g. 'subs/{stem}.srt')")
     if cfg.download.cookies:
         cfg.download.cookies = _cookie_source(base, cfg.download.cookies)
     cfg.video.background = resolve_background(cfg.video.background, base)

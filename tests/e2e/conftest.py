@@ -18,14 +18,12 @@ from .harness import (
     E2ERun,
     _environment,
     _now,
-    cache_folder,
     choose_bbc_entry,
     download_config,
     downloaded_files,
     e2e_cache,
     e2e_level,
     english_subtitle,
-    level_range,
     new_run_directory,
 )
 
@@ -91,12 +89,7 @@ def downloaded_bbc(e2e_run: E2ERun, bbc_entry: ManifestEntry, download_cache: Pa
     case_dir = e2e_run.directory / "shared_download_bbc"
     result = e2e_run.execute(
         "shared_download_bbc",
-        download_config(
-            case_dir / "out",
-            bbc_entry.url,
-            time_range=level_range(bbc_entry, 1),
-            original_dir=cache_folder(download_cache, bbc_entry.url, 1),
-        ),
+        download_config(case_dir / "out", bbc_entry.url),
         ["--download-only"],
         timeout=LADDER_TIMEOUT,
     )

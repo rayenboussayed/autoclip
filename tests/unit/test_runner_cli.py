@@ -104,9 +104,7 @@ def test_render_job_failure_is_recorded_not_raised(media: Media, tmp_path: Path,
 
 def test_render_job_in_a_fresh_worker_rebuilds_logging_and_monitor(media: Media, tmp_path: Path) -> None:
     log_file = tmp_path / "worker.log"
-    (job,), store, _ = make_jobs(
-        media, tmp_path, n=1, log_file=log_file, parent_pid=-1, logging={"level": "INFO"}
-    )  # pid differs: behaves like a spawned worker
+    (job,), store, _ = make_jobs(media, tmp_path, n=1, log_file=log_file, parent_pid=-1)  # pid differs: behaves like a spawned worker
     assert render_job(job) and store.clips()[0]["status"] == "done"
     assert "rendering " in log_file.read_text(encoding="utf-8") and "c1.mp4" in log_file.read_text(encoding="utf-8")
     store.close()
@@ -231,7 +229,7 @@ def test_render_all_retries_a_killed_worker_alone(
 
 def test_render_all_with_real_spawned_workers(media: Media, tmp_path: Path) -> None:
     log_file = tmp_path / "pool.log"
-    jobs, store, cfg = make_jobs(media, tmp_path, n=2, log_file=log_file, logging={"level": "INFO"})
+    jobs, store, cfg = make_jobs(media, tmp_path, n=2, log_file=log_file)
     RESOURCES.configure(None)
     RESOURCES.cpus = 2
     RESOURCES.max_cpu_percent = 100.0
@@ -252,8 +250,11 @@ def clips_json(tmp_path: Path, kind: str, stem: str) -> list[dict[str, Any]]:
     return result
 
 
-def test_main_processes_several_videos_into_the_short_long_video_structure(media: Media, tmp_path: Path) -> None:
-    assert main(run_args(write_config(tmp_path, media), log_level="INFO")) == 0
+def test_main_processes_several_videos_into_the_short_long_video_structure(
+    media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_stub_whisper(monkeypatch, media, {}, cuda=0)  # silent.mp4 ships no sidecar transcript; the stub provides one
+    assert main(run_args(write_config(tmp_path, media, inputs=[str(media.video), str(media.silent)]))) == 0
     out = tmp_path / "out"
     assert sorted(p.name for p in out.iterdir()) == [".work", "logs", "short"]  # only the requested kind gets a folder
     for stem in ("talk", "silent"):
@@ -269,7 +270,7 @@ def test_main_processes_several_videos_into_the_short_long_video_structure(media
 
 def test_main_short_and_long_clips_for_several_scene_types(media: Media, tmp_path: Path) -> None:
     cfg = write_config(tmp_path, media, inputs=[str(media.video)], clips={"preset": "shorts", "scenes": ["funny", "sad"]})
-    assert main(run_args(cfg, log_level="INFO")) == 0
+    assert main(run_args(cfg)) == 0
     out = tmp_path / "out"
     assert (out / "short" / "talk").is_dir()
     rows = clips_json(tmp_path, "short", "talk")
@@ -281,7 +282,7 @@ def test_main_short_and_long_clips_for_several_scene_types(media: Media, tmp_pat
 
 def test_a_kind_without_room_is_skipped_but_the_rest_is_produced(media: Media, tmp_path: Path) -> None:
     cfg = write_config(tmp_path, media, inputs=[str(media.video)], clips={"preset": "both"})
-    assert main(run_args(cfg, log_level="INFO")) == 0
+    assert main(run_args(cfg)) == 0
     log_files = list((tmp_path / "out" / "logs").glob("autoclip_*.log"))
     assert log_files and "no long clips for talk.mp4" in log_files[0].read_text(encoding="utf-8")
     assert (tmp_path / "out" / "short" / "talk").is_dir() and not (tmp_path / "out" / "long").exists()
@@ -355,26 +356,26 @@ def test_needs_text_only_when_selection_captions_or_titles_use_it(media: Media, 
     out = tmp_path / "out"
     assert needs_text(make_cfg(media, out))
     ranges = {"mode": "ranges", "short": {"ranges": ["0:04-0:10"]}}
-    assert not needs_text(make_cfg(media, out, clips=ranges, captions={"enabled": False}))
-    assert needs_text(make_cfg(media, out, clips=ranges))
-    assert needs_text(make_cfg(media, out, clips=ranges, captions={"enabled": False}, title={"enabled": True}))
-    assert not needs_text(make_cfg(media, out, clips=ranges, title={"enabled": False}, captions={"enabled": False}))
+    assert needs_text(make_cfg(media, out, clips=ranges, captions={"enabled": False}))  # titles read the text by default
+    assert not needs_text(make_cfg(media, out, clips=ranges, captions={"enabled": False}, skip={"title": True}))
 
 
 def test_main_chunks_long_videos_for_transcription(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
-    cfg = write_config(tmp_path, media, inputs=[str(media.video)])
-    assert main(run_args(cfg, transcript=False)) == 0
+    bare = tmp_path / "bare.mp4"
+    bare.write_bytes(media.video.read_bytes())
+    cfg = write_config(tmp_path, media, inputs=[str(bare)])
+    assert main(run_args(cfg)) == 0
     assert (
-        "chunks" not in rec and rec["samples"] > 0 and len(clips_json(tmp_path, "short", "talk")) == 1
+        "chunks" not in rec and rec["samples"] > 0 and len(clips_json(tmp_path, "short", "bare")) == 1
     )  # one automatic pass (possibly whole audio), clip still produced
-    assert (tmp_path / "out" / ".work" / "talk" / "talk.transcript.json").exists()
+    assert (tmp_path / "out" / ".work" / "bare" / "bare.transcript.json").exists()
 
 
 def test_main_logs_which_video_encoder_was_chosen(media: Media, tmp_path: Path) -> None:
     cfg = write_config(tmp_path, media, inputs=[str(media.video)])
-    assert main(run_args(cfg, log_level="INFO")) == 0
+    assert main(run_args(cfg)) == 0
     log_files = list((tmp_path / "out" / "logs").glob("autoclip_*.log"))
     assert log_files, "expected a derived log file"
     text = log_files[0].read_text(encoding="utf-8")
@@ -406,11 +407,9 @@ def test_generated_configs_load_without_errors(tmp_path: Path) -> None:
         assert cfg.clips.kinds == ["short", "long"] and Path(cfg.input[0]).name == "input.mp4"
 
 
-def test_main_logging_can_be_disabled_and_directed(media: Media, tmp_path: Path) -> None:
-    quiet = write_config(tmp_path, media, inputs=[str(media.video)])
-    assert main(run_args(quiet, log_level="OFF")) == 0 and not (tmp_path / "out" / "logs").exists()
-    enabled_cfg = write_config(tmp_path, media, inputs=[str(media.video)])
-    assert main(run_args(enabled_cfg, log_level="INFO")) == 0
+def test_main_writes_a_log_file(media: Media, tmp_path: Path) -> None:
+    cfg = write_config(tmp_path, media, inputs=[str(media.video)])
+    assert main(run_args(cfg)) == 0
     log_files = list((tmp_path / "out" / "logs").glob("autoclip_*.log"))
     assert log_files and "autoclip start" in log_files[0].read_text(encoding="utf-8")
 
@@ -436,7 +435,6 @@ def test_overrides_include_skip_and_split() -> None:
 
 def test_main_without_arguments_defaults_to_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)  # no config.json and no input.mp4 here
-    monkeypatch.setenv("AUTOCLIP_TRANSCRIPT", str(tmp_path / "subs" / "{stem}.srt"))
     assert main([]) in (1, 2)
 
 

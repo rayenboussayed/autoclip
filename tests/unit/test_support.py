@@ -56,9 +56,7 @@ def test_make_cfg_uses_fast_defaults_and_merges_nested_sections(media: Media, tm
     assert cfg.output_dir == str(tmp_path / "out")
     assert cfg.clips.kinds == ["short"]
     assert (cfg.clips.short.count, cfg.clips.short.min_seconds, cfg.clips.short.max_seconds) == (3, 6, 12)
-    assert cfg.transcript_file == str(media.transcript)
     assert (cfg.quality, cfg.video.codec, cfg.video.layout) == ("lowest", "h264", "fit")
-    assert cfg.logging.level == "OFF"
 
 
 def test_make_cfg_accepts_another_source(media: Media, tmp_path: Path) -> None:
@@ -71,20 +69,18 @@ def test_make_cfg_rejects_an_unknown_option(media: Media, tmp_path: Path) -> Non
         make_cfg(media, tmp_path / "out", clips={"not_an_option": True})
 
 
-def test_write_config_writes_the_three_subtitle_files_and_a_loadable_config(media: Media, tmp_path: Path) -> None:
+def test_write_config_writes_a_loadable_config(media: Media, tmp_path: Path) -> None:
     path = write_config(tmp_path, media)
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["input"] == [str(media.video), str(media.silent)]
+    assert data["input"] == [str(media.video)]
     assert data["clips"] == BASE_CONFIG["clips"]
     assert "output_dir" not in data and "transcript" not in data  # runtime overrides, never file keys
-    for stem in ("talk", "silent", "broken"):
-        assert (tmp_path / "subs" / f"{stem}.json").read_text(encoding="utf-8") == media.transcript.read_text(encoding="utf-8")
     loaded = load_config(path, RuntimeOverrides(output_dir=str(tmp_path / "out")))
-    assert loaded.input == [str(media.video.resolve()), str(media.silent.resolve())]
+    assert loaded.input == [str(media.video.resolve())]
     assert loaded.output_dir == str((tmp_path / "out").resolve())
 
 
-def test_run_args_carries_the_runtime_overrides(tmp_path: Path) -> None:
+def test_run_args_carries_the_run_time_overrides(tmp_path: Path) -> None:
     config = tmp_path / "config.json"
     assert run_args(config) == [
         str(config),
@@ -92,12 +88,8 @@ def test_run_args_carries_the_runtime_overrides(tmp_path: Path) -> None:
         str(tmp_path / "out"),
         "--quality",
         "lowest",
-        "--log-level",
-        "OFF",
-        "--transcript",
-        str(tmp_path / "subs" / "{stem}.json"),
     ]
-    assert run_args(config, transcript=False, log_level="INFO", extra=["--split"])[-3:] == ["--log-level", "INFO", "--split"]
+    assert run_args(config, extra=["--split"])[-3:] == ["--quality", "lowest", "--split"]
 
 
 def test_segments_cover_the_fixture_with_word_timings() -> None:

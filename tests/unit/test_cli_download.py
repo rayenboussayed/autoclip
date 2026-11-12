@@ -267,20 +267,20 @@ def test_download_only_runs_before_the_pipeline(media: Media, tmp_path: Path, mo
     entries = {URL: [Downloaded(tmp_path / "a.mp4", "A", "youtube")]}
     install_fake_downloader(monkeypatch, downloads=entries)
     calls = record_pipeline(monkeypatch)
-    cfg = write_config(tmp_path, media, input=[URL], logging={"level": "OFF"})
+    cfg = write_config(tmp_path, media, input=[URL])
     assert main(["--download-only", str(cfg)]) == 0
     assert calls == []
 
 
 def test_download_only_reports_a_failed_url(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     install_fake_downloader(monkeypatch, downloads={URL: DownloadError("blocked")})
-    cfg = write_config(tmp_path, media, input=[URL], logging={"level": "OFF"})
+    cfg = write_config(tmp_path, media, input=[URL])
     assert main(["--download-only", str(cfg)]) == 1
 
 
 def test_download_only_without_urls_is_a_config_error(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     install_fake_downloader(monkeypatch)  # must not even be constructed
-    cfg = write_config(tmp_path, media, input=[str(media.video)], logging={"level": "OFF"})
+    cfg = write_config(tmp_path, media, input=[str(media.video)])
     assert main(["--download-only", str(cfg)]) == 2
 
 
@@ -289,7 +289,7 @@ def test_downloader_init_errors_stop_a_run(
     media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception, status: int
 ) -> None:
     install_fake_downloader(monkeypatch, init_error=error)
-    cfg = write_config(tmp_path, media, input=[URL], logging={"level": "OFF"})
+    cfg = write_config(tmp_path, media, input=[URL])
     assert main([str(cfg)]) == status
 
 
@@ -316,7 +316,7 @@ def test_urls_and_local_files_share_one_batch(media: Media, tmp_path: Path, monk
 def test_a_failed_download_does_not_stop_the_local_video(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     install_fake_downloader(monkeypatch, downloads={URL: DownloadError("blocked")})
     calls = record_pipeline(monkeypatch)
-    cfg = write_config(tmp_path, media, input=[str(media.video), URL], logging={"level": "OFF"})
+    cfg = write_config(tmp_path, media, input=[str(media.video), URL])
     assert main([str(cfg)]) == 1
     assert [c["path"].name for c in calls] == ["talk.mp4"]
 
@@ -324,7 +324,7 @@ def test_a_failed_download_does_not_stop_the_local_video(media: Media, tmp_path:
 def test_a_local_only_run_never_imports_yt_dlp(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "yt_dlp", None)
     calls = record_pipeline(monkeypatch)
-    cfg = write_config(tmp_path, media, input=[str(media.video)], logging={"level": "OFF"})
+    cfg = write_config(tmp_path, media, input=[str(media.video)])
     assert main([str(cfg)]) == 0
     assert [c["path"].name for c in calls] == ["talk.mp4"]
 

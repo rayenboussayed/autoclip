@@ -106,7 +106,6 @@ def run_batch(
                     name=name,
                     subtitle=subtitle,
                     subtitle_manual=subtitle_manual,
-                    transcript_file=cfg.transcript_file,
                     config_dir=config_dir,
                     report=scoped,
                     cancel=reporter.cancel if cancel is None else cancel,

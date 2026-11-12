@@ -89,24 +89,14 @@ def test_choose_bbc_entry_prefers_the_bbc_clip_then_falls_back_to_the_last() -> 
     assert harness.choose_bbc_entry(manifest, "").title == "BBC News at six"
 
 
-def test_download_config_requests_subtitles_metadata_and_an_optional_range(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_download_config_is_minimal_and_keeps_the_e2e_cookies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AUTOCLIP_E2E_COOKIES", raising=False)
     config = harness.download_config(tmp_path / "out", "https://youtu.be/x")
-    assert config["input"] == ["https://youtu.be/x"]
-    assert config["output_dir"] == str(tmp_path / "out")
-    assert config["download"]["quality"] == "best"
-    assert config["download"]["subtitles"] == {"enabled": True, "languages": ["en"], "use_as_transcript": "always"}
-    assert "time_range" not in config["download"] and "cookies" not in config["download"]
-    assert "original_dir" not in config["download"]
-    assert config["logging"]["level"] == "INFO"
+    assert config == {"input": ["https://youtu.be/x"]}  # quality/metadata/subtitles are automatic in 4.0
 
     monkeypatch.setenv("AUTOCLIP_E2E_COOKIES", "/tmp/cookies.txt")
-    ranged = harness.download_config(
-        tmp_path / "out", "https://youtu.be/x", time_range="00:01:00-00:02:00", original_dir=tmp_path / "cache"
-    )
-    assert ranged["download"]["time_range"] == "00:01:00-00:02:00"
-    assert ranged["download"]["cookies"] == {"file": "/tmp/cookies.txt"}
-    assert ranged["download"]["original_dir"] == str(tmp_path / "cache")
+    with_cookies = harness.download_config(tmp_path / "out", "https://youtu.be/x")
+    assert with_cookies["download"] == {"cookies": "/tmp/cookies.txt"}
 
 
 @pytest.mark.parametrize(
@@ -228,21 +218,17 @@ def test_compare_levels_ignores_a_kind_that_was_not_recorded() -> None:
     )
 
 
-def test_pipeline_config_merges_clip_overrides_over_its_fast_defaults(tmp_path: Path) -> None:
-    config = harness.pipeline_config(tmp_path / "out", Path("video.mp4"), Path("subs.srt"))
-    assert config["input"] == ["video.mp4"]
-    assert config["transcript"] == {"mode": "file", "file": "subs.srt"}
-    assert config["clips"]["kinds"] == ["short"] and config["clips"]["scenes"] == ["best"]
-    assert config["clips"]["short"] == {"count": 1, "min_seconds": 15, "max_seconds": 45}
-    assert config["video"] == {"short_side": 720, "gpu": "off"}
-    assert config["quality"] == "lowest"
+def test_pipeline_config_merges_clip_overrides_and_writes_the_sidecar(tmp_path: Path) -> None:
+    source, subs = tmp_path / "video.mp4", tmp_path / "subs.srt"
+    source.write_bytes(b"video")
+    subs.write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n", encoding="utf-8")
+    config = harness.pipeline_config(tmp_path / "out", source, subs)
+    assert config["input"] == [str(source)]
+    assert config["clips"] == {"preset": "shorts", "scenes": "best"}
+    assert source.with_suffix(".srt").read_text(encoding="utf-8").endswith("hi\n")  # the sidecar transcript
 
-    ranged = harness.pipeline_config(
-        tmp_path / "out", Path("video.mp4"), Path("subs.srt"), {"mode": "ranges", "short": {"ranges": ["00:00:10-00:00:30"]}}
-    )
-    assert ranged["clips"]["mode"] == "ranges"
-    assert ranged["clips"]["short"]["count"] == 1
-    assert ranged["clips"]["short"]["ranges"] == ["00:00:10-00:00:30"]
+    ranged = harness.pipeline_config(tmp_path / "out", source, None, {"ranges": ["00:00:10-00:00:30"]})
+    assert ranged["clips"] == {"preset": "shorts", "scenes": "best", "ranges": ["00:00:10-00:00:30"]}
 
 
 def test_downloaded_files_keeps_only_media_in_the_originals_cache(tmp_path: Path) -> None:

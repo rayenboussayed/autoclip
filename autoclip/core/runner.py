@@ -16,7 +16,7 @@ from dataclasses import replace
 from .events import CancelToken, Reporter
 from .hardware import HW_MAX_WORKERS
 from .internal import modes
-from .log import safe_path_text, setup_logging, traced
+from .log import default_level, safe_path_text, setup_logging, traced
 from .models import RenderJob
 from .render import render_clip
 from .resources import RESOURCES
@@ -30,7 +30,7 @@ def render_job(job: RenderJob) -> bool:
     """Render one clip and record the outcome in SQLite. Never raises (a failed clip must not stop the batch)."""
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     if os.getpid() != job.parent_pid:  # fresh interpreter: rebuild logging and the resource monitor
-        setup_logging(job.log_file, job.cfg.logging.level, None)
+        setup_logging(job.log_file, default_level(), None)
         RESOURCES.configure(job.cfg)
     t0 = time.perf_counter()
     threads = min(job.threads or RESOURCES.encoding_thread_budget(), RESOURCES.encoding_thread_budget())

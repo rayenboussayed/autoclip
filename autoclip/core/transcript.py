@@ -367,6 +367,28 @@ def _cache_key(src: Path, model: str, *, enhance: bool = True) -> dict[str, Any]
     }
 
 
+def _sidecar_transcript(src: Path) -> Path | None:
+    """A transcript that ships next to the source: ``<name>.json`` first, then ``<name>.srt``."""
+    for suffix in (".json", ".srt"):
+        candidate = src.with_suffix(suffix)
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _sidecar_segments(path: Path) -> list[Segment]:
+    """The segments of a sidecar transcript, or ``[]`` when it cannot be used (falls back to the next source)."""
+    try:
+        segments = load_transcript_file(path)
+        if not segments:
+            raise ValueError("it has no cues")
+    except Exception as e:  # a broken sidecar must not cost the video when Whisper can replace it
+        log.warning("the sidecar transcript '%s' cannot be used (%s: %s); using another source", path.name, type(e).__name__, e)
+        return []
+    log.info("using the sidecar transcript '%s' (%d segments)", path.name, len(segments))
+    return segments
+
+
 @traced("get_transcript")
 def get_transcript(
     src: Path,
@@ -379,30 +401,26 @@ def get_transcript(
     subtitle: Path | None = None,
     subtitle_manual: bool = False,
     name: str | None = None,
-    transcript_file: str | None = None,
 ) -> bool:
-    """Put the transcript of ``src`` into ``store`` (file, downloaded subtitles, disk cache or Whisper).
+    """Put the transcript of ``src`` into ``store`` (sidecar file, downloaded subtitles, disk cache or Whisper).
 
-    ``transcript.file`` wins over everything. A ``subtitle`` the downloader picked for this video is
-    used next (its policy already decided whether automatic captions are acceptable), then the disk
-    cache, then Whisper. Returns whether a transcript exists.
+    A ``.srt`` or ``.json`` transcript next to the source wins (it is the natural place for one). A
+    ``subtitle`` the downloader picked for this video is used next (its policy already decided whether
+    automatic captions are acceptable), then the disk cache, then Whisper. Returns whether a transcript exists.
 
-    ``skip.stt`` stops before Whisper: the file, downloaded subtitle and disk cache are still used,
+    ``skip.stt`` stops before Whisper: the sidecar, downloaded subtitle and disk cache are still used,
     and a run without any of them simply continues without text. ``skip.denoise`` builds no speech
     enhancer (and changes the cache key, so an enhanced cache is not reused for raw audio).
     """
     if not need_text:
         return False
     stem = name or src.stem
-    transcript_file = transcript_file if transcript_file is not None else getattr(cfg, "transcript_file", None)
-    if transcript_file:
-        try:
-            segments = load_transcript_file(Path(transcript_file.replace("{stem}", stem)))
-        except Exception as e:
-            raise AutoclipError(f"cannot use transcript file '{transcript_file}': {type(e).__name__}: {e}") from e
-        log.info("loaded transcript: %d segments", len(segments))
-        store.put_segments(segments)
-        return bool(segments)
+    sidecar = _sidecar_transcript(src)
+    if sidecar is not None:
+        segments = _sidecar_segments(sidecar)
+        if segments:
+            store.put_segments(segments)
+            return True
     if subtitle is not None:
         downloaded = _downloaded_segments(subtitle, subtitle_manual)
         if downloaded:
@@ -421,6 +439,9 @@ def get_transcript(
     if not segments:
         if cfg.skip.stt:
             log.info("skip.stt is set: no cached transcript or subtitle is available")
+            return False
+        if not info.has_audio:
+            log.info("the video has no audio: there is no transcript to produce")
             return False
         noisy = decode_audio(src, 0.0, info.duration, 16000)
         make = snr_db(noisy) < ENHANCE_SNR_THRESHOLD_DB

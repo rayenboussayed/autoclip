@@ -90,9 +90,9 @@ def test_codec_order_is_h264_then_vp9_then_av1_then_h265() -> None:
     assert pick([f for f in formats if f["format_id"] in ("av1", "h265")]).format_id == "av1"
 
 
-def test_a_higher_bitrate_breaks_a_codec_tie() -> None:
-    formats = [video("low", 1920, 1080, tbr=1000), video("high", 1920, 1080, tbr=2000)]
-    assert pick(formats).format_id == "high"
+def test_the_least_burdensome_bitrate_breaks_a_codec_tie() -> None:
+    formats = [video("heavy", 1920, 1080, tbr=2000), video("light", 1920, 1080, tbr=1000)]
+    assert pick(formats).format_id == "light"
 
 
 def test_audio_picks_the_highest_bitrate() -> None:
@@ -196,3 +196,45 @@ def test_a_direct_media_format_without_codec_or_size_is_usable() -> None:
     choice = pick([direct])
     assert choice.format_id == "0" and choice.warnings == ()
     assert pick([direct, video("v720", 1280, 720)], quality=720).format_id == "v720"
+
+
+def test_a_higher_frame_rate_wins_at_equal_quality_and_codec() -> None:
+    formats = [video("low_fps", 1920, 1080, tbr=4000, fps=30), video("high_fps", 1920, 1080, tbr=5500, fps=60)]
+    assert pick(formats).format_id == "high_fps"
+
+
+def test_an_unknown_frame_rate_loses_to_a_known_one() -> None:
+    formats = [video("unknown_fps", 1920, 1080, fps=None, tbr=1000), video("known_fps", 1920, 1080, fps=24, tbr=2000)]
+    assert pick(formats).format_id == "known_fps"
+
+
+def test_an_unknown_bitrate_loses_at_equal_quality_and_codec() -> None:
+    formats = [video("unknown_tbr", 1920, 1080, tbr=None, fps=30), video("known_tbr", 1920, 1080, tbr=4000, fps=30)]
+    assert pick(formats).format_id == "known_tbr"
+
+
+def test_candidates_pair_video_only_formats_with_different_audio_ids() -> None:
+    from typing import cast as _cast  # noqa: PLC0415 - local import inside the test
+
+    from autoclip.core.formats import DownloadPrefs, YtInfo, choose_candidates  # noqa: PLC0415
+
+    formats = [
+        video("v1", 1920, 1080, tbr=1700, protocol="https"),
+        video("v2", 1920, 1080, tbr=1500, vcodec="vp09.00.40.08", protocol="https"),
+        audio("a256", abr=256),
+        audio("a128", abr=128),
+    ]
+    candidates = choose_candidates(_cast(YtInfo, {"formats": formats}), DownloadPrefs(quality=1080))
+    assert candidates[0].format_id == "v1+a256"
+    assert candidates[1].format_id == "v2+a128"
+
+
+def test_describe_summarises_an_audio_only_choice() -> None:
+    from typing import cast as _cast  # noqa: PLC0415 - local import inside the test
+
+    from autoclip.core.formats import DownloadPrefs, YtInfo, choose_candidates, describe  # noqa: PLC0415
+
+    only_audio = audio("140", abr=128)
+    info = {"formats": [only_audio]}
+    choice = choose_candidates(_cast(YtInfo, info), DownloadPrefs(quality=1080))[0]
+    assert describe(_cast(YtInfo, info), choice) == "audio 140"

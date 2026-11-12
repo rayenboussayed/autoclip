@@ -12,7 +12,7 @@ import os
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, ParamSpec, Protocol, TextIO, TypeVar, cast, overload
@@ -148,6 +148,17 @@ class _StdoutTee(io.TextIOBase):
             return False
 
 
+def debug_mode(env: Mapping[str, str] | None = None) -> bool:
+    """Is the run in debug mode? ``AUTOCLIP_DEBUG=1`` (or true/yes/on) turns it on."""
+    env = os.environ if env is None else env
+    return env.get("AUTOCLIP_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def default_level(env: Mapping[str, str] | None = None) -> str:
+    """The minimum log level of this run: ``DEBUG`` in debug mode, ``INFO`` otherwise."""
+    return "DEBUG" if debug_mode(env) else "INFO"
+
+
 def default_log_file(output_dir: str | Path) -> Path:
     """The log file of a run: ``{output_dir}/logs/autoclip_<timestamp>.log`` (one file per run)."""
     return Path(output_dir) / "logs" / f"autoclip_{datetime.now():%Y%m%d_%H%M%S}.log"
@@ -169,10 +180,6 @@ def setup_logging(log_file: Path | None, file_level: str, console_level: str | N
     orig_stdout = sys.stdout
     if isinstance(orig_stdout, _StdoutTee) and orig_stdout._console is not None:
         orig_stdout = orig_stdout._console
-    if file_level == "OFF":
-        log_file = None
-    if console_level == "OFF":
-        console_level = None
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         fh = _SharedFileHandler(log_file, encoding="utf-8")

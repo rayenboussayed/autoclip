@@ -34,7 +34,7 @@ from autoclip.core.transcript import (
     transcribe,
 )
 
-from ..support import FIXTURE_SAMPLES, SENTENCES, Media, install_stub_whisper, make_cfg
+from ..support import FIXTURE_SAMPLES, SENTENCES, Media, bare_media, install_stub_whisper, make_cfg
 
 SRT = (
     "1\n00:00:01,000 --> 00:00:03,500\nHello there.\n\n"
@@ -154,10 +154,8 @@ def info_db(media: Media) -> tuple[MediaInfo, F32]:
 
 
 def asr_cfg(media: Media, tmp_path: Path, **sections: Any) -> Config:
-    """A configuration that transcribes with Whisper (the default of ``make_cfg`` reads a file)."""
-    cfg = make_cfg(media, tmp_path / "out", **sections)
-    cfg.transcript_file = None
-    return cfg
+    """A plain configuration (direct ``transcribe`` calls do not read a transcript file)."""
+    return make_cfg(media, tmp_path / "out", **sections)
 
 
 def test_transcribe_cpu_with_stub(media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path) -> None:
@@ -207,36 +205,69 @@ def store(tmp_path: Path):  # type: ignore[no-untyped-def]
     st.close()
 
 
-def cfg_for(media: Media, tmp_path: Path, **transcript_cfg: Any) -> Config:
-    mode = transcript_cfg.pop("mode", "auto")
-    file_value = transcript_cfg.pop("file", None)
-    cfg = make_cfg(media, tmp_path / "out", transcript_file=file_value)
-    if mode == "off":
-        cfg.skip.stt = True
-    return cfg
-
-
 def test_get_transcript_off_or_not_needed(media: Media, tmp_path: Path, store: Store, info_db: tuple[MediaInfo, F32]) -> None:
-    cfg = cfg_for(media, tmp_path, mode="off")
-    assert not get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True)
-    cfg = cfg_for(media, tmp_path)
-    assert not get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=False)
+    video = bare_media(media, tmp_path)
+    cfg = make_cfg(media, tmp_path / "out", source=video, skip={"stt": True})
+    assert not get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
+    cfg = make_cfg(media, tmp_path / "out2", source=video)
+    assert not get_transcript(video, cfg, tmp_path, store, *info_db, need_text=False)
     assert store.light_segments() == []
 
 
-def test_get_transcript_file_modes(media: Media, tmp_path: Path, store: Store, info_db: tuple[MediaInfo, F32]) -> None:
-    cfg = cfg_for(media, tmp_path, mode="file", file=str(tmp_path / "{stem}.srt"))
-    (tmp_path / "talk.srt").write_text(media.srt.read_text())
-    assert get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True)
+def test_get_transcript_uses_the_sidecar_json(
+    media: Media, tmp_path: Path, store: Store, info_db: tuple[MediaInfo, F32], caplog: pytest.LogCaptureFixture
+) -> None:
+    video = bare_media(media, tmp_path, "bare.mp4")
+    video.with_suffix(".json").write_text(media.transcript.read_text(encoding="utf-8"), encoding="utf-8")
+    cfg = make_cfg(media, tmp_path / "out", source=video)
+    with caplog.at_level(logging.INFO, logger="autoclip"):
+        assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
     assert len(store.light_segments()) == len(SENTENCES)
+    assert "sidecar" in caplog.text
 
 
-def test_get_transcript_rejects_an_unreadable_explicit_file(
+def test_get_transcript_prefers_the_sidecar_json_over_the_srt(
     media: Media, tmp_path: Path, store: Store, info_db: tuple[MediaInfo, F32]
 ) -> None:
-    cfg = cfg_for(media, tmp_path, mode="file", file=str(tmp_path / "missing-{stem}.srt"))
-    with pytest.raises(AutoclipError, match="cannot use transcript file"):
-        get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True)
+    video = bare_media(media, tmp_path, "bare.mp4")
+    video.with_suffix(".json").write_text(media.transcript.read_text(encoding="utf-8"), encoding="utf-8")
+    video.with_suffix(".srt").write_text("1\n00:00:00,000 --> 00:00:01,000\njust one cue\n", encoding="utf-8")
+    cfg = make_cfg(media, tmp_path / "out", source=video)
+    assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
+    assert len(store.light_segments()) == len(SENTENCES)  # the json, not the single srt cue
+
+
+def test_a_broken_sidecar_falls_back_to_whisper(
+    media: Media,
+    tmp_path: Path,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    info_db: tuple[MediaInfo, F32],
+) -> None:
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec)
+    video = bare_media(media, tmp_path, "bare.mp4")
+    video.with_suffix(".srt").write_text("no cues here", encoding="utf-8")
+    cfg = make_cfg(media, tmp_path / "out", source=video)
+    with caplog.at_level(logging.WARNING, logger="autoclip"):
+        assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
+    assert "cannot be used" in caplog.text and "init" in rec
+
+
+def test_a_broken_sidecar_falls_back_to_the_downloaded_subtitle(
+    media: Media,
+    tmp_path: Path,
+    store: Store,
+    info_db: tuple[MediaInfo, F32],
+) -> None:
+    video = bare_media(media, tmp_path, "bare.mp4")
+    video.with_suffix(".srt").write_text("no cues here", encoding="utf-8")
+    subtitle = tmp_path / "downloaded.srt"
+    subtitle.write_text("1\n00:00:01,000 --> 00:00:02,000\nDownloaded line\n", encoding="utf-8")
+    cfg = make_cfg(media, tmp_path / "out", source=video)
+    assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=subtitle)
+    assert [s[2] for s in store.light_segments()] == ["Downloaded line"]
 
 
 def test_get_transcript_prefers_a_downloaded_subtitle_over_cache_and_whisper(
@@ -250,23 +281,25 @@ def test_get_transcript_prefers_a_downloaded_subtitle_over_cache_and_whisper(
     """A subtitle the downloader picked is used as-is: no cache file and no Whisper call."""
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
+    video = bare_media(media, tmp_path, "bare.mp4")
     subtitle = tmp_path / "downloaded.srt"
     subtitle.write_text(media.srt.read_text(encoding="utf-8"), encoding="utf-8")
-    cfg = cfg_for(media, tmp_path)
+    cfg = make_cfg(media, tmp_path / "out", source=video)
     with caplog.at_level(logging.INFO, logger="autoclip"):
-        assert get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=subtitle, subtitle_manual=True)
+        assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=subtitle, subtitle_manual=True)
     assert len(store.light_segments()) == len(SENTENCES)
     assert "using the downloaded manual subtitles" in caplog.text
-    assert "init" not in rec and not (tmp_path / "talk.transcript.json").exists()
+    assert "init" not in rec and not (tmp_path / "bare.transcript.json").exists()
 
 
 def test_file_mode_accepts_a_downloaded_subtitle_as_its_transcript(
     media: Media, tmp_path: Path, store: Store, info_db: tuple[MediaInfo, F32]
 ) -> None:
+    video = bare_media(media, tmp_path, "bare.mp4")
     subtitle = tmp_path / "downloaded.srt"
     subtitle.write_text(media.srt.read_text(encoding="utf-8"), encoding="utf-8")
-    cfg = cfg_for(media, tmp_path, mode="file")  # transcript.file is not set
-    assert get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=subtitle)
+    cfg = make_cfg(media, tmp_path / "out", source=video)
+    assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=subtitle)
     assert len(store.light_segments()) == len(SENTENCES)
 
 
@@ -280,31 +313,41 @@ def test_a_missing_downloaded_subtitle_falls_back_or_fails_in_file_mode(
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
+    video = bare_media(media, tmp_path, "bare.mp4")
     missing = tmp_path / "missing.srt"
+    cfg = make_cfg(media, tmp_path / "out", source=video)
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        assert get_transcript(
-            media.video, cfg_for(media, tmp_path, mode="auto"), tmp_path, store, *info_db, need_text=True, subtitle=missing
-        )
+        assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=missing)
     assert "cannot be used" in caplog.text and "init" in rec  # Whisper replaced the broken subtitle
 
 
-def test_an_empty_downloaded_subtitle_is_rejected(media: Media, tmp_path: Path, store: Store, info_db: tuple[MediaInfo, F32]) -> None:
+def test_an_empty_downloaded_subtitle_is_rejected(
+    media: Media,
+    tmp_path: Path,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    info_db: tuple[MediaInfo, F32],
+) -> None:
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec)
+    video = bare_media(media, tmp_path, "bare.mp4")
     empty = tmp_path / "empty.srt"
     empty.write_text("", encoding="utf-8")
-    assert (
-        get_transcript(media.video, cfg_for(media, tmp_path), tmp_path, store, *info_db, need_text=True, subtitle=empty) is False or True
-    )  # new non-fatal behaviour
+    cfg = make_cfg(media, tmp_path / "out", source=video)
+    with caplog.at_level(logging.WARNING, logger="autoclip"):
+        assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=empty)
+    assert "cannot be used" in caplog.text and "init" in rec
 
 
-def test_an_explicit_transcript_file_wins_over_a_downloaded_subtitle(
-    media: Media, tmp_path: Path, store: Store, info_db: tuple[MediaInfo, F32]
-) -> None:
-    cfg = cfg_for(media, tmp_path, mode="file", file=str(tmp_path / "{stem}.srt"))
-    (tmp_path / "talk.srt").write_text(media.srt.read_text(encoding="utf-8"), encoding="utf-8")
+def test_a_sidecar_wins_over_a_downloaded_subtitle(media: Media, tmp_path: Path, store: Store, info_db: tuple[MediaInfo, F32]) -> None:
+    video = bare_media(media, tmp_path, "one.mp4")
+    video.with_suffix(".json").write_text(media.transcript.read_text(encoding="utf-8"), encoding="utf-8")
     one_cue = tmp_path / "one.srt"
     one_cue.write_text("1\n00:00:01,000 --> 00:00:02,000\nOnly one\n", encoding="utf-8")
-    assert get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=one_cue)
-    assert len(store.light_segments()) == len(SENTENCES)  # the configured file, not the single downloaded cue
+    cfg = make_cfg(media, tmp_path / "out", source=video)
+    assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=one_cue)
+    assert len(store.light_segments()) == len(SENTENCES)  # the sidecar, not the single downloaded cue
 
 
 def test_whisper_result_is_cached_reused_and_invalidated(
@@ -317,19 +360,20 @@ def test_whisper_result_is_cached_reused_and_invalidated(
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
-    cfg = cfg_for(media, tmp_path)
-    assert get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True)
-    cache_file = tmp_path / "talk.transcript.json"
+    video = bare_media(media, tmp_path, "bare.mp4")
+    cfg = make_cfg(media, tmp_path / "out", source=video)
+    assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
+    cache_file = tmp_path / "bare.transcript.json"
     assert cache_file.exists() and len(store.light_segments()) == len(SENTENCES) and "init" in rec
 
     rec.clear()
-    assert get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True)
+    assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
     assert "init" not in rec, "second run must reuse the cache"
 
-    stale = make_cfg(media, tmp_path / "out", transcript_file=None)
+    stale = make_cfg(media, tmp_path / "out", source=video)
     stale.quality = "highest"  # differs enough -> cache key differs
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        assert get_transcript(media.video, stale, tmp_path, store, *info_db, need_text=True)
+        assert get_transcript(video, stale, tmp_path, store, *info_db, need_text=True)
     assert "stale" in caplog.text and rec["init"]
 
 
@@ -343,13 +387,12 @@ def test_whisper_failure_policy(
 ) -> None:
     monkeypatch.setitem(sys.modules, "faster_whisper", None)  # import fails like a missing install
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        assert not get_transcript(
-            media.video, make_cfg(media, tmp_path / "out", transcript_file=None), tmp_path, store, *info_db, need_text=True
-        )
+        video = bare_media(media, tmp_path, "bare.mp4")
+        assert not get_transcript(video, make_cfg(media, tmp_path / "out", source=video), tmp_path, store, *info_db, need_text=True)
     assert "transcription skipped" in caplog.text
     assert not get_transcript(
-        media.video,
-        make_cfg(media, tmp_path / "out", transcript_file=None),
+        video,
+        make_cfg(media, tmp_path / "out", source=video),
         tmp_path,
         store,
         *info_db,
@@ -444,9 +487,10 @@ def test_whisper_combined_failure_skips_in_auto_mode(
     info_db: tuple[MediaInfo, F32],
 ) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=1, gpu_chunk_fails=True, cpu_fails=True)
-    cfg = cfg_for(media, tmp_path)
+    video = bare_media(media, tmp_path, "bare.mp4")
+    cfg = make_cfg(media, tmp_path / "out", source=video)
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        assert not get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True)
+        assert not get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
     assert "transcription skipped" in caplog.text
     assert "selecting on audio only" in caplog.text
 
@@ -455,8 +499,9 @@ def test_whisper_combined_failure_raises_in_whisper_mode(
     media: Media, tmp_path: Path, store: Store, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32]
 ) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=1, gpu_chunk_fails=True, cpu_fails=True)
-    cfg = cfg_for(media, tmp_path)
-    assert not get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True)
+    video = bare_media(media, tmp_path, "bare.mp4")
+    cfg = make_cfg(media, tmp_path / "out", source=video)
+    assert not get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
 
 
 def test_cache_key_covers_the_source_file(media: Media, tmp_path: Path) -> None:
@@ -493,18 +538,19 @@ def test_skip_stt_never_calls_whisper_but_uses_a_file_or_the_cache(
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
-    explicit = cfg_for(media, tmp_path, mode="file", file=str(tmp_path / "talk.srt"))
-    (tmp_path / "talk.srt").write_text(media.srt.read_text(encoding="utf-8"), encoding="utf-8")
-    explicit.skip.stt = True
-    assert get_transcript(media.video, explicit, tmp_path, store, *info_db, need_text=True)
+    video = bare_media(media, tmp_path, "bare.mp4")
+    video.with_suffix(".srt").write_text(media.srt.read_text(encoding="utf-8"), encoding="utf-8")
+    explicit = make_cfg(media, tmp_path / "out", source=video, skip={"stt": True})
+    assert get_transcript(video, explicit, tmp_path, store, *info_db, need_text=True)
     assert "init" not in rec and len(store.light_segments()) == len(SENTENCES)
 
-    cached = cfg_for(media, tmp_path)
-    assert get_transcript(media.video, cached, tmp_path, store, *info_db, need_text=True) and "init" in rec
+    video.with_suffix(".srt").unlink()  # now the cache is the only source left
+    cached = make_cfg(media, tmp_path / "out2", source=video)
+    assert get_transcript(video, cached, tmp_path, store, *info_db, need_text=True) and "init" in rec
     rec.clear()
     cached.skip.stt = True
     with caplog.at_level(logging.INFO, logger="autoclip"):
-        assert get_transcript(media.video, cached, tmp_path, store, *info_db, need_text=True)
+        assert get_transcript(video, cached, tmp_path, store, *info_db, need_text=True)
     assert "init" not in rec and "reusing cached transcript" in caplog.text
 
 
@@ -518,11 +564,11 @@ def test_skip_stt_without_any_transcript_continues_without_text(
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
-    cfg = cfg_for(media, tmp_path)
-    cfg.skip.stt = True
+    video = bare_media(media, tmp_path, "bare.mp4")
+    cfg = make_cfg(media, tmp_path / "out", source=video, skip={"stt": True})
     with caplog.at_level(logging.INFO, logger="autoclip"):
-        assert not get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True)
-    assert "init" not in rec and "skip.stt is set" in caplog.text and not (tmp_path / "talk.transcript.json").exists()
+        assert not get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
+    assert "init" not in rec and "skip.stt is set" in caplog.text and not (tmp_path / "bare.transcript.json").exists()
 
 
 def test_skip_denoise_builds_no_speech_enhancer(
@@ -541,8 +587,9 @@ def test_skip_denoise_builds_no_speech_enhancer(
             built.append(args)
 
     monkeypatch.setattr(transcript, "SpeechEnhancer", Enhancer)
-    cfg = make_cfg(media, tmp_path / "out", transcript_file=None)
-    assert get_transcript(media.video, cfg, tmp_path, store, *info_db, need_text=True)
+    video = bare_media(media, tmp_path, "bare.mp4")
+    cfg = make_cfg(media, tmp_path / "out", source=video)
+    assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
     assert built == [] and "init" in rec
 
 
@@ -572,7 +619,7 @@ def test_transcription_uses_the_enhanced_audio(
     enhancer = SpeechEnhancer(True, tmp_path)
     monkeypatch.setattr("autoclip.core.denoise.snr_db", lambda audio: 0.0)
     monkeypatch.setattr(enhancer, "_denoise", lambda audio: audio * 0.5)
-    cfg = asr_cfg(media, tmp_path, transcript_file=None)
+    cfg = asr_cfg(media, tmp_path)
     transcribe(media.video, cfg, info, db, enhancer)
     plain = float(decode_audio(media.video, 0.0, info.duration, 16000).sum(dtype=np.float64))
     assert rec["audio_sum"] == pytest.approx(plain * 0.5)  # the model heard the enhanced audio
@@ -584,7 +631,7 @@ def test_clean_audio_is_not_enhanced(media: Media, monkeypatch: pytest.MonkeyPat
     info, db = info_db
     enhancer = SpeechEnhancer(True, tmp_path)  # the default noise gate
     monkeypatch.setattr(enhancer, "_denoise", lambda audio: audio * 0.5)
-    cfg = asr_cfg(media, tmp_path, transcript_file=None)
+    cfg = asr_cfg(media, tmp_path)
     transcribe(media.video, cfg, info, db, enhancer)
     plain = float(decode_audio(media.video, 0.0, info.duration, 16000).sum(dtype=np.float64))
     assert rec["audio_sum"] == pytest.approx(plain)  # the fixture is clean: denoising would only remove signal
@@ -600,7 +647,7 @@ def test_transcribe_uses_the_gpu_when_cuda_is_present(
     """The ASR device is probed: CUDA present -> the stub runs on the "cuda" device."""
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec, cuda=1)  # a GPU exists, so the probe selects it
-    cfg = asr_cfg(media, tmp_path, transcript_file=None)
+    cfg = asr_cfg(media, tmp_path)
     transcribe(media.video, cfg, *info_db)
     assert rec["init"][1] == "cuda"
 
@@ -624,7 +671,7 @@ def test_long_videos_are_transcribed_chunk_by_chunk(
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
     info, db = info_db
-    cfg = asr_cfg(media, tmp_path, transcript_file=None)
+    cfg = asr_cfg(media, tmp_path)
     segs = transcribe(media.video, cfg, info, db)
     assert "chunks" not in rec  # the whole audio is decoded once, without chunk-relative buffers
     assert rec["samples"] == pytest.approx(FIXTURE_SAMPLES, abs=16000)
@@ -637,7 +684,7 @@ def test_short_videos_are_transcribed_in_one_piece(
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
-    cfg = asr_cfg(media, tmp_path, transcript_file=None)
+    cfg = asr_cfg(media, tmp_path)
     transcribe(media.video, cfg, *info_db)  # one chunk of 5 minutes covers the 40 s fixture
     assert "chunks" not in rec  # the whole file is decoded once, not chunk by chunk
     assert rec["samples"] == pytest.approx(FIXTURE_SAMPLES, abs=16000)

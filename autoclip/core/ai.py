@@ -72,8 +72,9 @@ def llm_rerank(top: list[Moment], cfg: Config, scene: str) -> dict[int, tuple[fl
         'Return ONLY JSON: {"scores":[{"id":0,"score":7,"title":"..."}]}\n\n'
         f"Candidates:\n{items}"
     )
+    system = lc.system_prompt or "You are a precise short-form video editor. Reply with JSON only."
     messages = [
-        {"role": "system", "content": "You are a precise short-form video editor. Reply with JSON only."},
+        {"role": "system", "content": system},
         {"role": "user", "content": prompt},
     ]
     content = _chat(lc.base_url, lc.model, messages, fmt="json")
@@ -86,8 +87,9 @@ def generate_title(cfg: Config, text: str) -> str:
     if cfg.skip.llm or not text or not llm_available(cfg.llm.base_url):
         return ""
     prompt = "Write a punchy title (max 8 words) in the same language as the text. Return only the title.\n\n" + text[:500]
+    messages = _messages(cfg, prompt)
     try:
-        return _chat(cfg.llm.base_url, cfg.llm.model, [{"role": "user", "content": prompt}])[:80]
+        return _chat(cfg.llm.base_url, cfg.llm.model, messages)[:80]
     except Exception as e:
         log.warning("AI title failed (%s: %s)", type(e).__name__, e)
         return ""
@@ -98,11 +100,19 @@ def generate_caption(cfg: Config, text: str) -> str:
     if cfg.skip.llm or not text or not llm_available(cfg.llm.base_url):
         return ""
     prompt = "Write a short social-media caption (max 2 sentences) for this clip transcript. Return only the caption.\n\n" + text[:500]
+    messages = _messages(cfg, prompt)
     try:
-        return _chat(cfg.llm.base_url, cfg.llm.model, [{"role": "user", "content": prompt}])
+        return _chat(cfg.llm.base_url, cfg.llm.model, messages)
     except Exception as e:
         log.warning("AI caption failed (%s: %s)", type(e).__name__, e)
         return ""
+
+
+def _messages(cfg: Config, prompt: str) -> list[dict[str, str]]:
+    """The chat messages for a prompt: the file's system prompt first (when set), then the user prompt."""
+    if cfg.llm.system_prompt:
+        return [{"role": "system", "content": cfg.llm.system_prompt}, {"role": "user", "content": prompt}]
+    return [{"role": "user", "content": prompt}]
 
 
 def sd_available() -> bool:
@@ -116,7 +126,7 @@ def sd_available() -> bool:
         return False  # pragma: no cover
 
 
-def generate_sd_thumbnail(source_frame: Path, out_path: Path, device: str = "auto") -> bool:  # pragma: no cover
+def generate_sd_thumbnail(source_frame: Path, out_path: Path, prompt: str, device: str = "auto") -> bool:  # pragma: no cover
     """Generate an AI thumbnail with Stable Diffusion img2img. Returns True on success."""  # pragma: no cover
     if not sd_available():  # pragma: no cover
         return False  # pragma: no cover
@@ -139,9 +149,7 @@ def generate_sd_thumbnail(source_frame: Path, out_path: Path, device: str = "aut
             pipe = pipe.to(device)  # pragma: no cover
             image = Image.open(source_frame).convert("RGB")  # pragma: no cover
             image = image.resize((512, 512))  # pragma: no cover
-            result = pipe(
-                prompt="cinematic thumbnail, high quality, sharp focus", image=image, strength=0.4, guidance_scale=7.5
-            )  # pragma: no cover
+            result = pipe(prompt=prompt, image=image, strength=0.4, guidance_scale=7.5)  # pragma: no cover
             result.images[0].save(out_path)  # pragma: no cover
         return True  # pragma: no cover
     except Exception as e:  # pragma: no cover

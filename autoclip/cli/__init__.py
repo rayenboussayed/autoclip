@@ -23,7 +23,7 @@ from ..core.download import Downloader, format_report_text
 from ..core.errors import AutoclipError, ConfigError, RateLimitError
 from ..core.events import Progress, Reporter
 from ..core.hardware import pick_encoder
-from ..core.log import default_log_file, redact_url, safe_path_text, setup_logging, system_profile
+from ..core.log import default_level, default_log_file, redact_url, safe_path_text, setup_logging, system_profile
 from ..core.resources import MB, RESOURCES
 
 log = logging.getLogger("autoclip")
@@ -36,7 +36,7 @@ def init_config(path: Path, full: bool) -> None:
     starter = {
         "input": ["input.mp4"],
         "clips": {"preset": "both", "scenes": "best", "keywords": [], "ranges": []},
-        "download": {"platforms": {"allow": ["@popular"], "deny": []}},
+        "download": {"allow": ["@popular"], "deny": []},
     }
     data = asdict(FileConfig()) if full else starter
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -51,14 +51,11 @@ def _csv(values: Sequence[str] | None) -> list[str] | None:
 
 
 def _overrides(args: argparse.Namespace) -> RuntimeOverrides:
-    """The runtime options passed on the command line (the file only carries the seven keys)."""
+    """The runtime options passed on the command line (the file only carries the nine keys)."""
     data: dict[str, JsonValue] = {}
     for attr, name in (
         ("output_dir", "output_dir"),
-        ("transcript", "transcript"),
         ("cookies", "cookies"),
-        ("proxy", "proxy"),
-        ("log_level", "log_level"),
         ("llm_url", "llm_base_url"),
         ("llm_model", "llm_model"),
         ("mode", "mode"),
@@ -172,13 +169,10 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--download-only", action="store_true", help="download the URLs of input and exit (no clips)")
     ap.add_argument("--formats", nargs="?", const=True, metavar="URL", help="show the formats of URL (or of every URL in input)")
     ap.add_argument("--platforms", nargs="?", const=True, metavar="URL", help="show the platform policy, and where URL would go")
-    ap.add_argument("--allow", action="append", metavar="A,B", help="platforms/@groups to permit (overrides download.platforms.allow)")
-    ap.add_argument("--deny", action="append", metavar="C", help="platforms/@groups to refuse (overrides download.platforms.deny)")
+    ap.add_argument("--allow", action="append", metavar="A,B", help="platforms/@groups to permit (overrides download.allow)")
+    ap.add_argument("--deny", action="append", metavar="C", help="platforms/@groups to refuse (overrides download.deny)")
     ap.add_argument("--output-dir", metavar="DIR", help="where clips are written (default: the platform's Videos/Movies folder)")
-    ap.add_argument("--transcript", metavar="FILE", help="use this .srt/.json transcript instead of Whisper")
     ap.add_argument("--cookies", metavar="BROWSER|FILE", help="browser cookie store or a Netscape cookies.txt for downloads")
-    ap.add_argument("--proxy", metavar="URL", help="proxy for downloads (http(s) or SOCKS)")
-    ap.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "OFF"], help="console/log verbosity")
     ap.add_argument(
         "--skip",
         action="append",
@@ -251,9 +245,9 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
             )
             return 2
 
-    lg = cfg.logging
-    log_file = None if lg.level == "OFF" else default_log_file(cfg.output_dir)
-    setup_logging(log_file, lg.level, None if getattr(args, "events", None) == "jsonl" else lg.level)
+    level = default_level()  # internal: DEBUG in debug mode (AUTOCLIP_DEBUG=1), INFO otherwise
+    log_file = default_log_file(cfg.output_dir)
+    setup_logging(log_file, level, None if getattr(args, "events", None) == "jsonl" else level)
     RESOURCES.configure(cfg)
     from ..core.internal.decisions import log_decisions
 

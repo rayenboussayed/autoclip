@@ -60,7 +60,7 @@ def config_paths(cls: Any = FileConfig, prefix: str = "") -> set[str]:
     return paths
 
 
-#: Options of a kind the seven-key file does not need: the form still has to build and read them.
+#: Options of a kind the nine-key file does not need: the form still has to build and read them.
 INT_OPTION = Option("test.count", "Count", "int", "A number.", "To test the form.", "In this test.")
 JSON_OPTION = Option("test.data", "Data", "json", "An object.", "To test the form.", "In this test.")
 PATH_OPTION = Option("test.file", "File", "path", "A file.", "To test the form.", "In this test.")
@@ -599,7 +599,7 @@ def test_the_details_panel_explains_the_focused_option(tmp_path: Path) -> None:
 
     app = AutoclipApp(tmp_path / "config.json")
     try:
-        app.show_details(OPTIONS["download.platforms.allow"])
+        app.show_details(OPTIONS["download.allow"])
         assert "platform" in app.what_label.cget("text").lower()
         assert app.why_label.cget("text").strip()
         assert app.when_label.cget("text").strip()
@@ -619,7 +619,7 @@ def test_the_reference_window_lists_and_filters_the_options(tmp_path: Path) -> N
         window._query.set("platform")
         window._filter()
         assert 0 < len(window.tree.get_children()) < len(option_paths())
-        window.tree.selection_set("download.platforms.allow")
+        window.tree.selection_set("download.allow")
         window._show()
         assert "WHAT" in window.text.get("1.0", "end")
     finally:

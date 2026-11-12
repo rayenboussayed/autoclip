@@ -44,12 +44,7 @@ _SAVED_LINE = re.compile(r"(?:^|\|\s*)saved (.+?) \(\w+\)\s*$", re.MULTILINE)
 DEFAULT_LEVEL = 1
 LEDGER_NAME = "levels.json"
 #: The manifest cases always render one short and one long clip; the long kind uses the production range.
-LADDER_CLIPS: dict[str, Any] = {
-    "kinds": ["short", "long"],
-    "scenes": ["best"],
-    "short": {"count": 1, "min_seconds": 15, "max_seconds": 45, "aspect": "9:16"},
-    "long": {"count": 1, "min_seconds": 180, "max_seconds": 600, "aspect": "16:9"},
-}
+LADDER_CLIPS: dict[str, Any] = {"preset": "both", "scenes": "best"}
 
 
 def _now() -> str:
@@ -115,10 +110,11 @@ def _hms(seconds: float) -> str:
 
 
 def level_range(entry: ManifestEntry, level: int) -> str | None:
-    """The ``download.time_range`` of a ladder level (``None`` means the whole video).
+    """The partial-download range of a ladder level (``None`` means the whole video).
 
-    Each level keeps the first ``level * CHUNK_SECONDS`` seconds, capped at the manifest duration.
-    The last level of an entry is the full download, so no range (and no local trimming) is needed.
+    Kept for the level comparisons and the unit tests; ``download.time_range`` itself was removed
+    in 4.0, so the ladder now downloads the whole video. Each level keeps the first
+    ``level * CHUNK_SECONDS`` seconds, capped at the manifest duration.
     """
     seconds = float(level * CHUNK_SECONDS)
     if entry.duration is not None and seconds >= entry.duration:
@@ -384,52 +380,34 @@ class DownloadedMedia:
     name: str
 
 
-def download_config(output_dir: Path, url: str, *, time_range: str | None = None, original_dir: Path | None = None) -> dict[str, Any]:
-    """A config that downloads ``url`` at the best quality with English subtitles and the metadata sidecar.
+def download_config(output_dir: Path, url: str) -> dict[str, Any]:
+    """A config that downloads ``url`` with the metadata sidecar and (optionally) the e2e cookies.
 
-    ``original_dir`` is the persistent cache of the ladder: it lives outside the results folder so a later
-    run (a deeper level, the weekly network job) reuses the file instead of downloading it again.
+    Partial downloads no longer exist (``download.time_range`` was removed in 4.0); the ladder always
+    downloads the whole video.
     """
-    download: dict[str, Any] = {
-        "quality": "best",
-        "subtitles": {"enabled": True, "languages": ["en"], "use_as_transcript": "always"},
-    }
-    if time_range:
-        download["time_range"] = time_range
-    if original_dir is not None:
-        download["original_dir"] = str(original_dir)
+    data: dict[str, Any] = {"input": [url]}
     cookies = os.environ.get("AUTOCLIP_E2E_COOKIES")
     if cookies:
-        download["cookies"] = {"file": cookies}
-    return {
-        "input": [url],
-        "output_dir": str(output_dir),
-        "mode": "balance",
-        "quality": "lowest",
-        "download": download,
-        "logging": {"level": "INFO"},
-        "compute": {"device": "cpu"},
-    }
+        data["download"] = {"cookies": cookies}
+    return data
 
 
-def pipeline_config(output_dir: Path, source: Path, transcript: Path, clips: dict[str, Any] | None = None) -> dict[str, Any]:
-    """A small, fast pipeline config over an already downloaded local file and its SRT."""
+def pipeline_config(output_dir: Path, source: Path, transcript: Path | None = None, clips: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A small, fast pipeline config over an already downloaded local file and its SRT.
+
+    ``transcript`` is copied next to the source as a sidecar, so the pipeline picks it up without
+    any config keys.
+    """
+    if transcript is not None:
+        try:
+            source.with_suffix(".srt").write_text(transcript.read_text(encoding="utf-8-sig"), encoding="utf-8")
+        except UnicodeDecodeError:
+            source.with_suffix(".srt").write_text(transcript.read_text(encoding="utf-8"), encoding="utf-8")
     data: dict[str, Any] = {
         "input": [str(source)],
-        "output_dir": str(output_dir),
-        "mode": "balance",
-        "quality": "lowest",
-        "clips": {
-            "kinds": ["short"],
-            "scenes": ["best"],
-            "short": {"count": 1, "min_seconds": 15, "max_seconds": 45},
-        },
-        "transcript": {"mode": "file", "file": str(transcript)},
-        "video": {"short_side": 720, "gpu": "off"},
-        "compute": {"device": "cpu"},
-        "logging": {"level": "INFO"},
+        "clips": merge({"preset": "shorts", "scenes": "best"}, clips or {}),
     }
-    data["clips"] = merge(data["clips"], clips or {})
     return data
 
 
@@ -460,7 +438,7 @@ def downloaded_files(case: CaseResult) -> list[Path]:
 
 
 def _originals_folder(case: CaseResult) -> Path:
-    """The folder the case downloads into (``download.original_dir`` when its config sets one)."""
+    """The folder the case downloads into (a legacy ``download.original_dir`` is honoured for old results)."""
     folder = case.directory / "out" / ".work" / "downloads"
     if case.config_path is not None and case.config_path.is_file():
         config = json.loads(case.config_path.read_text(encoding="utf-8"))

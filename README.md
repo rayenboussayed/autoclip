@@ -6,7 +6,7 @@ Free, local, one command. Runs on **Linux, macOS and Windows** (Python 3.11+). N
 ```bash
 pip install -r requirements.txt
 pip install -U "Pillow>=12.3"          # security fixes; MoviePy's "<12" pin is only conservative (CI tests both)
-python -m autoclip --init config.json  # starter config (seven keys)
+python -m autoclip --init config.json  # starter config (nine keys)
 python -m autoclip config.json         # or: autoclip config.json  (after `pip install -e .`)
 python -m autoclip                     # no config: ./input.mp4 with the built-in defaults
 python -m autoclip.app                 # the desktop app (same options, explained)
@@ -17,7 +17,7 @@ python -m autoclip.app                 # the desktop app (same options, explaine
 `python -m autoclip.app` opens a native window (Tk, the look of your system) with **every option of
 the config file**:
 
-- three config tabs - *Videos*, *Clips*, *Download* - each option with a one-line summary under it,
+- four config tabs - *Videos*, *Clips*, *Download*, *AI* - each option with a one-line summary under it,
   plus a runtime output-folder control that is never written to the config file;
 - a details panel that explains the option you clicked: **what** it does, **why** you would change
   it and **when** it is the right moment;
@@ -71,7 +71,7 @@ Nothing is downloaded twice on purpose:
 
 ## Configuration
 
-The config file has **seven keys**. Everything else is a runtime override (command-line flag or environment
+The config file has **nine keys**. Everything else is a runtime override (command-line flag or environment
 variable) or derived automatically.
 
 ```json
@@ -84,10 +84,8 @@ variable) or derived automatically.
     "ranges": []
   },
   "download": {
-    "platforms": {
-      "allow": ["@popular"],
-      "deny": []
-    }
+    "allow": ["@popular"],
+    "deny": []
   }
 }
 ```
@@ -99,8 +97,10 @@ variable) or derived automatically.
 | `clips.scenes` | `best`, a list, or `all` - the scene types to pick moments for |
 | `clips.keywords` | words or phrases that boost a moment |
 | `clips.ranges` | exact cuts (`"00:01:00-00:01:45"`), one per line |
-| `download.platforms.allow` | extractor families or groups (`@popular`, …) that may be downloaded |
-| `download.platforms.deny` | families that are never downloaded, even when an allow entry covers them |
+| `download.allow` | extractor families or groups (`@popular`, …) that may be downloaded |
+| `download.deny` | families that are never downloaded, even when an allow entry covers them |
+| `llm.system_prompt` | the system message of the local LLM (moment ranking, titles, captions); empty keeps the built-in editor messages |
+| `image.prompt` | the Stable Diffusion prompt of every AI thumbnail |
 
 The built-in clip profiles are fixed: **short** = 20-60 s at 9:16, **long** = 3-10 min at 16:9. Use `clips.ranges`
 or `--split` for other shapes. `clips.scenes` is `"all"`, one type, or a list: `best attractive exciting funny sad
@@ -111,24 +111,21 @@ Runtime overrides (flags win over environment variables):
 | Flag | Env var | What it does |
 |---|---|---|
 | `--output-dir DIR` | `AUTOCLIP_OUTPUT_DIR` | output folder |
-| `--transcript FILE` | `AUTOCLIP_TRANSCRIPT` | explicit `.srt`/`.json` transcript |
 | `--cookies BROWSER\|FILE` | `AUTOCLIP_COOKIES` | cookies for downloads |
-| `--proxy URL` | `AUTOCLIP_PROXY` | proxy for downloads |
-| `--log-level …` | `AUTOCLIP_LOG_LEVEL` | log verbosity |
 | `--skip NAME` | `AUTOCLIP_SKIP` | skip pipeline steps (comma separated) |
 | `--llm-model MODEL` | `AUTOCLIP_LLM_MODEL` / `AUTOCLIP_LLM_URL` | local LLM model / URL |
 | `--split` | — | cut the video into equal 600 s parts |
 | `--mode …` | `AUTOCLIP_MODE` | performance / resources / balance |
 | `--quality …` | `AUTOCLIP_QUALITY` | output quality tier |
 
-Env values apply first; an explicit flag always wins. `--init` and `--init-full` both write the complete seven-key file.
+Env values apply first; an explicit flag always wins. `--init` and `--init-full` both write the complete nine-key file.
 
 A wrong *type* or an unknown key is still fatal (`ConfigError`). A wrong *value* warns
 (`config: invalid value for <path>; falling back to default`) and uses the field default, so a typo in one option no
 longer aborts the run. Keys starting with `_` are ignored, so `"_comment"` entries are fine. Removed keys from 3.x
 warn and are ignored (see `docs/UPGRADING-4.0.md`).
 
-See `docs/options-reference.md` for the generated reference of the seven keys.
+See `docs/options-reference.md` for the generated reference of the nine keys.
 
 ## Short and long clips, scene types
 
@@ -150,7 +147,7 @@ See `docs/options-reference.md` for the generated reference of the seven keys.
 * `clips.ranges` cuts your own ranges (scene type `custom`), applies to both kinds; `--split` cuts equal 600 s parts into
   `long/{video}/` and cannot be combined with `clips.ranges`.
 * `input` is a path, a glob or a list. One broken video or clip never stops the batch. Exit status: `0` all done,
-  `1` something failed, `2` bad configuration. With several videos `--transcript` needs `{stem}` (e.g. `subs/{stem}.srt`).
+  `1` something failed, `2` bad configuration. A transcript is picked up from a sidecar `.json`/`.srt` next to each video.
 
 ## Downloading URLs (YouTube, TikTok, Vimeo, ...)
 
@@ -161,25 +158,28 @@ same pipeline as a local file:
 ```json
 {
   "input": ["talks/*.mp4", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
-  "download": {"platforms": {"allow": ["@popular", "vimeo"], "deny": ["tiktok"]}}
+  "download": {"allow": ["@popular", "vimeo"], "deny": ["tiktok"]}
 }
 ```
 
 * **Quality and format are automatic**: the download short side follows the output quality tier (1080/720/480/360/240 for
   highest/high/medium/low/lowest). A direct HTTP(S) format beats an HLS/DASH variant with the same quality and fps (the
   segmented one reports an inflated bitrate and throttles badly), and the video's original audio track is kept over a
-  higher-bitrate dub. Cookies (`--cookies`/`AUTOCLIP_COOKIES`) and a proxy (`--proxy`/`AUTOCLIP_PROXY`) are runtime only.
+  higher-bitrate dub. Cookies (`--cookies`/`AUTOCLIP_COOKIES`) are a runtime-only choice; downloads use the network directly (there is no proxy option).
 * **Originals** are kept in `{output_dir}/.work/downloads/` and reused by later runs; the clip folders stay clips-only.
   The output name is `<title> [<video id>]`, and a time range adds `[<start>-<end>]`.
-* **Platform policy:** `download.platforms.allow` / `deny` hold extractor families (`youtube`, `tiktok`, `vimeo`, ...) or
+* **Resilience:** if the chosen format stalls or fails to download, the downloader tries the next-best candidate(s)
+  (at most two alternates, then the video is reported failed). A different candidate is reused from the cache when it is
+  already there; the chosen format is logged with its resolution, codec, bitrate and protocol.
+* **Platform policy:** `download.allow` / `download.deny` hold extractor families (`youtube`, `tiktok`, `vimeo`, ...) or
   groups. `deny` wins, the default allow list is `@popular`, and the `generic` family (any web page with a video) is only
   used when it is named - so a random link is refused before a request is made. Built-in groups are `@popular`,
   `@social`, `@video` and `@all`; name families or groups directly in allow/deny (there is no `groups` file key).
 * **Playlists:** a URL whose shape names a list (channel/playlist/album) downloads every entry up to 50; a watch URL stays
   single. Metadata sidecars (`.info.json`, thumbnail, description) are always written next to the original.
 * **Subtitles:** the video's original track is downloaded (a manual track is preferred; automatic captions are used
-  when there is no manual one). A downloaded subtitle is used when it exists. An explicit `--transcript FILE`
-  always wins.
+  when there is no manual one). A downloaded subtitle is used when it exists. A sidecar transcript (`<video-stem>.json`
+  preferred over `<video-stem>.srt`) next to the video always wins.
 * **Command line:** without a config file the built-in defaults run `./input.mp4` (a missing file is reported with a hint,
   exit status 2, and nothing is written); `--download-only config.json` downloads the URLs and stops; `--formats URL`
   prints every available format and the one autoclip would choose (no config file needed); `--platforms [URL]` prints the
@@ -199,7 +199,9 @@ never fatal; the clips keep their heuristic result.
   heuristic titles otherwise. Captions are written as `<clip>.txt` sidecars.
 * Stable Diffusion thumbnails replace the frame JPEG only when `torch`/`diffusers` are installed; otherwise the frame
   JPEG is kept.
-* `--skip llm` skips every Ollama call. Whisper model downloads are automatic; `--skip stt` avoids Whisper entirely (an explicit, downloaded or cached transcript is used instead).
+* `llm.system_prompt` (file) replaces the system message of every LLM call for your house style or rating rubric
+  (empty keeps the built-in editor messages); `image.prompt` (file) sets the Stable Diffusion prompt of the AI thumbnails.
+* `--skip llm` skips every Ollama call. Whisper model downloads are automatic; `--skip stt` avoids Whisper entirely (a sidecar, downloaded or cached transcript is used instead).
 
 ## HTTP server (optional)
 
@@ -227,7 +229,7 @@ docker compose up --build
 | `DELETE /api/jobs/{job_id}` | remove the job and its files |
 | `WS /api/jobs/{job_id}/ws` | the current snapshot, then every step/percent update (plus keepalive frames) |
 
-The uploaded config keeps only the seven keys; `input` and `output_dir` are always overridden because the server owns
+The uploaded config keeps only the nine keys; `input` and `output_dir` are always overridden because the server owns
 the uploaded file and the job folder. The defaults are the same as the command line - notably the download short side
 follows the quality tier, source fps, no upscaling and `quality: "high"` - so a server job produces high-quality clips
 unless the config asks for something else.
@@ -317,8 +319,8 @@ keyboard clicks or hum. Enhancement is automatic:
   `small` with no GPU). On the CPU a model that does not fit into the free RAM is replaced by a smaller one.
 * The audio is transcribed in fixed 5-minute chunks: neither the denoiser nor Whisper ever holds more than that,
   and the language is detected once and reused for the remaining chunks.
-* `--transcript FILE` loads an explicit `.srt`/`.json` (`{stem}` is replaced); `--skip stt` stops before Whisper (an
-  explicit, downloaded or cached transcript is still used). The language is always auto-detected.
+* A sidecar transcript (`<video-stem>.json` preferred, `.srt` otherwise) next to the video is used; `--skip stt` stops
+  before Whisper (a sidecar, downloaded or cached transcript is still used). The language is always auto-detected.
 
 ## What it does
 
@@ -449,7 +451,7 @@ See `docs/options-reference.md` for every option and its explanation (this is th
 
 ## Upgrading from 3.x
 
-See `docs/UPGRADING-4.0.md` for the seven-key schema, the removed-key → runtime replacement table, the
+See `docs/UPGRADING-4.0.md` for the nine-key schema, the removed-key → runtime replacement table, the
 `--flag`/`AUTOCLIP_*` equivalents, and the behaviour that is automatic now. `UPGRADING-3.0.md` covers the 2.x → 3.0
 changes and is kept as history. 4.0 is a breaking config-schema release: old config files still load (removed keys warn
 and are ignored), but their settings must move to flags or environment variables.

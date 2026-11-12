@@ -27,9 +27,10 @@ from urllib.parse import urlsplit
 
 from .config import Config, DownloadCfg, parse, parse_hms
 from .errors import AutoclipError, DownloadError, RateLimitError
-from .formats import Choice, DownloadPrefs, YtInfo, choose
+from .formats import Choice, DownloadPrefs, YtInfo, choose, choose_candidates, describe
 from .internal.automation import (
     COOKIE_BROWSERS,
+    DOWNLOAD_FORMAT_CANDIDATES,
     DOWNLOAD_PAUSE_MAX_SECONDS,
     DOWNLOAD_PAUSE_MIN_SECONDS,
     DOWNLOAD_PLAYLIST_PAUSE_MAX_SECONDS,
@@ -351,6 +352,36 @@ def _canonical_media(directory: Path, prefix: str, media: Path) -> Path:
     except OSError:
         return media
     return target
+
+
+def _range_ok(media: Path, rng: tuple[float, float]) -> bool:
+    """Whether ``media`` is close enough to the requested range (within 3 s or 10%)."""
+    expected = rng[1] - rng[0]
+    try:
+        actual = probe(media).duration
+    except AutoclipError:
+        return False
+    except Exception:
+        return False  # an unreadable cache entry must be treated as a miss, never trusted
+    return abs(actual - expected) <= max(3.0, 0.1 * expected)
+
+
+def _exact_media(directory: Path, prefix: str, rng: tuple[float, float] | None) -> Path | None:
+    """The cache file of ``prefix`` (exact ``<prefix>.<ext>`` only), or ``None`` when it is absent or unusable.
+
+    Streams and merges are deliberately not matched here: the caller re-validates a reusable file (a
+    partial write would otherwise be re-served forever), and a wrong length under a time-range prefix is
+    deleted instead of reused.
+    """
+    for ext in sorted(MEDIA_EXTS):
+        exact = directory / f"{prefix}.{ext}"
+        if not exact.is_file():
+            continue
+        if rng is not None and not _range_ok(exact, rng):
+            exact.unlink(missing_ok=True)
+            return None
+        return exact
+    return None
 
 
 def _srt_time(seconds: float) -> str:
@@ -693,7 +724,7 @@ class Downloader:
         if self.permitted(family):
             return f"{family}: allowed"
         names = ", ".join(self.cfg.download.platforms.allow) or "nothing"
-        return f"{family}: blocked (download.platforms.allow: {names})"
+        return f"{family}: blocked (download.allow: {names})"
 
     def policy_text(self) -> str:
         """The allow/deny policy as a few readable lines (the desktop app shows it)."""
@@ -815,22 +846,28 @@ class Downloader:
         full = self._full_info(entry, url, settings)
         if full.get("_type") in ("playlist", "multi_video") and full.get("entries"):
             return [downloaded for sub in full["entries"] if isinstance(sub, dict) for downloaded in self._one_entry(sub, family, settings)]
-        choice = choose(cast(YtInfo, full), self._prefs(settings))
+        candidates = choose_candidates(cast(YtInfo, full), self._prefs(settings))[:DOWNLOAD_FORMAT_CANDIDATES]
+        choice = candidates[0]
         if not choice.has_video:
             raise DownloadError(f"{full.get('title') or url or 'the URL'} only offers audio; autoclip needs a video track")
         rng = _range(settings)
         name, directory, prefix, cached = self._prepare(full, family, settings, choice, rng)
         if cached is not None:
+            used = choice
             media = _canonical_media(directory, prefix, cached)
             if not self._complete(directory, prefix, settings):
                 self._sidecars(full, settings, directory, prefix, choice, rng)
         else:
+            log.debug("download: candidates in preference order: %s", ", ".join(c.format_id for c in candidates))
             temporary = Path(tempfile.mkdtemp(prefix=".download-", dir=directory))
             try:
-                media = self._media(full, settings, directory, prefix, choice, rng, temporary)
-                self._sidecars(full, settings, directory, prefix, choice, rng)
+                media, used, prefix = self._media(full, settings, directory, name, rng, temporary, candidates)
+                self._sidecars(full, settings, directory, prefix, used, rng)
             finally:
                 shutil.rmtree(temporary, ignore_errors=True)
+        for warning in used.warnings:
+            log.warning("%s (format %s)", warning, used.format_id)
+        log.info("downloaded with format %s (%s)", used.format_id, describe(cast(YtInfo, full), used))
         subtitle, manual = self._subtitle_for(directory, prefix, settings)
         log.info(
             "downloaded %s | path=%s | sidecar=%s | platform=%s | subtitle=%s",
@@ -852,7 +889,7 @@ class Downloader:
         suffix = _range_suffix(rng)
         directory = self._directory()
         prefix = _prefix(base, choice, suffix)
-        media = _media_in(directory, prefix)
+        media = _exact_media(directory, prefix, rng)
         if media is not None:
             return base + suffix, directory, prefix, media
         key = (str(directory), base + suffix)
@@ -876,15 +913,26 @@ class Downloader:
         full: dict[str, Any],
         settings: DownloadCfg,
         directory: Path,
-        prefix: str,
-        choice: Choice,
+        name: str,
         rng: tuple[float, float] | None,
         temporary: Path,
-    ) -> Path:
-        """Download the media (and cut the configured range out of it)."""
-        params = self._media_params(settings, directory, prefix, temporary, choice)
+        candidates: list[Choice],
+    ) -> tuple[Path, Choice, str]:
+        """Download the media. Returns ``(media, candidate used, its prefix)``.
+
+        ``name`` is the deduplicated output base (``base``/``base (2)``, with a range suffix);
+        every candidate gets its own ``<name> [<format id>][<range>]`` prefix. With a time range
+        and a real ffmpeg the preferred candidate is tried once (its own fallback to the whole
+        video stays); every other failure moves on to the next candidate (at most two
+        alternates), so a stalling or unreachable format costs the video nothing.
+        """
+        suffix = _range_suffix(rng)
+        base = name[: -len(suffix)] if suffix else name
+        ranged_error: DownloadError | None = None
         if rng is not None and self._range_supported:
-            ranged = dict(params)
+            first = candidates[0]
+            prefix = _prefix(base, first, suffix)
+            ranged = dict(self._media_params(settings, directory, prefix, temporary, first))
             ranged["download_ranges"] = self._download_range_func(None, [rng])
             ranged["force_keyframes_at_cuts"] = True
             try:
@@ -892,38 +940,71 @@ class Downloader:
                     self._call(ydl.process_ie_result, _clean_info(full), download=True)
                 media = self._collect(directory, temporary, prefix)
                 if media is not None and self._duration_ok(media, rng):
-                    return media
+                    return media, first, prefix
                 log.warning("the %s download does not have the expected length; downloading the whole video", settings.time_range)
                 if media is not None:
                     media.unlink(missing_ok=True)
                 _empty(temporary)
-            except DownloadError as e:
-                log.warning("the %s range download failed (%s); downloading the whole video", settings.time_range, e)
+            except RateLimitError:
                 _empty(temporary)
-        with self._YoutubeDL(params) as ydl:
-            self._call(ydl.process_ie_result, _clean_info(full), download=True)
-        media = self._collect(directory, temporary, prefix)
-        if media is None:
-            raise DownloadError(f"yt-dlp did not save a video file for {prefix}")
-        if rng is None:
-            return media
-        target = directory / f"{prefix}.mkv"
-        try:
-            trim_video(media, target, rng[0], rng[1])
-        except AutoclipError as e:
-            media.unlink(missing_ok=True)
-            raise DownloadError(f"cannot cut {settings.time_range} out of the downloaded video: {e}") from e
-        media.unlink(missing_ok=True)
-        return target
+                raise  # the platform asked to stop; the whole-video fallback must not hide it
+            except DownloadError as e:
+                ranged_error = e
+                log.warning("the %s range download failed (%s); trying the other candidates", settings.time_range, e)
+                _empty(temporary)
+        # The range attempt already failed this exact format id; when there is another candidate to try,
+        # skip straight to it (a single-candidate URL keeps the old whole-video recovery instead).
+        skipped = candidates[0].format_id if ranged_error is not None and len(candidates) > 1 else None
+        last_error: DownloadError | None = ranged_error
+        attempted: list[str] = [f"{skipped} (range download)"] if skipped is not None else []
+        for choice in candidates:
+            if choice.format_id == skipped:  # the range attempt already proved this exact format id unusable
+                continue
+            prefix = _prefix(base, choice, suffix)
+            cached = _exact_media(directory, prefix, rng)
+            if cached is not None:  # a different candidate was downloaded by an earlier run
+                return cached, choice, prefix
+            try:
+                with self._YoutubeDL(self._media_params(settings, directory, prefix, temporary, choice)) as ydl:
+                    self._call(ydl.process_ie_result, _clean_info(full), download=True)
+                media = self._collect(directory, temporary, prefix)
+                if media is None:
+                    raise DownloadError(f"yt-dlp did not save a video file for {prefix}")
+                if rng is None:
+                    return media, choice, prefix
+                target = directory / f"{prefix}.mkv"
+                try:
+                    trim_video(media, target, rng[0], rng[1])
+                except AutoclipError as e:
+                    media.unlink(missing_ok=True)
+                    target.unlink(missing_ok=True)
+                    raise DownloadError(f"cannot cut {settings.time_range} out of the downloaded video: {e}") from e
+                media.unlink(missing_ok=True)
+                return target, choice, prefix
+            except RateLimitError:
+                raise  # the platform asked to stop; trying another format would ignore it
+            except Exception as e:  # every failure of a candidate costs nothing but the candidate
+                wrapped = e if isinstance(e, DownloadError) else DownloadError(f"{type(e).__name__}: {e}")
+                attempted.append(f"{choice.format_id} ({wrapped})")
+                last_error = wrapped
+                remaining = [c for c in candidates if c.format_id not in {choice.format_id, skipped}]
+                if remaining:
+                    log.warning(
+                        "the media format %s failed (%s); trying the next best format (%s)",
+                        choice.format_id,
+                        wrapped,
+                        remaining[0].format_id,
+                    )
+                    _empty(temporary)
+                    continue
+        if len(attempted) == 1:  # keep the original failure for the single candidate that was tried
+            raise last_error if last_error is not None else DownloadError("download failed")
+        joined = "; ".join(attempted)
+        raise DownloadError(f"none of the {len(attempted)} attempt(s) could be downloaded ({joined})") from last_error
 
     def _duration_ok(self, media: Path, rng: tuple[float, float]) -> bool:
         """Whether a range download is close enough to the requested length."""
-        expected = rng[1] - rng[0]
-        try:
-            actual = probe(media).duration
-        except AutoclipError:
-            return False
-        return abs(actual - expected) <= max(3.0, 0.1 * expected)
+        return _range_ok(media, rng)
 
     def _collect(self, directory: Path, temporary: Path, prefix: str) -> Path | None:
         """The downloaded media, moved from the temporary folder into the cache when needed."""
@@ -961,6 +1042,8 @@ class Downloader:
             with self._YoutubeDL(params) as ydl:
                 self._call(ydl.process_ie_result, info, download=True)
             self._sweep(temporary, directory, prefix)
+        except RateLimitError:
+            raise
         except Exception as e:  # a missing sidecar must never cost the downloaded video
             log.warning("could not save every extra file for %s: %s", prefix, e)
         finally:
@@ -1133,8 +1216,6 @@ class Downloader:
             "js_runtimes": copy.deepcopy(self.js_runtimes),
             "ffmpeg_location": bundled_ffmpeg_exe() if getattr(sys, "frozen", False) else ffmpeg_exe(),
         }
-        if settings.proxy:
-            params["proxy"] = settings.proxy
         if settings.cookies:
             if settings.cookies in COOKIE_BROWSERS:
                 params["cookiesfrombrowser"] = (settings.cookies, None, None, None)

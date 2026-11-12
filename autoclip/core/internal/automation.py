@@ -19,6 +19,7 @@ __all__ = [
     "DEFAULT_FILLERS",
     "DEFAULT_TRANSCRIPT_MODELS",
     "DENOISE_STRENGTH",
+    "DOWNLOAD_FORMAT_CANDIDATES",
     "DOWNLOAD_PAUSE_MAX_SECONDS",
     "DOWNLOAD_PAUSE_MIN_SECONDS",
     "DOWNLOAD_PLAYLIST_PAUSE_MAX_SECONDS",
@@ -114,6 +115,9 @@ UNSILENCE_KEEP_SILENCE_MS = 120
 
 UNSILENCE_MIN_SEGMENT_SECONDS = 0.25
 """Smallest non-silent span kept by the unsilence pre-pass."""
+
+DOWNLOAD_FORMAT_CANDIDATES = 3
+"""How many formats the downloader tries (the best and the next two) before giving up on a video."""
 
 DOWNLOAD_RETRIES = 3
 """Default retry count for the downloader (yt-dlp and fragments)."""

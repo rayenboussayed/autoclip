@@ -109,7 +109,7 @@ class Field:
             return self._json_value()
         text = str(variable_value(self.var)).strip() if self.var else ""
         if not text:
-            return None  # an empty text field means "not set"; every text option is nullable or required anyway
+            return None if self.option.empty_is_none else ""  # an empty text field means "not set", unless it is a plain string
         if self.option.numeric:
             try:
                 return int(text)

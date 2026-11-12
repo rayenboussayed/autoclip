@@ -5,9 +5,9 @@ stdout, stderr, log and outputs under ``tests/results/<timestamp>/``; ``run.json
 The suite proves the real yt-dlp API, the download cache, subtitle shifting and the render pipeline -
 things the offline fake cannot prove.
 
-The manifest cases walk a download ladder: ``AUTOCLIP_E2E_LEVEL`` (default 1) keeps the first six
-minutes of every video, level 2 the first twelve, and so on up to the full length. The originals live
-in a persistent cache shared by runs, and ``levels.json`` compares each level with the previous one.
+The manifest cases walk a rendered ladder: ``AUTOCLIP_E2E_LEVEL`` (default 1) sets the comparison
+level, and ``levels.json`` compares each level with the previous one. Downloads are always the full
+video (partial downloads no longer exist).
 """
 
 from __future__ import annotations
@@ -29,14 +29,11 @@ from .harness import (
     DownloadedMedia,
     E2ERun,
     assert_database_done,
-    cache_folder,
     clip_paths,
     collect_clips,
     download_config,
     downloaded_files,
     english_subtitle,
-    level_range,
-    level_seconds,
     level_summary,
     pipeline_config,
     read_clips,
@@ -80,16 +77,10 @@ def test_manifest_video_renders_short_and_long_clips(
 ) -> None:
     """One real download of the ladder, then both clip kinds, compared with the previous level."""
     vid = video_id(entry.url)
-    originals = cache_folder(download_cache, entry.url, ladder_level)
     download_dir = e2e_run.directory / f"download_{vid}_level{ladder_level}"
     download = e2e_run.execute(
         f"download_{vid}_level{ladder_level}",
-        download_config(
-            download_dir / "out",
-            entry.url,
-            time_range=level_range(entry, ladder_level),
-            original_dir=originals,
-        ),
+        download_config(download_dir / "out", entry.url),
         ["--download-only"],
         timeout=LADDER_TIMEOUT,
     ).require_ok()
@@ -97,11 +88,7 @@ def test_manifest_video_renders_short_and_long_clips(
     assert len(files) == 1, [path.name for path in files]
     source = files[0]
     info = probe(source)
-    expected = level_seconds(entry, ladder_level)
-    if expected is not None:
-        assert abs(info.duration - expected) <= 5, (info.duration, expected, source.name)
-    else:
-        assert 60 <= info.duration <= ladder_level * 360 + 5, (info.duration, source.name)
+    assert info.duration >= 60, (info.duration, source.name)  # the whole video is downloaded now
     # ``quality: best`` really picks a high-resolution format (the old default capped it at 480p).
     assert max(info.width, info.height) >= 720, (info.width, info.height, source.name)
     subtitle = english_subtitle(source)
@@ -151,13 +138,8 @@ def test_download_only_saves_the_original_subtitles_and_metadata(downloaded_bbc:
     assert downloaded_bbc.path.is_file() and downloaded_bbc.path.stat().st_size > 1_000_000
     assert "[" in downloaded_bbc.name and "]" in downloaded_bbc.name
     info = probe(downloaded_bbc.path)
-    expected = level_seconds(bbc_entry, 1)
-    if expected is not None:
-        assert abs(info.duration - expected) <= 5, (info.duration, expected)
-    else:
-        assert 60 <= info.duration <= 365, info.duration
-    # ``quality: best`` keeps the source resolution instead of the old 480p cap.
-    assert max(info.width, info.height) >= 1080, (info.width, info.height)
+    assert info.duration >= 60, info.duration
+    assert max(info.width, info.height) >= 720, (info.width, info.height)  # the 4.0 quality tier keeps at least 720p
     assert downloaded_bbc.subtitle.is_file()
     assert downloaded_bbc.subtitle.name.endswith((".auto.en.srt", ".manual.en.srt"))
     cues = parse_srt(downloaded_bbc.subtitle.read_text(encoding="utf-8-sig"))
@@ -172,13 +154,13 @@ def test_download_only_saves_the_original_subtitles_and_metadata(downloaded_bbc:
 
 
 def test_pipeline_renders_explicit_ranges(e2e_run: E2ERun, downloaded_bbc: DownloadedMedia) -> None:
-    """``clips.mode: ranges`` cuts exactly the requested spans from the real download."""
+    """``clips.ranges`` cuts exactly the requested spans from the real download."""
     case_dir = e2e_run.directory / "pipeline_ranges_bbc"
     config = pipeline_config(
         case_dir / "out",
         downloaded_bbc.path,
         downloaded_bbc.subtitle,
-        clips={"mode": "ranges", "short": {"ranges": ["00:00:10-00:00:30", "00:01:00-00:01:20"]}},
+        clips={"ranges": ["00:00:10-00:00:30", "00:01:00-00:01:20"]},
     )
     result = e2e_run.execute("pipeline_ranges_bbc", config).require_ok()
     folder = case_dir / "out" / "short" / downloaded_bbc.path.stem
@@ -200,37 +182,6 @@ def test_pipeline_renders_explicit_ranges(e2e_run: E2ERun, downloaded_bbc: Downl
         assert path.with_suffix(".jpg").is_file()
     assert rendered_clips(result) == clip_paths(folder)
     assert_database_done(case_dir / "out", downloaded_bbc.path.stem)
-
-
-def test_time_range_download_trims_the_video_and_shifts_the_subtitles(
-    e2e_run: E2ERun, bbc_entry: ManifestEntry, download_cache: Path
-) -> None:
-    """A range download starts at zero, lasts the requested minute and moves the SRT with it."""
-    case_dir = e2e_run.directory / "download_range_bbc"
-    config = download_config(
-        case_dir / "out",
-        bbc_entry.url,
-        time_range="00:01:00-00:02:00",
-        original_dir=cache_folder(download_cache, bbc_entry.url, "range_1m"),
-    )
-    result = e2e_run.execute("download_range_bbc", config, ["--download-only"]).require_ok()
-    files = downloaded_files(result)
-    assert len(files) == 1, [path.name for path in files]
-    original = files[0]
-    assert "[60-120s]" in original.name, original.name
-    assert original.stat().st_size > 1_000_000
-    info = probe(original)
-    assert 58 <= info.duration <= 62, info.duration
-    folder = original.parent
-    subtitles = sorted(folder.glob("*.manual.en.srt")) or sorted(folder.glob("*.auto.en.srt"))
-    assert len(subtitles) == 1, [path.name for path in folder.iterdir()]
-    cues = parse_srt(subtitles[0].read_text(encoding="utf-8-sig"))
-    assert len(cues) > 10, len(cues)
-    assert cues[0]["start"] <= 1.0, cues[0]
-    assert all(cue["start"] >= 0 and cue["end"] <= 61 for cue in cues)
-    assert cues[-1]["end"] >= 50, cues[-1]
-    assert list(folder.glob("*.info.json"))
-    assert result.log_path is not None and "saved " in result.log_path.read_text(encoding="utf-8")
 
 
 def test_rendered_clips_are_collected_in_the_results_folder(e2e_run: E2ERun) -> None:

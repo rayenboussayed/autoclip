@@ -87,7 +87,7 @@ def ranges_moments(
 
 def needs_text(cfg: Config) -> bool:
     """Whether the run needs a transcript: highlights select on text, captions and titles read it."""
-    return cfg.clips.mode == "highlights" or cfg.captions.enabled or cfg.title.enabled
+    return cfg.clips.mode == "highlights" or cfg.captions.enabled or not cfg.skip.title
 
 
 @traced
@@ -99,7 +99,6 @@ def process_video(
     name: str | None = None,
     subtitle: Path | None = None,
     subtitle_manual: bool = False,
-    transcript_file: str | None = None,
     config_dir: Path | None = None,
     report: Reporter | None = None,
     cancel: CancelToken | None = None,
@@ -170,7 +169,6 @@ def process_video(
             subtitle=subtitle,
             subtitle_manual=subtitle_manual,
             name=stem,
-            transcript_file=transcript_file,
         )
         if needs_text(cfg):
             reporter("transcribe", 1.0, "transcript ready" if have_text else "transcription skipped - selecting on audio only")
@@ -257,7 +255,7 @@ def process_video(
                         cap.release()
                         if ok:
                             cv2.imwrite(str(frame_path), frame)
-                            _ai.generate_sd_thumbnail(frame_path, out_jpg)
+                            _ai.generate_sd_thumbnail(frame_path, out_jpg, cfg.image.prompt)
                     finally:
                         frame_path.unlink(missing_ok=True)
         except Exception as e:

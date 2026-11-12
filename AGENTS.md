@@ -194,12 +194,12 @@ main()
                                                  reused when the prefix (title [id] [format] + range) exists
   for each input item (isolated: one failure never stops the batch):
     local file -> one source; URL -> the downloaded entries (names deduplicated across the batch)
-    process_video(src, cfg, log_file, encoder, name=name, subtitle=subtitle, subtitle_manual=..., transcript_file=cfg.transcript_file)
+    process_video(src, cfg, log_file, encoder, name=name, subtitle=subtitle, subtitle_manual=...)
       probe(src)                                   PyAV: duration, audio?, size, fps
       mode == "split": ffmpeg stream-copy parts -> {out}/long/{video}/   (done)
       Store(.work/{video}/autoclip.db, fresh=True) + Cache      ({video} = name or src.stem)
       energy_track(src)                            0.5 s loudness track (cached in kv)
-      get_transcript(..., needs_text(cfg))        explicit file | downloaded subtitle | disk cache | faster-whisper
+      get_transcript(..., needs_text(cfg))        sidecar file | downloaded subtitle | disk cache | faster-whisper
                                              (5 min chunks) -> SQLite (each chunk enhanced by `SpeechEnhancer` first);
                                              subtitles follow the video's original language; consent is always auto;
                                              `skip.stt` stops before Whisper, `skip.denoise` skips the enhancer
@@ -219,10 +219,14 @@ and the yt-dlp parameters. A URL is identified by its host and the extractor tha
 against allow/deny **before** any request, and then extracted. `allowed_extractors` is passed to yt-dlp as a second
 line of defence. Each entry is downloaded with an explicit `<video>+<audio>` format id, moved out of yt-dlp's temporary
 name into `<safe title> [<id>] [<format id>]` (+ range suffix), and the selected subtitle is copied next to it as a real
-`.srt`. `metadata` sidecars (`.info.json`, thumbnail, description) land next to the original. A range is downloaded by
+`.srt`. `metadata` sidecars (`.info.json`, thumbnail, description) land next to the original. A stalled or failing
+media download does not cost the video: `formats.choose_candidates` returns the ranked candidates (at most three; the
+best plus two alternates) and `_media` tries them in order, reusing the cache of any candidate that is already
+present; the chosen candidate is logged with its resolution, codec, bitrate and protocol. A range is downloaded by
 yt-dlp only when the real `ffmpeg` *and* `ffprobe` are on `PATH`; otherwise (or when the result is short/long by more
 than `max(3 s, 10%)`) the whole video is downloaded and `media.trim_video` cuts it locally (the SRT is shifted and
-clipped too). `--download-only` stops after this stage.
+clipped too). `--download-only` stops after this stage. The sort prefers direct HTTPS at equal quality and then the
+least-burdensome bitrate (an unknown bitrate or frame rate always loses), so the smallest adequate format is downloaded first. Video-only candidates pair with different audio ids (the next-best audio for each), because the SABR audio stall hurts every candidate equally when they all share one audio id.
 
 ### select_moments (per kind)
 1. `text_candidates`: every run of consecutive transcript segments that starts and ends on a sentence boundary and
@@ -322,7 +326,7 @@ step, percent, outputs); nothing else is persisted except the job folder and the
     *what* it does, *why* you would change it and *when*. `tests/unit/test_app.py` compares it with the config
     dataclasses, so a new option that is not in the catalogue (or an entry that is not in the config) fails
     the suite. The app writes the same config file the command line reads - never a second format.
-    The catalogue is capped at **30 options maximum** - no more; adding one requires removing another.
+    The catalogue must stay complete: every file option appears there (nine today), and nothing else does.
 12. **A local-only run never imports yt-dlp and never makes a network request.** `is_url` decides what is downloaded;
     `yt_dlp` is imported inside `Downloader.__init__`/`platforms` helpers, and `Downloader` is only constructed when
     `input` holds a URL (inspection modes included). `tests/unit/test_cli_download.py` proves it with a poisoned
@@ -334,18 +338,19 @@ step, percent, outputs); nothing else is persisted except the job folder and the
 14. **The downloader never executes anything.** No `exec`, no `netrc_cmd`, no shell: `cookies` are a browser store or a
     Netscape file, the JavaScript runtime is probed from the `PATH`, `ffmpeg` paths come from `media.ffmpeg_exe` /
     `hardware.encoding_ffmpeg`. Do not expose yt-dlp options that run commands.
-15. **Downloaded subtitles are a transcript source, never a forced one.** An explicit `--transcript` wins; otherwise a
-    downloaded subtitle is used next (a manual track is preferred; automatic captions are used when no manual one
-    exists), then the disk cache, then Whisper. `--skip stt` stops before Whisper. Only a real `.srt` is handed to
-    `get_transcript` (other formats are converted or dropped); an empty one is unusable and falls back.
+15. **Downloaded subtitles are a transcript source, never a forced one.** A sidecar `.json`/`.srt` next to the video
+    wins (`<stem>.json` before `<stem>.srt`); otherwise a downloaded subtitle is used (a manual track is preferred;
+    automatic captions are used when no manual one exists), then the disk cache, then Whisper. `--skip stt` stops
+    before Whisper. Only a real subtitle/transcript file is handed to `get_transcript` (other formats are converted
+    or dropped); an empty one is unusable and falls back.
 16. **Nothing is skipped by default; `skip.*` only removes steps.** The eleven switches are `stt`, `denoise`,
     `audio_enhance`, `audio`, `pauses`, `caption`, `title`, `fade`, `thumbnail`, `llm` and `snap`, all `false` in
-    `SkipCfg`. `skip.stt` still uses an explicit file, a downloaded subtitle or the disk cache and never calls Whisper;
+    `SkipCfg`. `skip.stt` still uses a sidecar, a downloaded subtitle or the disk cache and never calls Whisper;
     `skip.audio` mutes the clip and stops audio decoding, so pause removal cannot run; `skip.denoise` transcribes raw
     audio and disables noise reduction of the clip audio; `skip.thumbnail` keeps the frame JPEG; `skip.llm` forbids
-    Ollama calls. `captions.enabled` and `title.enabled` are the permanent equivalents of the removed run-level caption
-    switches. `needs_text(cfg)` decides whether a transcript is loaded at all (highlights, or captions/titles that are
-    not skipped).
+    Ollama calls. `captions.enabled` and `--skip title` are the remaining switches; titles are shown only when the
+    model generated one. `needs_text(cfg)` decides whether a transcript is loaded at all (highlights, or captions/titles
+    that are not skipped).
 17. **The server owns the input and the output folder.** `prepare_config` always drops `input` and `output_dir` from the
     uploaded config and sets them to the uploaded file and the job folder; a server job can never write outside its
     own folder. The registry is in memory (a restart loses the jobs, not their files), and `OUTPUT_DIR`/`CACHE_DIR`
@@ -360,25 +365,27 @@ step, percent, outputs); nothing else is persisted except the job folder and the
 
 ## 6. Configuration (`config.py`)
 
-The **file** schema is exactly seven keys (`FileConfig`): `input`, `clips.preset`, `clips.scenes`, `clips.keywords`,
-`clips.ranges`, `download.platforms.allow`, `download.platforms.deny`. Everything else is a runtime override
+The **file** schema is exactly nine keys (`FileConfig`): `input`, `clips.preset`, `clips.scenes`, `clips.keywords`,
+`clips.ranges`, `download.allow`, `download.deny`, `llm.system_prompt`, `image.prompt`. Everything else is a runtime override
 (`RuntimeOverrides`) or derived internally. `FileConfig.to_config(overrides)` builds the full runtime `Config`
 (quality tier, built-in short/long profiles, derived download settings). Removed keys are dropped by
 `_strip_removed` with a warning via `REMOVED_KEYS` (see `docs/UPGRADING-4.0.md`); unknown keys still raise
 `ConfigError`.
 
-`Config` (runtime) = `input`, `output_dir`, `mode`, `quality`, `download`, `clips`, `transcript_file`,
-`llm`, `video`, `captions`, `title`, `skip`, `logging`. `KindCfg` = `count`, `min_seconds`, `max_seconds`, `aspect`,
+`Config` (runtime) = `input`, `output_dir`, `mode`, `quality`, `download`, `clips`,
+`llm`, `image`, `video`, `captions`, `skip`. `KindCfg` = `count`, `min_seconds`, `max_seconds`, `aspect`,
 `ranges` (no `target_seconds` in 4.0). `SkipCfg` = `stt`, `denoise`, `audio_enhance`, `audio`, `pauses`, `caption`,
 `title`, `fade`, `thumbnail`, `llm`, `snap` (all `false`; see invariant 16). `DownloadCfg` = `cookies`, `time_range`,
-`proxy`, `platforms` (all runtime overrides or derived from the allow/deny lists; never file keys). `PlatformsCfg` = `allow`, `deny` only in the file; `groups`,
-`settings`, `group_by_platform` are gone (groups are named directly in allow/deny). Runtime values are derived
-internally and logged, never accepted from the config file.
+`platforms` (runtime overrides or derived from the allow/deny lists; never file keys). `PlatformsCfg` = `allow`, `deny` only in the file; `groups`,
+`settings`, `group_by_platform` are gone (groups are named directly in allow/deny). `LlmCfg` = `base_url`, `model` and
+`system_prompt` (the last from the file; empty keeps the built-in editor messages). `ImageCfg` = `prompt` (from the
+file; the Stable Diffusion prompt). Runtime values are derived internally and logged, never accepted from the config file.
 
-The transcript comes from: an explicit `--transcript FILE` (`{stem}` is replaced), then a downloaded subtitle (manual
-track preferred, automatic captions otherwise), then the disk cache, then Whisper. The language is always auto-detected
-and consent is always `auto`; there is no `TranscriptCfg`. Subtitles are downloaded for the video's original language
-when available; there is no `SubtitlesCfg`. `--skip stt` stops before Whisper.
+The transcript comes from: a sidecar `.json`/`.srt` next to the video (`<stem>.json` preferred over `<stem>.srt`),
+then a downloaded subtitle (manual track preferred, automatic captions otherwise), then the disk cache, then
+Whisper. The language is always auto-detected and consent is always `auto`; there is no `TranscriptCfg` and no
+`--transcript` flag. Subtitles are downloaded for the video's original language when available; there is no
+`SubtitlesCfg`. `--skip stt` stops before Whisper.
 
 Invalid *values* fall back: `_coerce_defaults` replaces a value that fails validation with the field default and logs
 `config: invalid value for <path>; falling back to default`. Wrong *types* and unknown keys remain fatal (`ConfigError`).
@@ -396,19 +403,18 @@ inflated bitrates and throttle); `audio_language: null` follows `info["language"
   use `StringConstraints(pattern=...)`; cross-field rules (min <= max, scene names) are `model_validator(mode="after")`.
   Keys starting with `_` are ignored, so a config file can carry `"_comment"` entries. **Do not hand-roll type checks.**
 * `load_config` resolves every path relative to the config file, expands `input` globs (sorted, de-duplicated,
-  absolute) and leaves http(s) URLs **verbatim**, and requires `{stem}` in `--transcript` when several videos are
-  given. **Exception:** a relative `output_dir` is resolved against the current working directory instead, so the output
+  absolute) and leaves http(s) URLs **verbatim**. **Exception:** a relative `output_dir` is resolved against the current working directory instead, so the output
   folder is independent of where the config file lives.
 * `scenes`: `"all"` | one name | list; `ClipsCfg.scene_list()` expands it. `"scenes"` means the scene *types* (the keys of
   `STYLES`); shot-change snapping is automatic (`snap` skip switch).
-* `download.platforms`: names are extractor **families** (`youtube`, `tiktok`, ...), aliases (`x`, `vm.tiktok`, `html5`)
+* `download.allow`/`download.deny`: names are extractor **families** (`youtube`, `tiktok`, ...), aliases (`x`, `vm.tiktok`, `html5`)
   or groups. User groups must match `@[a-z0-9][a-z0-9_-]*`, may not shadow a built-in group, are checked for unknown
   members and cycles at load time (a cycle is a `ConfigError`); family names are checked against yt-dlp at run time
   (a missing yt-dlp is a `DownloadError`). The `generic` family (any web page) is only used when named.
 
 ### Adding a config option (checklist)
 
-The catalogue holds at most 30 options - no more. Adding one requires removing another.
+The catalogue must stay complete (every file option, nothing else).
 
 1. Add a typed field with a default (and a comment) to the right dataclass. Put the constraint in the type
    (`Field(ge=..., le=...)`, `StringConstraints(pattern=...)`, `Annotated[int, Strict()]`) or, for a rule that spans
@@ -464,8 +470,10 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
   * `media` (session): generates a 40 s 320x180 video (speech-like tone bursts, 3 s on / 1 s off, 10 known sentences)
     with the bundled ffmpeg, plus `talk.json` (word timings), `talk.srt` and a `silent.mp4` without audio.
   * `make_cfg(media, out, source=None, **sections)`: a small fast `Config` (144 px short side, ultrafast, GPU off,
-    logging off, one worker); sections are **deep-merged** with `merge()`. The parameter is called `source` because
+    one worker); sections are **deep-merged** with `merge()`. The parameter is called `source` because
     `video` is a config section name.
+  * `bare_media(media, tmp_path, name="bare.mp4")`: a copy of the fixture video without the sidecar transcript
+    (for Whisper/cache paths).
   * `_restore_logger` (autouse): `setup_logging` sets `propagate=False`; this resets it so `caplog` works.
 * Patterns already in use - reuse them:
   * Whisper: `install_stub_whisper` in `tests/support.py` (real call signatures; returns the fixture transcript,
@@ -576,7 +584,8 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     Diffusion (thumbnails) never run concurrently, even in `performance` mode: every call takes the
     process-wide lock in `autoclip.core.ai`. A missing or failing backend is logged and skipped; the
     clip keeps its heuristic result. Stable Diffusion thumbnails are generated after `render_all` in the
-    main process and replace the frame JPEG only when they succeed.
+    main process and replace the frame JPEG only when they succeed. LLM calls carry the file's
+    `llm.system_prompt` (empty keeps the built-in messages); the thumbnails use the file's `image.prompt`.
 19. **The Linux packages wrap the same build.** The AppImage and the snap do not compile anything:
     they stage the PyInstaller folder. So the entry point is a *script* (without arguments the
     desktop app opens, with arguments the command line runs) and the payload keeps its place - a
@@ -635,7 +644,11 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     choice (`625+251`) took eight minutes for six minutes of video; the direct HTTPS VP9 variant (`313+140`) downloads
     at normal speed. `formats._protocol_rank` therefore prefers a direct HTTP(S) format at equal quality and fps.
     Related: `audio_language: null` must follow `info["language"]`, not the highest-bitrate track - otherwise a Malay
-    dub wins over the original English audio.
+    dub wins over the original English audio. A direct-HTTPS format is no guarantee either: an `313+140-18` stall
+    (read timeouts through the tv-samsung/visionos SABR path) burned a whole video on Windows until the alternates
+    fallback (`choose_candidates`, at most three tries) made it resilient. Note yt-dlp emits SABR format ids with a
+    `-N` instance suffix (`140-18` among nineteen `140-*` entries); the 0.001 kbps bitrate difference tips the sort,
+    which is fine as long as the fallback treats a stall as retryable.
 31. **MoviePy ignores its `pixel_format` argument.** `write_videofile` derives the pixel format from the clip (an RGBA
     composite stays RGBA) and only appends its own `-pix_fmt` for libx264/libvpx/h264_nvenc, so libx265 received i444
     and its `main` profile rejected it (`main profile not compatible with i444 input chroma subsampling`). `render.encode`
@@ -674,13 +687,13 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
   (`sprite_key`), so new style fields are picked up automatically if they are in `CaptionsCfg`.
 * **Performance work:** profile one clip with `python -m cProfile -o p.out -m autoclip cfg.json` (use `mode: "ranges"`).
   Typical hot spots are MoviePy's compositor and per-frame resize/blur; most remaining time is inside MoviePy.
-* **Debugging a run:** set `logging.level: "DEBUG"`, read `{output_dir}/logs/autoclip_*.log` (START/END per operation,
+* **Debugging a run:** run with `AUTOCLIP_DEBUG=1` (the dev mode: DEBUG everywhere), read `{output_dir}/logs/autoclip_*.log` (START/END per operation,
   `submit clip ... allowed=N threads=M`, `pid=` shows which worker did what), inspect `.work/{video}/autoclip.db`
   (`SELECT * FROM clips`).
 
 ## 11. Environment notes for sandboxed agents
 
-* The Hugging Face host (Whisper models) may be unreachable: use the stub (`install_stub_whisper`) or `--transcript FILE`.
+* The Hugging Face host (Whisper models) may be unreachable: use the stub (`install_stub_whisper`) or a sidecar `.srt` next to the video.
 * No GPU may be present: GPU code paths are verified by probe/fallback behaviour and software stand-ins only.
 * One CPU core: use `mode: "performance"` and the thread fake (or monkeypatch `RESOURCES.cpus` to more than one) to force the parallel code path.
 * Long-running commands (e.g. 30+ minute media) must be detached (`setsid nohup ... &`) and polled.
@@ -710,7 +723,7 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
   `.work/downloads/`, never next to the clips.
 * Keep the downloader policy (allow/deny, groups, aliases, format choice) offline-testable: no test in the normal
   suite may need the network.
-* Keep the config option count at or below 5 (max 5 options, no more).
+* Keep the config catalogue complete: every file option appears in `app/fields.py` (nine today) and the docs match.
 
 **Ask first**
 * Adding or upgrading dependencies; raising the minimum Python version.
@@ -743,6 +756,6 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 * **originals cache** - `{output_dir}/.work/downloads/`: the downloaded files and their
   sidecars, reused between runs when the name prefix (title, id, format id, range) matches.
 * **platform family** - the canonical yt-dlp extractor family of a URL (`youtube`, `tiktok`, ...); what
-  `download.platforms` allow/deny talk about. `generic` means "any other web page".
+  `download.allow`/`download.deny` talk about. `generic` means "any other web page".
 * **group** - a named set of families (`@popular`, `@social`, `@video`, `@all` or a user group) usable in
   `allow`/`deny` and for per-group settings.

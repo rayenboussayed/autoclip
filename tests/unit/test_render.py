@@ -179,7 +179,7 @@ def moment(start: float = 8.0, end: float = 19.0, title: str = "A great title") 
 
 def test_render_full_featured_clip(media: Media, tmp_path: Path) -> None:
     m = moment()
-    dst, size, lines = render(media, tmp_path, m, title={"enabled": True})
+    dst, size, lines = render(media, tmp_path, m)
     info = probe(dst)
     assert (info.width, info.height) == size == (216, 384) and info.has_audio
     assert info.duration == pytest.approx(m.trimmed, abs=0.4) and m.trimmed < (m.end - m.start) - 1  # pauses were cut
@@ -214,7 +214,6 @@ def test_render_fill_layout_plain_settings(media: Media, tmp_path: Path) -> None
         tmp_path,
         m,
         video={"layout": "fill"},
-        title={"enabled": True},
     )
     assert probe(dst).duration == pytest.approx(6, abs=0.4) and m.trimmed == pytest.approx(6, abs=0.1)
     assert size == (102, 180)  # no upscale: the canvas is as tall as the 180 px source
@@ -293,7 +292,7 @@ def test_skip_title_draws_no_title(media: Media, tmp_path: Path, monkeypatch: py
         return real(*args, **kwargs)
 
     monkeypatch.setattr(render_mod, "render_text_image", spy)
-    dst, _, lines = render(media, tmp_path, moment(), title={"enabled": False})
+    dst, _, lines = render(media, tmp_path, moment(), skip={"title": True})
     assert drawn == [] and lines and dst.exists()  # the captions still go through captions.render_text_image
 
 

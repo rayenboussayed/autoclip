@@ -1,4 +1,4 @@
-"""Configuration: the seven-key file schema, strict keys, runtime overrides and input expansion."""
+"""Configuration: the nine-key file schema, strict keys, runtime overrides and input expansion."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import pytest
 
 from autoclip.core.config import (
     FileConfig,
+    FileLlmCfg,
     JsonValue,
     RuntimeOverrides,
     _default_output_dir,
@@ -42,17 +43,19 @@ def _leaves(data: object, prefix: str = "") -> set[str]:
     return {path for key, value in data.items() for path in _leaves(value, f"{prefix}.{key}" if prefix else key)}
 
 
-def test_the_file_schema_has_exactly_seven_keys() -> None:
+def test_the_file_schema_has_exactly_nine_keys() -> None:
     data = asdict(FileConfig())
-    assert set(data) == {"input", "clips", "download"}
+    assert set(data) == {"input", "clips", "download", "llm", "image"}
     assert _leaves(data) == {
         "input",
         "clips.preset",
         "clips.scenes",
         "clips.keywords",
         "clips.ranges",
-        "download.platforms.allow",
-        "download.platforms.deny",
+        "download.allow",
+        "download.deny",
+        "llm.system_prompt",
+        "image.prompt",
     }
 
 
@@ -74,10 +77,10 @@ def test_parse_accepts_comments_and_ignores_them() -> None:
         ({"clips": {"scenes": "nope"}}, "unknown clips.scenes"),
         ({"clips": {"scenes": ["best", "nope"]}}, "unknown clips.scenes"),
         ({"download": {"nope": 1}}, "download.nope: Unexpected keyword"),
-        ({"download": {"platforms": {"setting": {"youtube": {}}}}}, "download.platforms.setting: Unexpected keyword"),
-        ({"download": {"platforms": {"allow": []}}}, "allow must name at least one platform"),
-        ({"download": {"platforms": {"allow": [""]}}}, "must not contain empty names"),
-        ({"download": {"platforms": {"deny": ["@nope"]}}}, "unknown group @nope"),
+        ({"download": {"setting": {"youtube": {}}}}, "download.setting: Unexpected keyword"),
+        ({"download": {"allow": []}}, "allow must name at least one platform"),
+        ({"download": {"allow": [""]}}, "must not contain empty names"),
+        ({"download": {"deny": ["@nope"]}}, "unknown group @nope"),
     ],
 )
 def test_invalid_config_is_rejected(data: dict[str, object], fragment: str) -> None:
@@ -107,7 +110,7 @@ def test_unknown_values_fall_back_with_a_warning(caplog: pytest.LogCaptureFixtur
         ({"video": {"codec": "h265"}}, "video"),
         ({"clips": {"kinds": ["short"]}}, "use clips.preset"),
         ({"clips": {"short": {"count": 2}}}, "the short profile is built in"),
-        ({"transcript": {"file": "a.srt"}}, "pass --transcript"),
+        ({"transcript": {"file": "a.srt"}}, "sidecar"),
         ({"skip": {"audio": True}}, "pass --skip NAME"),
         ({"download": {"playlist": "all"}}, "the URL shape decides"),
     ],
@@ -171,8 +174,8 @@ def test_split_and_ranges_are_mutually_exclusive() -> None:
 def test_file_config_derives_the_runtime_defaults() -> None:
     cfg = FileConfig().to_config()
     assert cfg.mode == "balance" and cfg.quality == "high"
-    assert cfg.transcript_file is None
-    assert cfg.captions.enabled and cfg.title.enabled and not any(asdict(cfg.skip).values())
+    assert cfg.llm.system_prompt == "" and cfg.image.prompt == "cinematic thumbnail, high quality, sharp focus"
+    assert cfg.captions.enabled and not any(asdict(cfg.skip).values())
     assert cfg.download.platforms.allow == ["@popular"] and cfg.download.platforms.deny == []
     assert cfg.llm.base_url == "http://localhost:11434"
 
@@ -181,10 +184,7 @@ def test_overrides_replace_one_field_at_a_time() -> None:
     cfg = FileConfig().to_config(
         RuntimeOverrides(
             output_dir="/tmp/out",
-            transcript="/tmp/a.srt",
             cookies="firefox",
-            proxy="socks5://localhost:1080",
-            log_level="OFF",
             skip=["caption", "title"],
             llm_base_url="http://box:11434",
             llm_model="qwen2.5",
@@ -192,11 +192,11 @@ def test_overrides_replace_one_field_at_a_time() -> None:
             quality="lowest",
         )
     )
-    assert cfg.output_dir == "/tmp/out" and cfg.transcript_file == "/tmp/a.srt"
-    assert cfg.download.cookies == "firefox" and cfg.download.proxy == "socks5://localhost:1080"
-    assert cfg.logging.level == "OFF"
-    assert cfg.captions.enabled is False and cfg.title.enabled is False and cfg.skip.caption and cfg.skip.title
-    assert (cfg.llm.base_url, cfg.llm.model) == ("http://box:11434", "qwen2.5")
+    assert cfg.output_dir == "/tmp/out"
+    assert cfg.download.cookies == "firefox"
+    assert cfg.captions.enabled is False
+    assert cfg.skip.caption and cfg.skip.title
+    assert (cfg.llm.base_url, cfg.llm.model, cfg.llm.system_prompt) == ("http://box:11434", "qwen2.5", "")
     assert (cfg.mode, cfg.quality) == ("performance", "lowest")
 
 
@@ -216,9 +216,9 @@ def test_environment_overrides_are_field_by_field(monkeypatch: pytest.MonkeyPatc
 
 def test_an_invalid_environment_override_is_ignored(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level("WARNING", logger="autoclip"):
-        overrides = RuntimeOverrides.from_env({"AUTOCLIP_QUALITY": "nope", "AUTOCLIP_PROXY": "not a url"})
-    assert overrides == RuntimeOverrides()
-    assert "ignoring invalid environment overrides" in caplog.text
+        overrides = RuntimeOverrides.from_env({"AUTOCLIP_QUALITY": "nope", "AUTOCLIP_MODE": "nope", "AUTOCLIP_OUTPUT_DIR": "/env/out"})
+    assert overrides.quality is None and overrides.mode is None and overrides.output_dir == "/env/out"
+    assert "invalid value for quality" in caplog.text
 
 
 def test_expand_inputs_globs_dedupes_and_sorts(tmp_path: Path) -> None:
@@ -239,22 +239,15 @@ def test_expand_inputs_errors(tmp_path: Path) -> None:
 
 def test_load_config_resolves_paths_relative_to_the_file_but_output_dir_is_cwd(tmp_path: Path) -> None:
     touch(tmp_path, "vids/one.mp4", "vids/two.mp4", "cookies.txt", "subs/one.srt", "subs/two.srt")
-    overrides = RuntimeOverrides(
-        output_dir="out",
-        transcript="subs/{stem}.srt",
-        cookies="cookies.txt",
-        proxy="http://localhost:3128",
-    )
+    overrides = RuntimeOverrides(output_dir="out", cookies="cookies.txt")
     cfg = load_config(
         write(tmp_path, {"input": "vids/*.mp4", "clips": {"preset": "shorts", "scenes": "funny"}}),
         overrides,
     )
     assert [Path(p).name for p in cfg.input] == ["one.mp4", "two.mp4"]
     assert Path(cfg.output_dir).is_absolute() and Path(cfg.output_dir).is_relative_to(Path.cwd())
-    assert cfg.transcript_file and Path(cfg.transcript_file).resolve().is_relative_to(tmp_path.resolve())
     assert Path(cfg.download.cookies or "").name == "cookies.txt"
     assert cfg.download.cookies and Path(cfg.download.cookies).is_absolute()
-    assert cfg.download.proxy == "http://localhost:3128"
     assert cfg.clips.scene_list() == ["funny"] and cfg.clips.kinds == ["short"]
 
 
@@ -264,25 +257,10 @@ def test_a_cookie_browser_name_stays_a_name(tmp_path: Path) -> None:
     assert cfg.download.cookies == "firefox"
 
 
-def test_single_string_input_and_single_transcript_file(tmp_path: Path) -> None:
-    touch(tmp_path, "one.mp4", "a.srt")
-    cfg = load_config(write(tmp_path, {"input": "one.mp4"}), RuntimeOverrides(transcript="a.srt"))
-    assert len(cfg.input) == 1 and cfg.transcript_file and cfg.transcript_file.endswith("a.srt")
-
-
-def test_several_videos_need_a_stem_placeholder(tmp_path: Path) -> None:
-    touch(tmp_path, "one.mp4", "two.mp4")
-    with pytest.raises(ConfigError, match=r"\{stem\}"):
-        load_config(write(tmp_path, {"input": ["one.mp4", "two.mp4"]}), RuntimeOverrides(transcript="a.srt"))
-
-
-def test_a_url_counts_as_a_second_video_for_the_stem_rule(tmp_path: Path) -> None:
+def test_single_string_input(tmp_path: Path) -> None:
     touch(tmp_path, "one.mp4")
-    with pytest.raises(ConfigError, match=r"\{stem\}"):
-        load_config(
-            write(tmp_path, {"input": ["one.mp4", "https://youtu.be/dQw4w9WgXcQ"]}),
-            RuntimeOverrides(transcript="subs.srt"),
-        )
+    cfg = load_config(write(tmp_path, {"input": "one.mp4"}))
+    assert len(cfg.input) == 1 and cfg.input[0].endswith("one.mp4")
 
 
 def test_offline_and_device_come_from_the_environment(tmp_path: Path) -> None:
@@ -304,7 +282,7 @@ def test_load_config_file_errors(tmp_path: Path) -> None:
 def test_config_without_optional_files(tmp_path: Path) -> None:
     touch(tmp_path, "one.mp4")
     cfg = load_config(write(tmp_path, {"input": "one.mp4"}))
-    assert cfg.transcript_file is None and isinstance(cfg.video.background, str)
+    assert isinstance(cfg.video.background, str)
 
 
 def test_parse_hms_accepts_every_shape() -> None:
@@ -344,7 +322,6 @@ def test_download_defaults() -> None:
     d = FileConfig().to_config().download
     assert d.time_range is None
     assert d.cookies is None
-    assert d.proxy is None
     assert d.platforms.allow == ["@popular"] and d.platforms.deny == []
 
 
@@ -406,3 +383,45 @@ def test_default_transcript_model_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
     from autoclip.core.internal.runtime import transcript_model_for
 
     assert transcript_model_for("highest") == "large-v3"
+
+
+def test_the_download_allow_deny_keys_are_read_directly(tmp_path: Path) -> None:
+    touch(tmp_path, "one.mp4")
+    cfg = load_config(write(tmp_path, {"input": "one.mp4", "download": {"allow": ["youtube"], "deny": ["tiktok"]}}))
+    assert cfg.download.platforms.allow == ["youtube"] and cfg.download.platforms.deny == ["tiktok"]
+
+
+def test_the_removed_platforms_wrapper_warns_and_falls_back_to_the_default(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING", logger="autoclip"):
+        cfg = parse(FileConfig, {"download": {"platforms": {"allow": ["youtube"], "deny": []}}})
+    assert cfg.download.allow == ["@popular"]
+    assert "download.platforms" in caplog.text and "download.allow" in caplog.text
+
+
+def test_the_llm_and_image_prompts_are_file_keys(tmp_path: Path) -> None:
+    touch(tmp_path, "one.mp4")
+    cfg = load_config(write(tmp_path, {"input": "one.mp4", "llm": {"system_prompt": "You are strict."}, "image": {"prompt": "dark room"}}))
+    assert cfg.llm.system_prompt == "You are strict."
+    assert cfg.image.prompt == "dark room"
+
+
+def test_the_llm_and_image_prompts_default_to_empty_and_the_sd_default(tmp_path: Path) -> None:
+    touch(tmp_path, "one.mp4")
+    cfg = load_config(write(tmp_path, {"input": "one.mp4"}))
+    assert cfg.llm.system_prompt == ""
+    assert cfg.image.prompt == "cinematic thumbnail, high quality, sharp focus"
+
+
+def test_the_llm_and_image_prompts_keep_their_defaults_on_bad_values(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING", logger="autoclip"):
+        cfg = parse(FileConfig, {"llm": {"system_prompt": 42}, "image": {"prompt": ["dark"]}})
+    assert cfg.llm.system_prompt == "" and cfg.image.prompt == "cinematic thumbnail, high quality, sharp focus"
+    assert "invalid value for llm.system_prompt" in caplog.text and "invalid value for image.prompt" in caplog.text
+
+
+def test_the_llm_endpoint_keys_stay_removed_but_warn(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING", logger="autoclip"):
+        cfg = parse(FileConfig, {"llm": {"base_url": "http://box:11434", "model": "qwen2.5", "api_key": "secret"}})
+    assert cfg.llm == FileLlmCfg()
+    for hint in ("--llm-url", "--llm-model", "no API key"):
+        assert hint in caplog.text

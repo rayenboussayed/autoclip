@@ -10,6 +10,7 @@ the only user preference left is the audio language.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TypedDict
 
@@ -149,8 +150,8 @@ def _language_matches(fmt: YtFormat, language: str) -> bool:
     return bool(value) and (value == language or value.startswith((language + "-", language + "_")))
 
 
-def _pick_audio(formats: list[YtFormat], prefs: DownloadPrefs, language: str) -> tuple[YtFormat | None, list[str]]:
-    """The best audio-only format, preferring the requested or original language.
+def _audio_ranked(formats: list[YtFormat], prefs: DownloadPrefs, language: str) -> tuple[list[YtFormat], list[str]]:
+    """The audio-only formats best first (after the language filter), plus any warnings.
 
     ``language`` is the original audio language of the video (``info["language"]``). It is only a
     fallback for when ``audio_language`` is not set: a dubbed track must never win merely because
@@ -158,7 +159,7 @@ def _pick_audio(formats: list[YtFormat], prefs: DownloadPrefs, language: str) ->
     """
     audios = _audio_formats(formats)
     if not audios:
-        return None, []
+        return [], []
     warnings: list[str] = []
     wanted = (prefs.audio_language or "").strip().lower()
     preferred = wanted or language
@@ -168,7 +169,13 @@ def _pick_audio(formats: list[YtFormat], prefs: DownloadPrefs, language: str) ->
             audios = matching
         elif wanted:
             warnings.append(f"no audio track in language {prefs.audio_language!r}; using the default")
-    return min(audios, key=_audio_rank), warnings
+    return sorted(audios, key=_audio_rank), warnings
+
+
+def _pick_audio(formats: list[YtFormat], prefs: DownloadPrefs, language: str) -> tuple[YtFormat | None, list[str]]:
+    """The best audio-only format, preferring the requested or original language."""
+    ranked, warnings = _audio_ranked(formats, prefs, language)
+    return (ranked[0] if ranked else None), warnings
 
 
 def choose(info: YtInfo, prefs: DownloadPrefs) -> Choice:
@@ -181,31 +188,75 @@ def choose(info: YtInfo, prefs: DownloadPrefs) -> Choice:
     Raises:
         DownloadError: if there is nothing downloadable.
     """
+    return choose_candidates(info, prefs)[0]
+
+
+def choose_candidates(info: YtInfo, prefs: DownloadPrefs) -> list[Choice]:
+    """Every usable candidate, best first (the first is what :func:`choose` returns).
+
+    A network stall on the media stream is the failure this list exists for: a downloader
+    that cannot fetch one format can simply try the next instead of giving up on the video.
+    Candidates are ordered by the same preference as :func:`choose` (quality, direct
+    downloads, codec, least bitrate), so the alternates are also quality-sensible. A URL
+    that offers only audio produces one audio-only candidate.
+
+    Raises:
+        DownloadError: if there is nothing downloadable.
+    """
     formats = [f for f in info.get("formats") or [] if isinstance(f, dict)]
     videos = _video_formats(formats)
     language = str(info.get("language") or "").strip().lower()
-    warnings: list[str] = []
     if not videos:
         audio, audio_warnings = _pick_audio(formats, prefs, language)
         if audio is None:
             raise DownloadError("the URL offers no downloadable video or audio format")
-        return Choice(str(audio.get("format_id") or "best"), tuple(audio_warnings), has_video=False)
-    best = min(
+        return [Choice(str(audio.get("format_id") or "best"), tuple(audio_warnings), has_video=False)]
+    ordered = sorted(
         videos,
         key=lambda f: (
             *_quality_key(f, prefs.quality),
             _protocol_rank(f),
             CODEC_RANK.get(_codec(f), 4),
-            -_num(f.get("tbr")),
+            -_num(f.get("fps")) if _num(f.get("fps")) > 0 else math.inf,  # a higher frame rate wins; unknown fps loses
+            _num(f.get("tbr")) if _num(f.get("tbr")) > 0 else math.inf,  # least-burdensome bitrate; unknown bitrate loses
             str(f.get("format_id") or ""),
         ),
     )
-    format_id = str(best.get("format_id") or "best")
-    if str(best.get("acodec") or "").lower() == "none":
-        audio, audio_warnings = _pick_audio(formats, prefs, language)
-        warnings.extend(audio_warnings)
-        if audio is None:
-            warnings.append("the chosen video format has no audio track")
-        else:
-            format_id = f"{format_id}+{audio.get('format_id')}"
-    return Choice(format_id, tuple(warnings))
+    audios, audio_warnings = _audio_ranked(formats, prefs, language)
+    candidates: list[Choice] = []
+    audio_slot = 0
+    for video in ordered:
+        format_id = str(video.get("format_id") or "best")
+        if str(video.get("acodec") or "").lower() != "none":
+            candidates.append(Choice(format_id, tuple(audio_warnings)))
+            continue
+        if not audios:
+            candidates.append(Choice(format_id, tuple([*audio_warnings, "the chosen video format has no audio track"])))
+            continue
+        # A stall can hit the audio stream too (see the SABR ``140-N`` suffixes): give every video-only
+        # candidate the next-best audio id instead of pairing all of them with the one that failed.
+        audio = audios[min(audio_slot, len(audios) - 1)]
+        audio_slot += 1
+        candidates.append(Choice(f"{format_id}+{audio.get('format_id')}", tuple(audio_warnings)))
+    return candidates
+
+
+def describe(info: YtInfo, choice: Choice) -> str:
+    """A short human-readable summary of a choice (for the log line when a download starts)."""
+    by_id = {str(f.get("format_id") or ""): f for f in info.get("formats") or [] if isinstance(f, dict)}
+    video, *audio = choice.format_id.split("+")
+    parts: list[str] = []
+    chosen = by_id.get(video) if choice.has_video else None
+    if chosen is not None:
+        codec = _codec(chosen)
+        width, height = int(_num(chosen.get("width"))), int(_num(chosen.get("height")))
+        protocol = chosen.get("protocol") or "unknown"
+        parts.append(
+            f"{width}x{height} {codec if codec != 'other' else '?'} "
+            f"{_num(chosen.get('fps')):.0f}fps {_num(chosen.get('tbr')):.0f} kbps ({protocol})"
+        )
+    else:
+        parts.append(f"audio {video}")
+    if audio:
+        parts.append(f"audio {'+'.join(audio)}")
+    return " + ".join(parts)

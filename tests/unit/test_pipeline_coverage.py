@@ -17,7 +17,7 @@ def test_process_video_unsilence_returns_destination(media: Any, tmp_path: Path,
     out.mkdir()
     cfg = make_cfg(media, out, clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
     cfg.captions.enabled = False
-    cfg.title.enabled = False
+    cfg.skip.title = True
 
     destination = out / ".work" / media.video.stem / f"unsilence_{media.video.stem}.mp4"
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -36,7 +36,7 @@ def test_process_video_unsilence_exception(media: Any, tmp_path: Path, monkeypat
     out.mkdir()
     cfg = make_cfg(media, out, clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
     cfg.captions.enabled = False
-    cfg.title.enabled = False
+    cfg.skip.title = True
 
     def boom(*a: Any, **k: Any) -> None:
         raise RuntimeError("boom")
@@ -54,7 +54,7 @@ def test_process_video_unsilence_returns_original(media: Any, tmp_path: Path, mo
     out.mkdir()
     cfg = make_cfg(media, out, clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
     cfg.captions.enabled = False
-    cfg.title.enabled = False
+    cfg.skip.title = True
     monkeypatch.setattr("autoclip.core.unsilence.remove_silence", lambda src, cfg, dst, *a, **k: src)
     from autoclip.core.hardware import cpu_encoder as ce
 
@@ -307,7 +307,7 @@ def test_process_video_no_transcript_needed(media: Any, tmp_path: Path, monkeypa
         },
     )
     cfg.captions.enabled = False
-    cfg.title.enabled = False
+    cfg.skip.title = True
     from autoclip.core.pipeline import needs_text as _needs_text
 
     assert _needs_text(cfg) is False

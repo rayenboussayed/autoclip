@@ -64,7 +64,6 @@ def test_run_pipeline_and_stop_without_a_cancel_token(media: Any, tmp_path: Path
 
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
     monkeypatch.setenv("AUTOCLIP_OUTPUT_DIR", str(tmp_path / "out-off"))
-    monkeypatch.setenv("AUTOCLIP_LOG_LEVEL", "OFF")
     path = write_config(tmp_path, media, inputs=[str(media.video)])
     assert run_pipeline(path, cancel=CancelToken(), on_line=lambda line: None) == 0
 
@@ -78,43 +77,20 @@ def test_run_pipeline_and_stop_without_a_cancel_token(media: Any, tmp_path: Path
     stop_pipeline(cast(PipelineHandle, NoCancel()))  # nothing to cancel: must not raise
 
 
-def test_resolve_log_file_is_none_when_logging_is_off(tmp_path: Path) -> None:
+def test_resolve_log_file_returns_a_path(tmp_path: Path) -> None:
     from autoclip.app.session import _resolve_log_file
     from autoclip.core.config import Config
 
     cfg = Config(output_dir=str(tmp_path))
-    cfg.logging.level = "OFF"
-    assert _resolve_log_file(cfg) is None
-
-
-def test_resolve_log_file_returns_a_path_when_enabled(tmp_path: Path) -> None:
-    from autoclip.app.session import _resolve_log_file
-    from autoclip.core.config import Config
-
-    cfg = Config(output_dir=str(tmp_path))
-    cfg.logging.level = "INFO"
     path = _resolve_log_file(cfg)
-    assert path is not None and path.parent.name == "logs"
-
-
-def test_resolve_log_file_enabled(tmp_path: Path) -> None:
-    from autoclip.app.session import _resolve_log_file
-    from autoclip.core.config import Config
-
-    cfg = Config(output_dir=str(tmp_path))
-    cfg.logging.level = "INFO"
-    result = _resolve_log_file(cfg)
-    assert result is not None and "logs" in str(result)
-    result2 = _resolve_log_file(cfg)
-    assert result2 is not None and str(result2).endswith(".log")
+    assert path.parent.name == "logs"
+    assert path.with_suffix("").name.startswith("autoclip_")
 
 
 def test_run_pipeline_logging_enabled(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
     lines: list[str] = []
     monkeypatch.setenv("AUTOCLIP_OUTPUT_DIR", str(tmp_path / "out3"))
-    monkeypatch.setenv("AUTOCLIP_TRANSCRIPT", str(tmp_path / "subs" / "{stem}.json"))
-    monkeypatch.setenv("AUTOCLIP_LOG_LEVEL", "INFO")
     path = write_config(tmp_path, media, inputs=[str(media.video)])
     code = run_pipeline(path, cancel=CancelToken(), on_line=lines.append)
     assert code == 0
@@ -124,8 +100,6 @@ def test_app_lines_and_log_file_are_in_sync(media: Any, tmp_path: Path, monkeypa
     """One run: every decorator print must appear in the app pane AND in the .log file (same records)."""
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
     monkeypatch.setenv("AUTOCLIP_OUTPUT_DIR", str(tmp_path / "out-sync"))
-    monkeypatch.setenv("AUTOCLIP_TRANSCRIPT", str(tmp_path / "subs" / "{stem}.json"))
-    monkeypatch.setenv("AUTOCLIP_LOG_LEVEL", "INFO")
     lines: list[str] = []
     path = write_config(tmp_path, media, inputs=[str(media.video)])
     code = run_pipeline(path, cancel=CancelToken(), on_line=lines.append)

@@ -36,7 +36,7 @@ class Downloader:
 
 def _run(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, downloader: Downloader, **sections: Any) -> list[Segment]:
     install_stub_whisper(monkeypatch, media, {}, download_model=downloader)
-    cfg = make_cfg(media, tmp_path / "out", transcript_file=None, **sections)
+    cfg = make_cfg(media, tmp_path / "out", **sections)
     info: MediaInfo = probe(media.video)
     return transcript.transcribe(media.video, cfg, info, np.zeros(10, dtype=np.float32), None)
 

@@ -27,5 +27,14 @@ Which platforms may be downloaded
 
 | Path | Kind | Vision | Details |
 |---|---|---|---|
-| `download.platforms.allow` | `csv` | normal | **What:** The platforms that may be downloaded: platform names (`youtube`, `vimeo`, ...) and the groups `@popular`, `@social`, `@video`, `@all`. **Why:** A URL is only downloaded when it is on this list - everything else is refused before a request is made. **When:** Start with `@popular` and add the platforms you use. |
-| `download.platforms.deny` | `csv` | normal | **What:** Platforms that are never downloaded, even when an allow entry covers them. **Why:** Deny wins over allow, so a broad group can stay while one platform is excluded. **When:** Add a platform that you do not want to support. |
+| `download.allow` | `csv` | normal | **What:** The platforms that may be downloaded: platform names (`youtube`, `vimeo`, ...) and the groups `@popular`, `@social`, `@video`, `@all`. **Why:** A URL is only downloaded when it is on this list - everything else is refused before a request is made. **When:** Start with `@popular` and add the platforms you use. |
+| `download.deny` | `csv` | normal | **What:** Platforms that are never downloaded, even when an allow entry covers them. **Why:** Deny wins over allow, so a broad group can stay while one platform is excluded. **When:** Add a platform that you do not want to support. |
+
+## AI
+
+Optional AI helpers
+
+| Path | Kind | Vision | Details |
+|---|---|---|---|
+| `llm.system_prompt` | `str` | normal | **What:** The system message sent to the local LLM for every call (moment ranking, titles and social captions). Empty keeps the built-in editor messages. **Why:** A domain-specific persona or house style (a cooking channel's tone, a strict rating rubric, ...). **When:** Set it when the default voice does not match your channel. |
+| `image.prompt` | `str` | normal | **What:** The Stable Diffusion prompt of every AI thumbnail (only used when torch/diffusers are installed). **Why:** A different style than the default cinematic look, or one that matches your thumbnails. **When:** Set it when the default thumbnails do not match your style. |

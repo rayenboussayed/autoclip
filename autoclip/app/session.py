@@ -168,10 +168,8 @@ class _QueueHandler(logging.Handler):
             self.handleError(record)
 
 
-def _resolve_log_file(cfg: Config) -> Path | None:
-    """The log file of a run, or ``None`` when logging is disabled."""
-    if cfg.logging.level == "OFF":
-        return None
+def _resolve_log_file(cfg: Config) -> Path:
+    """The log file of a run: one per run inside ``{output_dir}/logs``."""
     from ..core.log import default_log_file
 
     return default_log_file(cfg.output_dir)
@@ -199,11 +197,11 @@ def run_pipeline(
         return 2
     log_file = _resolve_log_file(cfg)
     try:
-        if log_file is not None:
-            log_file.parent.mkdir(parents=True, exist_ok=True)
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        from ..core.log import default_level as _default_level
         from ..core.log import setup_logging as _setup_logging
 
-        _setup_logging(log_file, cfg.logging.level, None)
+        _setup_logging(log_file, _default_level(), None)
     except Exception as e:  # logging must never stop a run
         on_line(f"warning: logging setup failed: {e}")
 

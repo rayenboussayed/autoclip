@@ -223,7 +223,7 @@ def test_ai_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
 
     src = Path(tempfile.mkdtemp()) / "frame.jpg"
     out = Path(tempfile.mkdtemp()) / "thumb.jpg"
-    assert ai.generate_sd_thumbnail(src, out) is False
+    assert ai.generate_sd_thumbnail(src, out, "a prompt") is False
     cfg = parse(Config, {})
     assert ai.generate_title(cfg, "") == ""
     assert ai.generate_caption(cfg, "") == ""
@@ -240,3 +240,44 @@ def test_ai_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ai.generate_title(skip_llm, "hello") == ""
     assert ai.generate_caption(skip_llm, "hello") == ""
     assert ai.llm_rerank([], skip_llm, "best") == {}
+
+
+def test_llm_calls_include_the_configured_system_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core.models import Moment
+
+    monkeypatch.setattr(ai, "llm_available", lambda *a, **k: True)
+    captured: dict[str, Any] = {}
+
+    def fake_chat(base_url: str, model: str, messages: list[dict[str, str]], *, fmt: str = "") -> str:
+        captured["messages"] = messages
+        if fmt == "json":
+            return json.dumps({"scores": [{"id": 0, "score": 5, "title": "t"}]})
+        return "ok"
+
+    monkeypatch.setattr(ai, "_chat", fake_chat)
+    cfg = parse(Config, {})
+    assert ai._messages(cfg, "p") == [{"role": "user", "content": "p"}]  # unset: no system message
+    cfg = parse(Config, {"llm": {"system_prompt": "You are stern."}})
+    assert ai._messages(cfg, "p") == [{"role": "system", "content": "You are stern."}, {"role": "user", "content": "p"}]
+    assert ai.generate_title(cfg, "some text") == "ok"
+    assert captured["messages"][0] == {"role": "system", "content": "You are stern."}
+    assert ai.generate_caption(cfg, "some text") == "ok"
+    assert captured["messages"][0] == {"role": "system", "content": "You are stern."}
+    assert ai.llm_rerank([Moment(0, 10, "some text", score=1.0)], cfg, "funny")
+    assert captured["messages"][0] == {"role": "system", "content": "You are stern."}
+
+
+def test_llm_rerank_falls_back_to_the_editor_prompt_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core.models import Moment
+
+    monkeypatch.setattr(ai, "llm_available", lambda *a, **k: True)
+    captured: dict[str, Any] = {}
+
+    def fake_chat(base_url: str, model: str, messages: list[dict[str, str]], *, fmt: str = "") -> str:
+        captured["messages"] = messages
+        return json.dumps({"scores": [{"id": 0, "score": 5, "title": "t"}]})
+
+    monkeypatch.setattr(ai, "_chat", fake_chat)
+    ai.llm_rerank([Moment(0, 10, "some text", score=1.0)], parse(Config, {}), "funny")
+    assert captured["messages"][0]["role"] == "system"
+    assert "short-form video editor" in captured["messages"][0]["content"]

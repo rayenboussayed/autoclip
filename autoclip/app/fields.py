@@ -38,6 +38,7 @@ class Option:
     placeholder: str = ""  # the grey hint inside an empty entry
     csv_is_list: bool = True  # a csv field that may also be a single string ("best" is not ["b", "e", "s", "t"])
     numeric: bool = False  # a text field that takes a number or a word ("1080", "best")
+    empty_is_none: bool = True  # an empty text field means "not set" (set False for plain strings that must stay "")
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,13 +64,14 @@ def _o(
     placeholder: str = "",
     csv_is_list: bool = True,
     numeric: bool = False,
+    empty_is_none: bool = True,
 ) -> Option:
     """A short constructor for one option."""
-    return Option(path, label, kind, what, why, when, choices, visible_when, advanced, placeholder, csv_is_list, numeric)
+    return Option(path, label, kind, what, why, when, choices, visible_when, advanced, placeholder, csv_is_list, numeric, empty_is_none)
 
 
 # --------------------------------------------------------------------------------------------
-# The sections, in the order the app shows them. Only the seven file keys live here: everything
+# The sections, in the order the app shows them. Only the nine file keys live here: everything
 # else (output folder, quality, AI server, ...) is a run-time choice.
 # --------------------------------------------------------------------------------------------
 
@@ -144,7 +146,7 @@ DOWNLOAD = Section(
     "Which platforms may be downloaded",
     (
         _o(
-            "download.platforms.allow",
+            "download.allow",
             "Allowed platforms",
             "csv",
             "The platforms that may be downloaded: platform names (`youtube`, `vimeo`, ...) and the groups "
@@ -153,7 +155,7 @@ DOWNLOAD = Section(
             "Start with `@popular` and add the platforms you use.",
         ),
         _o(
-            "download.platforms.deny",
+            "download.deny",
             "Denied platforms",
             "csv",
             "Platforms that are never downloaded, even when an allow entry covers them.",
@@ -163,9 +165,36 @@ DOWNLOAD = Section(
     ),
 )
 
+AI = Section(
+    "ai",
+    "AI",
+    "Optional AI helpers",
+    (
+        _o(
+            "llm.system_prompt",
+            "LLM system prompt",
+            "str",
+            "The system message sent to the local LLM for every call (moment ranking, titles and social captions). "
+            "Empty keeps the built-in editor messages.",
+            "A domain-specific persona or house style (a cooking channel's tone, a strict rating rubric, ...).",
+            "Set it when the default voice does not match your channel.",
+            empty_is_none=False,
+        ),
+        _o(
+            "image.prompt",
+            "Thumbnail prompt",
+            "str",
+            "The Stable Diffusion prompt of every AI thumbnail (only used when torch/diffusers are installed).",
+            "A different style than the default cinematic look, or one that matches your thumbnails.",
+            "Set it when the default thumbnails do not match your style.",
+            empty_is_none=False,
+        ),
+    ),
+)
+
 
 #: Every section, in the order the app shows them.
-SECTIONS: tuple[Section, ...] = (VIDEOS, CLIPS, DOWNLOAD)
+SECTIONS: tuple[Section, ...] = (VIDEOS, CLIPS, DOWNLOAD, AI)
 
 #: Every option, by its config path.
 OPTIONS: dict[str, Option] = {o.path: o for s in SECTIONS for o in s.options}

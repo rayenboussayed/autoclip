@@ -6,24 +6,31 @@ release mentions the source tag/commit for traceability.
 
 ## [4.0.0] — 2026-11-06 14:15:01 +0100 (commit `92d47c7`)
 
-- feat: reduce the config file to seven keys; everything else is derived at run time or passed as a runtime override
+- feat: reduce the config file to nine keys (seven then two: `llm.system_prompt` and `image.prompt`); everything else is derived at run time or passed as a runtime override
 - feat: invalid config *values* now warn and fall back to the default instead of aborting the run
 - feat: remove the LLM api_key field (Ollama is local and needs no API key)
+- feat: the file sets the LLM system prompt (`llm.system_prompt`, default empty = the built-in editor messages) and the Stable Diffusion thumbnail prompt (`image.prompt`)
 - feat: Whisper model downloads run automatically on first use; the consent prompt and `consent` option are gone
-- feat: `--transcript` remains an explicit transcript override; language is always auto-detected
+- feat: a sidecar `.json`/`.srt` next to the video (`<stem>.json` preferred) is the transcript; `--transcript`, `AUTOCLIP_TRANSCRIPT` and `transcript_file` are gone
 - feat: downloaded subtitles are fetched for the video's original language; the `subtitles` option is gone
 - feat: language for downloads always follows the video's original track
 - feat: explicit device selection is removed; GPU use is probed and automatic (no `--device` flag)
 - feat: `--offline` is removed; AI is controlled by `--skip llm` and Whisper downloads are automatic
-- feat: `NetworkCfg` is removed; `--proxy` / `AUTOCLIP_PROXY` remain runtime overrides
+- feat: the proxy is gone entirely (`--proxy`, `AUTOCLIP_PROXY`, `download.proxy`); downloads use the network directly
+- feat: `--log-level`, `AUTOCLIP_LOG_LEVEL` and the `logging` key are gone; logging is internal: DEBUG in debug mode (`AUTOCLIP_DEBUG=1`), INFO otherwise
+- feat: logging of file and console is always on (no `OFF` level; the internal level suffices)
+- feat: `TitleCfg` and `LoggingCfg` are removed; the title overlay is controlled by `--skip title` alone
+- feat: `download.platforms.allow`/`deny` are now `download.allow`/`download.deny` (the `FileDownloadCfg` wrapper is gone); the frozen layout is exactly nine keys
 - feat: optional Ollama re-ranking, titles and social captions through one serialized AI queue
 - feat: optional Stable Diffusion thumbnails (serialized in the same queue; frame JPEG kept otherwise)
 - feat: social captions as `<clip>.txt` sidecars and `clips.json` entries
 - feat: URL-shape playlist handling (single for watch/shorts/video URLs, all otherwise, capped at 50)
-- feat: automatic download format policy (quality tier, direct HTTPS over HLS/DASH, original audio track)
+- feat: automatic download format policy (quality tier, direct HTTPS over HLS/DASH, original audio track); at equal quality the least-burdensome bitrate is chosen
+- feat: a stalled or failing download no longer costs the video: after the preferred format fails, the downloader tries the next-best candidate(s) (up to two alternates) before giving up; a different candidate reuses its cache when it is already present; the chosen format is logged with its resolution, codec, bitrate and protocol
 - feat: automatic silence removal, speech enhancement, captions, titles and thumbnails
+- fix: a video without an audio track no longer crashes the transcription stage (it is transcribed-with-skip instead)
 - refactor: runtime `Config` keeps every field; `FileConfig` owns the file schema; `RuntimeOverrides` for CLI/env/app/server
-- docs: rewrite README/AGENTS/docs for the seven-key schema and the 4.0 upgrade notes
+- docs: rewrite README/AGENTS/docs for the nine-key schema and the 4.0 upgrade notes
 - chore: bump version to 4.0.0
 
 ## [2.1.0] — 2026-10-24 14:01:53 +0100 (tag `v2.1.0`, commit `780850e`)

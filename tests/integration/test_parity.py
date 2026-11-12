@@ -19,7 +19,7 @@ def test_parity_process_video_vs_server_job(media: Media, tmp_path: Path, monkey
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
     monkeypatch.setattr("autoclip.core.ai.llm_available", lambda *a, **k: False)
 
-    # Both entry points must derive their runtime configuration from the same seven-key file config;
+    # Both entry points must derive their runtime configuration from the same nine-key file config;
     # shrink what is derived (one cheap clip, no LLM) so the two runs stay fast and deterministic.
     original = FileConfig.to_config
 

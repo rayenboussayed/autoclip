@@ -48,7 +48,7 @@ def prepare_config(job: Job, custom: dict[str, JsonValue] | None) -> Config:
 
 
 def _file_config(job: Job, custom: dict[str, JsonValue] | None) -> dict[str, JsonValue]:
-    """The seven-key config the child process reads (the input is the uploaded file)."""
+    """The nine-key config the child process reads (the input is the uploaded file)."""
     from dataclasses import asdict
 
     data = asdict(parse(FileConfig, dict(custom or {})))

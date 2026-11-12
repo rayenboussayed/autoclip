@@ -32,7 +32,7 @@ setup path) to avoid infinite recursion.
 
 ## Files and durability
 
-Logs live at `{output_dir}/logs/autoclip_<timestamp>.log` when logging is enabled (`--log-level DEBUG|INFO|...`, default `INFO`; `--log-level OFF` disables both file and console).
+Logs live at `{output_dir}/logs/autoclip_<timestamp>.log`. Logging is always on; the minimum level is `DEBUG` in debug mode (`AUTOCLIP_DEBUG=1`) and `INFO` otherwise. There is no `OFF` level and no verbosity flag.
 
 Both stdout print lines and logging records use the same file handler. The file handler:
 
@@ -55,7 +55,6 @@ No secrets are intentionally logged:
 - local user home paths are folded to `~/`;
 - system health profiles include OS, CPU count, memory capacity, load envelope and
   selected output/log/cache roots only;
-- the LLM API key is never printed;
 - command arguments from child processes are not dumped raw.
 
 ## Operational checks

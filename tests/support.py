@@ -72,6 +72,13 @@ def _srt_time(t: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
 
 
+def bare_media(media: Media, tmp_path: Path, name: str = "bare.mp4") -> Path:
+    """A copy of the fixture video with no sidecar transcript next to it (the Whisper path, then)."""
+    dst = tmp_path / name
+    dst.write_bytes(media.video.read_bytes())
+    return dst
+
+
 def merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
     """``base`` with ``over`` laid on top, recursing into nested objects (so ``clips={"short": {...}}`` keeps the rest)."""
     return {k: merge(base[k], v) if isinstance(v, dict) and isinstance(base.get(k), dict) else v for k, v in {**base, **over}.items()}
@@ -85,17 +92,9 @@ def make_cfg(media: Media, out: Path, source: Path | None = None, **sections: An
             "short": {"count": 2, "min_seconds": 6, "max_seconds": 12},
             "long": {"min_seconds": 12, "max_seconds": 30},
         },
-        "transcript_file": str(media.transcript),
         "quality": "lowest",
-        "logging": {"level": "OFF"},
     }
-    _sentinel = object()
-    transcript_file = sections.pop("transcript_file", _sentinel)
     cfg = parse(Config, merge(data, sections))
-    if transcript_file is _sentinel:
-        cfg.transcript_file = str(media.transcript)
-    else:
-        cfg.transcript_file = transcript_file
     cfg.input = [str(source or media.video)]
     cfg.output_dir = str(out)
     return cfg
@@ -229,15 +228,13 @@ BASE_CONFIG: dict[str, Any] = {
 
 
 def write_config(tmp_path: Path, media: Media, inputs: list[str] | None = None, **overrides: Any) -> Path:
-    """Write a seven-key config for the fixture video(s) and the per-stem transcript files."""
-    (tmp_path / "subs").mkdir(parents=True, exist_ok=True)
-    for stem in ("talk", "silent", "broken"):
-        (tmp_path / "subs" / f"{stem}.json").write_text(media.transcript.read_text(encoding="utf-8"), encoding="utf-8")
+    """Write a nine-key config for the fixture video(s)."""
     data = merge(
-        {**BASE_CONFIG, "input": inputs if inputs is not None else [str(media.video), str(media.silent)]},
+        {**BASE_CONFIG, "input": inputs if inputs is not None else [str(media.video)]},
         overrides,
     )
     path = tmp_path / "config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
 
@@ -246,21 +243,15 @@ def run_args(
     config: Path,
     *,
     output: Path | None = None,
-    transcript: bool = True,
     quality: str = "lowest",
-    log_level: str = "OFF",
     extra: list[str] | None = None,
 ) -> list[str]:
-    """The argv that runs ``config`` with the test overrides the seven-key file no longer carries."""
+    """The argv that runs ``config`` (the nine-key file carries no run-time overrides, so only these remain)."""
     argv = [
         str(config),
         "--output-dir",
         str(output or Path(config).parent / "out"),
         "--quality",
         quality,
-        "--log-level",
-        log_level,
     ]
-    if transcript:
-        argv += ["--transcript", str(Path(config).parent / "subs" / "{stem}.json")]
     return argv + (extra or [])
