@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 #: The kinds of control the form knows how to build.
-KINDS = ("bool", "choice", "int", "float", "str", "path", "dir", "csv", "lines", "json")
+KINDS = ("str", "choice", "csv", "lines")
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,11 +33,8 @@ class Option:
     why: str
     when: str
     choices: tuple[str, ...] = ()
-    visible_when: str = ""  # "other.path=value": only shown when that option has that value
-    advanced: bool = False  # shown in the "advanced" group of its section
     placeholder: str = ""  # the grey hint inside an empty entry
     csv_is_list: bool = True  # a csv field that may also be a single string ("best" is not ["b", "e", "s", "t"])
-    numeric: bool = False  # a text field that takes a number or a word ("1080", "best")
     empty_is_none: bool = True  # an empty text field means "not set" (set False for plain strings that must stay "")
 
 
@@ -59,15 +56,12 @@ def _o(
     why: str,
     when: str,
     choices: tuple[str, ...] = (),
-    visible_when: str = "",
-    advanced: bool = False,
     placeholder: str = "",
     csv_is_list: bool = True,
-    numeric: bool = False,
     empty_is_none: bool = True,
 ) -> Option:
     """A short constructor for one option."""
-    return Option(path, label, kind, what, why, when, choices, visible_when, advanced, placeholder, csv_is_list, numeric, empty_is_none)
+    return Option(path, label, kind, what, why, when, choices, placeholder, csv_is_list, empty_is_none)
 
 
 # --------------------------------------------------------------------------------------------
@@ -198,9 +192,6 @@ SECTIONS: tuple[Section, ...] = (VIDEOS, CLIPS, DOWNLOAD, AI)
 
 #: Every option, by its config path.
 OPTIONS: dict[str, Option] = {o.path: o for s in SECTIONS for o in s.options}
-
-#: Options that hold a whole JSON object: the form treats one as a single leaf, not as nested options.
-JSON_PATHS: frozenset[str] = frozenset(path for path, option in OPTIONS.items() if option.kind == "json")
 
 
 def option_paths() -> list[str]:

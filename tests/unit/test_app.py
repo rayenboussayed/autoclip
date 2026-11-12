@@ -60,15 +60,6 @@ def config_paths(cls: Any = FileConfig, prefix: str = "") -> set[str]:
     return paths
 
 
-#: Options of a kind the nine-key file does not need: the form still has to build and read them.
-INT_OPTION = Option("test.count", "Count", "int", "A number.", "To test the form.", "In this test.")
-JSON_OPTION = Option("test.data", "Data", "json", "An object.", "To test the form.", "In this test.")
-PATH_OPTION = Option("test.file", "File", "path", "A file.", "To test the form.", "In this test.")
-DIR_OPTION = Option("test.folder", "Folder", "dir", "A folder.", "To test the form.", "In this test.")
-MODE_OPTION = Option("test.mode", "Mode", "choice", "A choice.", "To test the form.", "In this test.", choices=("a", "b"))
-RANGES_OPTION = Option("test.ranges", "Ranges", "lines", "Lines.", "To test the form.", "In this test.", visible_when="test.mode=b")
-
-
 def has_display() -> bool:
     """Can a window be opened here?"""
     if os.name == "nt" or sys.platform == "darwin":
@@ -91,14 +82,6 @@ def _debug_app(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_every_config_option_is_in_the_app() -> None:
     """No option of the config file may be missing from the desktop app."""
     assert set(option_paths()) == config_paths()
-
-
-def test_every_visible_when_points_at_a_defined_option() -> None:
-    """A typo in ``visible_when`` leaves the field hidden forever."""
-    for path, option in OPTIONS.items():
-        if option.visible_when:
-            other, _value = option.visible_when.split("=", 1)
-            assert other in OPTIONS, (path, option.visible_when)
 
 
 def test_every_option_is_explained() -> None:
@@ -722,35 +705,16 @@ def test_the_controls_read_and_write_every_kind_of_option() -> None:
     try:
         form = Form(root, tuple(kinds.values()), values, lambda path, value: changed.append((path, value)))
         samples = {
-            "bool": True,
             "choice": kinds["choice"].choices[1],
-            "int": "42",
-            "float": "12.5",
             "str": "hello",
-            "path": "/tmp/file.srt",
-            "dir": "/tmp/folder",
             "csv": "one, two",
             "lines": "first\nsecond",
-            "json": '{"@news": ["youtube"]}',
         }
         for kind, option in kinds.items():
             field = form.fields[option.path]
             field.set(samples[kind])
             value = field.value()
-            if kind == "bool":
-                assert value is True
-            elif kind == "choice":
-                assert value == samples[kind]
-            elif kind in ("int", "float"):
-                assert value == float(samples[kind])
-            elif kind == "csv":
-                assert value == ["one", "two"]
-            elif kind == "lines":
-                assert value == ["first", "second"]
-            elif kind == "json":
-                assert value == {"@news": ["youtube"]}
-            else:
-                assert value == samples[kind]
+            assert value == (["one", "two"] if kind == "csv" else ["first", "second"] if kind == "lines" else samples[kind])
         assert changed  # every change was reported
     finally:
         root.destroy()
@@ -782,39 +746,27 @@ def test_output_folder_picker_and_relative_open(tmp_path: Path, monkeypatch: pyt
 
 
 @needs_display
-def test_advanced_options_and_value_edge_cases() -> None:
-    """The advanced group toggles, and every control handles empty/invalid values."""
+@needs_display
+def test_an_empty_plain_string_stays_empty_and_an_empty_optional_is_none() -> None:
+    """A plain string that must keep its empty value is not turned into ``None``."""
     import tkinter as tk
 
     from autoclip.app.form import Form
 
-    bool_opt = Option("x.flag", "Flag", "bool", "w", "y", "z")
-    num_opt = Option("x.count", "Count", "str", "w", "y", "z", numeric=True)
-    text_opt = Option("x.text", "Text", "str", "w", "y", "z")
-    json_opt = Option("x.json", "JSON", "json", "w", "y", "z")
-    adv_opt = Option("x.advanced", "Advanced", "str", "w", "y", "z", advanced=True)
-    hidden_opt = Option("x.hidden", "Hidden", "str", "w", "y", "z", visible_when="x.flag=true")
-    values = cast(dict[str, JsonValue], {"x.flag": False, "x.count": None, "x.text": "", "x.json": {}, "x.hidden": ""})
+    plain_opt = Option("x.text", "Text", "str", "w", "y", "z", empty_is_none=False)
+    short_opt = Option("x.empty", "Empty", "str", "w", "y", "z")
+    values = cast(dict[str, JsonValue], {"x.text": "", "x.empty": ""})
     root = tk.Tk()
     root.withdraw()
     try:
-        form = Form(root, (bool_opt, num_opt, text_opt, json_opt, adv_opt, hidden_opt), values, lambda *a: None)
-        assert form.fields["x.flag"].value() is False
-        assert form.fields["x.count"].value() is None
-        assert form.fields["x.text"].value() is None
-        form.fields["x.count"].set("not-a-number")
-        assert form.fields["x.count"].value() == "not-a-number"
-        form.fields["x.json"].set(["one", "two"])
-        assert form.fields["x.json"].value() == ["one", "two"]
-        form.fields["x.text"].set(None)
-        assert form.fields["x.text"].value() is None
-        form._toggle_advanced()
-        assert form._advanced_shown is True
-        form._set_advanced_visible(False)
-        assert form._advanced_shown is False
-        form.refresh_visibility()  # the hidden option stays hidden
-        plain = Form(root, (text_opt,), {"x.text": ""}, lambda *a: None)
-        plain._toggle_advanced()  # no advanced button: must not raise
+        plain = Form(root, (plain_opt,), values, lambda *a: None)
+        assert plain.fields["x.text"].value() == ""
+        optional = Form(root, (short_opt,), values, lambda *a: None)
+        assert optional.fields["x.empty"].value() is None
+        optional.fields["x.empty"].set(None)
+        assert optional.fields["x.empty"].value() is None
+        optional.fields["x.empty"].set("kept")
+        assert optional.fields["x.empty"].value() == "kept"
     finally:
         root.destroy()
 
@@ -828,54 +780,12 @@ def test_a_control_that_holds_nothing_is_none() -> None:
 
     root = tk.Tk()
     root.withdraw()
+    empty_option = Option("x.empty", "Empty", "str", "w", "y", "z")
     try:
-        form = Form(root, (INT_OPTION,), {"test.count": 5}, lambda path, value: None)
-        field = form.fields["test.count"]
+        form = Form(root, (empty_option,), {"x.empty": "x"}, lambda path, value: None)
+        field = form.fields["x.empty"]
         field.set("")
         assert field.value() is None
-        field.set("not a number")
-        assert field.value() is None
-    finally:
-        root.destroy()
-
-
-@needs_display
-def test_an_empty_json_control_is_an_empty_object_and_invalid_json_is_kept_as_text() -> None:
-    """``{}`` is the "nothing here" value; broken JSON survives so validation can name the option."""
-    import tkinter as tk
-
-    from autoclip.app.form import Form
-
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        form = Form(root, (JSON_OPTION,), {}, lambda path, value: None)
-        field = form.fields["test.data"]
-        assert field.text is not None
-        field.text.delete("1.0", "end")
-        assert field.value() == {}
-        field.text.insert("1.0", '{"@news": ["youtube"')  # truncated on purpose
-        assert field.value() == '{"@news": ["youtube"'
-    finally:
-        root.destroy()
-
-
-@needs_display
-def test_the_options_that_do_not_apply_are_hidden(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An option whose ``visible_when`` does not match stays hidden until it does."""
-    import tkinter as tk
-
-    from autoclip.app.form import Form
-
-    values: dict[str, Any] = {"test.mode": "a", "test.ranges": []}
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        form = Form(root, (MODE_OPTION, RANGES_OPTION), values, lambda path, value: values.update({path: value}))
-        assert not form.fields["test.ranges"].holder.winfo_manager()
-        form.fields["test.mode"].set("b")
-        form.refresh_visibility()
-        assert form.fields["test.ranges"].holder.winfo_manager() == "grid"
     finally:
         root.destroy()
 
@@ -888,18 +798,12 @@ def test_browsing_fills_the_path_fields_and_the_video_list(monkeypatch: pytest.M
 
     from autoclip.app.form import Form
 
-    monkeypatch.setattr(filedialog, "askopenfilename", lambda **kw: "/tmp/picked.srt")
-    monkeypatch.setattr(filedialog, "askdirectory", lambda **kw: "/tmp/picked-folder")
     monkeypatch.setattr(filedialog, "askopenfilenames", lambda **kw: ("/tmp/one.mp4", "/tmp/two.mp4"))
-    values: dict[str, Any] = {"test.file": "", "test.folder": "", "input": []}
+    values: dict[str, Any] = {"input": []}
     root = tk.Tk()
     root.withdraw()
     try:
-        form = Form(root, (PATH_OPTION, DIR_OPTION, OPTIONS["input"]), values, lambda path, value: values.update({path: value}))
-        form._browse(PATH_OPTION)
-        assert values["test.file"] == "/tmp/picked.srt"
-        form._browse(DIR_OPTION)
-        assert values["test.folder"] == "/tmp/picked-folder"
+        form = Form(root, (OPTIONS["input"],), values, lambda path, value: values.update({path: value}))
         form._browse_videos()
         assert values["input"] == ["/tmp/one.mp4", "/tmp/two.mp4"]
     finally:
@@ -1435,16 +1339,14 @@ def test_cancelling_the_file_dialogs_changes_nothing(monkeypatch: pytest.MonkeyP
 
     from autoclip.app.form import Form
 
-    monkeypatch.setattr(filedialog, "askopenfilename", lambda **kw: "")
     monkeypatch.setattr(filedialog, "askopenfilenames", lambda **kw: ())
-    values: dict[str, Any] = {"test.file": "", "input": []}
+    values: dict[str, Any] = {"input": []}
     root = tk.Tk()
     root.withdraw()
     try:
-        form = Form(root, (PATH_OPTION, OPTIONS["input"]), values, lambda path, value: values.update({path: value}))
-        form._browse(PATH_OPTION)
+        form = Form(root, (OPTIONS["input"],), values, lambda path, value: values.update({path: value}))
         form._browse_videos()
-        assert values["test.file"] == "" and values["input"] == []
+        assert values["input"] == []
     finally:
         root.destroy()
 
@@ -1459,7 +1361,7 @@ def test_a_field_without_a_control_ignores_its_value() -> None:
     root = tk.Tk()
     root.withdraw()
     try:
-        option = INT_OPTION
+        option = Option("x.count", "Count", "str", "w", "y", "z")
         empty = Field(option, 0, ttk.Label(root), ttk.Frame(root), ttk.Label(root), ttk.Frame(root), None, None)
         empty.set("5")
         assert empty.value() is None

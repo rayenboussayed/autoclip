@@ -7,17 +7,14 @@ drift apart. Every row shows a one-line summary under the control; the full expl
 
 from __future__ import annotations
 
-import json
 import tkinter as tk
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import partial
-from pathlib import Path
 from tkinter import filedialog, ttk
 
 from ..core.config import JsonValue
 from .fields import Option
-from .session import flatten, split_csv, unflatten
+from .session import split_csv
 
 try:
     from tkinterdnd2 import DND_FILES as _DND_FILES
@@ -27,7 +24,7 @@ except Exception:  # pragma: no cover - depends on the installed extras
 #: A callback that receives the changed option path and its new value.
 Changed = Callable[[str, object], None]
 
-__all__ = ["Changed", "Field", "Form", "ScrollFrame", "flatten", "split_csv", "unflatten", "variable_value"]
+__all__ = ["Changed", "Field", "Form", "ScrollFrame", "split_csv", "variable_value"]
 
 
 def variable_value(var: tk.Variable) -> object:
@@ -88,16 +85,6 @@ class Field:
     def value(self) -> object:
         """The current value of the control, in the type the config expects."""
         kind = self.option.kind
-        if kind == "bool":
-            return bool(variable_value(self.var)) if self.var else False
-        if kind in ("int", "float"):
-            text = str(variable_value(self.var)).strip() if self.var else ""
-            if not text:
-                return None
-            try:
-                return int(text) if kind == "int" else float(text)
-            except ValueError:
-                return None
         if kind == "csv":
             text = str(variable_value(self.var)) if self.var else ""
             if self.option.csv_is_list:
@@ -105,46 +92,22 @@ class Field:
             return split_csv(text) if "," in text else text.strip()
         if kind == "lines":
             return [line.strip() for line in self.text.get("1.0", "end").splitlines() if line.strip()] if self.text else []
-        if kind == "json":
-            return self._json_value()
         text = str(variable_value(self.var)).strip() if self.var else ""
         if not text:
             return None if self.option.empty_is_none else ""  # an empty text field means "not set", unless it is a plain string
-        if self.option.numeric:
-            try:
-                return int(text)
-            except ValueError:
-                try:
-                    return float(text)
-                except ValueError:
-                    return text
         return text
-
-    def _json_value(self) -> JsonValue | str:
-        """The object typed into a JSON field, or the text itself when it does not parse."""
-        text = self.text.get("1.0", "end").strip() if self.text else ""
-        if not text:
-            return {}
-        try:
-            return json.loads(text)  # type: ignore[no-any-return]
-        except json.JSONDecodeError:
-            return text  # the config check reports it with the option path, which a silent {} would hide
 
     def set(self, value: JsonValue | str | bool | int | float | None) -> None:
         """Put a value into the control."""
         kind = self.option.kind
-        if kind in ("lines", "json"):
+        if kind == "lines":
             if self.text is None:
                 return
             self.text.delete("1.0", "end")
-            if kind == "json":
-                text = json.dumps(value, indent=2, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value or "{}")
-                self.text.insert("1.0", text)
-            else:
-                self.text.insert(
-                    "1.0",
-                    value if isinstance(value, str) else "\n".join(str(v) for v in (value if isinstance(value, (list, tuple)) else [])),
-                )
+            self.text.insert(
+                "1.0",
+                value if isinstance(value, str) else "\n".join(str(v) for v in (value if isinstance(value, (list, tuple)) else [])),
+            )
             return
         if self.var is None:
             return
@@ -176,53 +139,11 @@ class Form(ttk.Frame):
         self._changed = changed
         self._wheel = wheel
         self.columnconfigure(1, weight=1)
-        main_options = [option for option in options if not option.advanced]
-        advanced_options = [option for option in options if option.advanced]
         row = 0
-        for option in main_options:
+        for option in options:
             field = self._build_row(row, option)
             self.fields[option.path] = field
             row += 2
-
-        self._advanced_fields: list[tuple[Option, Field]] = []
-        self._advanced_shown = False
-        if advanced_options:
-            row += 1
-            button = ttk.Button(self, text="Show advanced options")
-            button.grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 2))
-            row += 1
-            separator = ttk.Separator(self, orient="horizontal")
-            separator.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 2))
-            row += 1
-            ar = row
-            for option in advanced_options:
-                field = self._build_row(ar, option)
-                self.fields[option.path] = field
-                self._advanced_fields.append((option, field))
-                ar += 2
-            button.configure(command=self._toggle_advanced)
-            self._advanced_button = button
-            self._set_advanced_visible(False)
-        self._apply_visibility()
-
-    def _toggle_advanced(self) -> None:
-        self._set_advanced_visible(not self._advanced_shown)
-        button = getattr(self, "_advanced_button", None)
-        if button is not None:
-            button.configure(text="Hide advanced options" if self._advanced_shown else "Show advanced options")
-
-    def _set_advanced_visible(self, visible: bool) -> None:
-        self._advanced_shown = visible
-        for _option, field in getattr(self, "_advanced_fields", []):
-            if self._advanced_shown:
-                field.label.grid()
-                field.holder.grid()
-                field.help_label.grid()
-            else:
-                field.label.grid_remove()
-                field.holder.grid_remove()
-                field.help_label.grid_remove()
-        self._apply_visibility()
 
     def _build_row(self, row: int, option: Option, master: tk.Misc | None = None) -> Field:
         """Label, control and the one-line summary of one option."""
@@ -233,8 +154,6 @@ class Form(ttk.Frame):
         holder.grid(row=row, column=1, sticky="ew", pady=(2, 2))
         control, var, text = self._build_control(option, holder)
         control.grid(row=0, column=0, sticky="ew")
-        if option.kind in ("path", "dir"):
-            ttk.Button(holder, text="Browse...", command=partial(self._browse, option)).grid(row=0, column=1, sticky="e", padx=(6, 0))
         if option.kind == "lines" and option.path == "input":
             ttk.Button(holder, text="Add videos...", command=self._browse_videos).grid(row=0, column=1, sticky="e", padx=(6, 0))
             self._enable_drag_and_drop(holder)
@@ -252,11 +171,6 @@ class Form(ttk.Frame):
     def _build_control(self, option: Option, holder: ttk.Frame) -> tuple[tk.Widget, tk.Variable | None, tk.Text | None]:
         """The widget that fits the kind of the option, and the variable behind it."""
         kind = option.kind
-        if kind == "bool":
-            bool_var = tk.BooleanVar(value=bool(self._values.get(option.path, False)))
-            control: tk.Widget = ttk.Checkbutton(holder, text="enabled", variable=bool_var)
-            bool_var.trace_add("write", self._reporter(option, bool_var))
-            return control, bool_var, None
         if kind == "choice":
             choice_var = tk.StringVar(value=str(self._values.get(option.path, option.choices[0] if option.choices else "")))
             box = ttk.Combobox(holder, textvariable=choice_var, values=option.choices, state="readonly", width=28)
@@ -266,10 +180,6 @@ class Form(ttk.Frame):
             text = tk.Text(holder, height=3, width=52, wrap="none", font="TkFixedFont")
             text.bind("<KeyRelease>", self._text_reporter(option, text))
             return text, None, text
-        if kind == "json":
-            json_text = tk.Text(holder, height=6, width=52, wrap="none", font="TkFixedFont")
-            json_text.bind("<KeyRelease>", self._text_reporter(option, json_text))
-            return json_text, None, json_text
         text_var = tk.StringVar(value=self._as_text(option, self._values.get(option.path)))
         entry = ttk.Entry(holder, width=32, textvariable=text_var)
         text_var.trace_add("write", self._reporter(option, text_var))
@@ -300,20 +210,6 @@ class Form(ttk.Frame):
         if isinstance(value, list):
             return ", ".join(str(v) for v in value)
         return str(value)
-
-    def _browse(self, option: Option) -> None:
-        """Pick a file or a folder for a path option."""
-        current = str(self._values.get(option.path) or "")
-        if option.kind == "dir":
-            picked = filedialog.askdirectory(title=f"Choose a folder for {option.label}", initialdir=current or str(Path.home()))
-        else:
-            picked = filedialog.askopenfilename(
-                title=f"Choose a file for {option.label}", initialdir=str(Path(current).parent) if current else ""
-            )
-        if picked:
-            self._values[option.path] = picked
-            self.fields[option.path].set(picked)
-            self._changed(option.path, picked)
 
     def _browse_videos(self) -> None:
         """Add video files to the input list."""
@@ -381,24 +277,3 @@ class Form(ttk.Frame):
             self._focused(option)
 
         return report
-
-    def _apply_visibility(self) -> None:
-        """Hide the options whose condition is not met (for example the ranges in highlights mode)."""
-        for field in self.fields.values():
-            option = field.option
-            visible = True
-            if option.visible_when:
-                other, _, wanted = option.visible_when.partition("=")
-                visible = str(self._values.get(other, "")) == wanted
-            if getattr(option, "advanced", False) and not getattr(self, "_advanced_shown", False):
-                visible = False
-            if visible:
-                field.holder.grid()
-                field.help_label.grid()
-            else:
-                field.holder.grid_remove()
-                field.help_label.grid_remove()
-
-    def refresh_visibility(self) -> None:
-        """Re-evaluate which options are shown (after a value changed)."""
-        self._apply_visibility()

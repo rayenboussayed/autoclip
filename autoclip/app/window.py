@@ -37,7 +37,8 @@ from ..core.config import JsonValue
 from ..core.errors import ConfigError
 from ..core.events import CancelToken
 from .fields import SECTIONS, Option
-from .form import Form, ScrollFrame, unflatten
+from .form import Form, ScrollFrame
+from .session import unflatten
 from .session import (
     PipelineHandle,
     cancel_pipeline,
@@ -316,10 +317,8 @@ class AutoclipApp(tk.Tk):
     # -- values ------------------------------------------------------------------------------
 
     def _on_change(self, path: str, value: object) -> None:
-        """A value changed: remember it and update the options that depend on it."""
+        """A value changed: remember it."""
         self.values[path] = value  # type: ignore[assignment]
-        for form in self._forms:
-            form.refresh_visibility()
 
     def _load_into_form(self) -> None:
         """Put the current values into the controls."""

@@ -25,7 +25,6 @@ from typing import cast
 from ..core.config import Config, FileConfig, JsonValue, RuntimeOverrides, _default_output_dir, is_url, load_config, parse
 from ..core.errors import AutoclipError, ConfigError
 from ..core.events import CancelToken
-from .fields import JSON_PATHS
 
 #: The folder of the project (the parent of the package), used to run the pipeline from a source checkout.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -34,13 +33,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def flatten(data: dict[str, JsonValue], prefix: str = "") -> dict[str, JsonValue]:
     """A nested config dict as ``{"clips.short.count": 5, ...}`` (lists stay lists).
 
-    A JSON option (``download.platforms.groups`` and the like) is one leaf: the form edits the whole
-    object in one control, so its keys must not become option paths of their own.
+    Every nested dictionary is expanded into its option paths.
     """
     flat: dict[str, JsonValue] = {}
     for key, value in data.items():
         path = f"{prefix}{key}"
-        if isinstance(value, dict) and path not in JSON_PATHS:
+        if isinstance(value, dict):
             flat.update(flatten(value, f"{path}."))
         else:
             flat[path] = value

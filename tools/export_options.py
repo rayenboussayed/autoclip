@@ -26,15 +26,14 @@ def render() -> str:
         if section.subtitle:
             lines.append(section.subtitle)
             lines.append("")
-        lines.append("| Path | Kind | Vision | Details |")
-        lines.append("|---|---|---|---|")
+        lines.append("| Path | Kind | Details |")
+        lines.append("|---|---|---|")
         for option in section.options:
-            vision = "advanced" if option.advanced else "normal"
             extra = ""
             if option.choices:
                 extra = f"Choices: `{', '.join(option.choices)}`."
             lines.append(
-                f"| `{option.path}` | `{option.kind}` | {vision} | "
+                f"| `{option.path}` | `{option.kind}` | "
                 f"**What:** {option.what} "
                 f"**Why:** {option.why} "
                 f"**When:** {option.when} {extra}".strip()
