@@ -119,7 +119,8 @@ autoclip/
     progress.py     ProgressManager: per-job queues -> WebSocket frames (loop-safe publish)
     service.py      the pipeline stages one by one, config preparation, ZIP packaging
     schemas.py      Pydantic API models (JobCreated, JobStatus, ProgressEvent)
-    routers/api.py  /api/jobs, status, ZIP download, delete, WebSocket (the JSON API)
+    routers/api.py  /api/jobs, status, ZIP download, delete, WebSocket (the JSON API),
+                    /api/preview (one frame with the configured layout/captions, mock text)
     routers/view.py /view/ upload page and /view/jobs/{id} (the HTML pages)
     main.py         create_app, lifespan evictor, OpenTelemetry (OTLP only when configured)
     templates/      base/index/job/404 (Jinja2 + HTMX + DaisyUI from a CDN)
@@ -288,6 +289,9 @@ step, percent, outputs); nothing else is persisted except the job folder and the
 7. Auth is HTTP Basic and is skipped unless **both** `AUTH_USERNAME` and `AUTH_PASSWORD` are set; the WebSocket accepts
    `?token=<user>:<password>` because browsers cannot set an `Authorization` header on it. OpenTelemetry instruments
    FastAPI and exports OTLP only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+8. `/api/preview` renders one representative frame with the configured layout/captions and **mock** text and returns
+   it as a PNG. It never creates a job or a registry entry, never transcribes, and its throwaway upload under
+   `CACHE_DIR/preview/<uuid>` is deleted before the response returns.
 
 ## 5. Invariants - do not break these
 
@@ -363,6 +367,10 @@ step, percent, outputs); nothing else is persisted except the job folder and the
 19. **Server auth is opt-in and compared in constant time.** Basic auth is enforced only when **both** `AUTH_USERNAME`
     and `AUTH_PASSWORD` are non-empty (`secrets.compare_digest`); an empty pair means a public API. Never log the
     credentials, and keep the WebSocket `?token=` fallback in sync with the header check.
+20. **The preview is not a job.** `/api/preview` renders one frame with mock text and returns a PNG; it never creates a
+    registry entry, never enqueues work, and the throwaway folder under `CACHE_DIR/preview/<uuid>` is deleted before
+    the response returns. It shares the jobs' upload discipline (`_read_custom_config`, filename sanitisation,
+    `MAX_FILE_SIZE`) but not their output folder.
 
 ## 6. Configuration (`config.py`)
 

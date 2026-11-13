@@ -13,8 +13,21 @@
         <label class="label"><span class="label-text">Optional config JSON</span></label>
         <input type="file" name="config" accept="application/json" class="file-input file-input-bordered w-full" />
       </div>
-      <button type="submit" class="btn btn-primary">Upload & process</button>
+      <div class="flex flex-wrap items-center gap-3">
+        <button type="submit" class="btn btn-primary">Upload & process</button>
+        <select id="preview-kind" class="select select-bordered select-sm" title="Which clip shape to preview">
+          <option value="short">Short · 9:16</option>
+          <option value="long">Long · 16:9</option>
+        </select>
+        <button type="button" id="preview-btn" class="btn btn-outline" disabled>Preview</button>
+        <span id="preview-spinner" class="loading loading-spinner loading-sm hidden"></span>
+      </div>
     </form>
+    <div id="preview-wrap" class="mt-4 hidden">
+      <p class="text-xs opacity-70 mb-1">Sample frame with a mock caption — the layout, captions and font of your config, not the final render.</p>
+      <img id="preview-img" alt="Preview of the future clip" class="rounded-lg shadow max-h-96" />
+      <p id="preview-error" class="text-error text-sm mt-1 hidden"></p>
+    </div>
     <div id="result" class="mt-4"></div>
     <script>
       // The API answers JSON; from this page, follow the new job to its progress page instead.
@@ -23,6 +36,50 @@
         let data;
         try { data = JSON.parse(event.detail.xhr.responseText); } catch (e) { return; }
         if (data.job_id) window.location.assign('/view/jobs/' + data.job_id);
+      });
+
+      // Preview: upload the same file once more and show what a frame will look like with this config.
+      const fileInput = document.querySelector('input[name="file"]');
+      const configInput = document.querySelector('input[name="config"]');
+      const previewBtn = document.getElementById('preview-btn');
+      const previewKind = document.getElementById('preview-kind');
+      const previewWrap = document.getElementById('preview-wrap');
+      const previewImg = document.getElementById('preview-img');
+      const previewError = document.getElementById('preview-error');
+      const previewSpinner = document.getElementById('preview-spinner');
+      let previewUrl = null;
+
+      fileInput.addEventListener('change', () => { previewBtn.disabled = fileInput.files.length === 0; });
+
+      previewBtn.addEventListener('click', async () => {
+        if (fileInput.files.length === 0) return;
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        if (configInput.files.length > 0) formData.append('config', configInput.files[0]);
+        formData.append('kind', previewKind.value);
+        previewBtn.disabled = true;
+        previewSpinner.classList.remove('hidden');
+        previewError.classList.add('hidden');
+        try {
+          const response = await fetch('/api/preview', { method: 'POST', body: formData });
+          if (!response.ok) {
+            let detail = 'preview failed';
+            try { detail = (await response.json()).detail || detail; } catch (e) { /* not JSON */ }
+            throw new Error(detail);
+          }
+          const blob = await response.blob();
+          if (previewUrl) URL.revokeObjectURL(previewUrl);
+          previewUrl = URL.createObjectURL(blob);
+          previewImg.src = previewUrl;
+          previewWrap.classList.remove('hidden');
+        } catch (e) {
+          previewError.textContent = String(e.message || e);
+          previewWrap.classList.remove('hidden');
+          previewError.classList.remove('hidden');
+        } finally {
+          previewBtn.disabled = false;
+          previewSpinner.classList.add('hidden');
+        }
       });
     </script>
   </div>

@@ -1138,3 +1138,110 @@ def test_default_max_concurrent_jobs_is_one() -> None:
     server_config.get_settings.cache_clear()
     assert server_config.get_settings().max_concurrent_jobs == 1
     server_config.get_settings.cache_clear()
+
+
+def _preview_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
+    monkeypatch.setenv("AUTH_USERNAME", "")
+    monkeypatch.setenv("AUTH_PASSWORD", "")
+    monkeypatch.setenv("MAX_FILE_SIZE", str(256 * 1024 * 1024))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    server_config.get_settings.cache_clear()
+    return TestClient(create_app())
+
+
+def _preview_post(client: TestClient, media: Any, data: dict[str, str] | None = None, filename: str = "clip.mp4") -> Any:
+    return client.post("/api/preview", files={"file": (filename, media.video.read_bytes(), "video/mp4")}, data=data or {})
+
+
+def test_preview_returns_a_png_of_the_short_canvas(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import io
+
+    from PIL import Image
+
+    from autoclip.core.internal.quality import quality_short_side
+    from autoclip.core.render import canvas_size
+
+    client = _preview_client(monkeypatch, tmp_path)
+    response = _preview_post(client, media, {"kind": "short"})
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["cache-control"] == "no-store"
+    with Image.open(io.BytesIO(response.content)) as img:
+        img.load()
+        assert img.size == canvas_size("9:16", quality_short_side("high"), 320, 180)
+
+
+def test_preview_long_kind_uses_the_long_aspect(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import io
+
+    from PIL import Image
+
+    from autoclip.core.internal.quality import quality_short_side
+    from autoclip.core.render import canvas_size
+
+    client = _preview_client(monkeypatch, tmp_path)
+    # the file config decides the long profile's aspect; default is 16:9
+    response = _preview_post(client, media, {"kind": "long", "config_json": "{}"})
+    assert response.status_code == 200, response.text
+    with Image.open(io.BytesIO(response.content)) as img:
+        img.load()
+        assert img.size == canvas_size("16:9", quality_short_side("high"), 320, 180)
+
+
+def test_preview_rejects_an_empty_upload_and_bad_kind(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = _preview_client(monkeypatch, tmp_path)
+    assert client.post("/api/preview", files={"file": ("e.bin", b"", "application/octet-stream")}).status_code == 400
+    assert _preview_post(client, media, {"kind": "wide"}).status_code == 400
+    # an absent kind defaults to "short"; empty form values fall back to the default too
+
+
+def test_preview_rejects_an_oversized_file(client: TestClient, media: Any) -> None:
+    # the stock fixture caps MAX_FILE_SIZE at 1024 bytes
+    response = client.post("/api/preview", files={"file": ("big.bin", b"x" * 2048, "video/mp4")})
+    assert response.status_code == 413
+
+
+def test_preview_rejects_invalid_config_json(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = _preview_client(monkeypatch, tmp_path)
+    assert _preview_post(client, media, {"config_json": "123"}).status_code == 400  # not an object
+    assert _preview_post(client, media, {"config_json": "{nope"}).status_code == 400  # not JSON
+    # removed keys are warn-and-ignore by design; a truly unknown key is rejected
+    response = _preview_post(client, media, {"config_json": '{"definitely_not_a_key_xyz": 1}'})
+    assert response.status_code == 400
+    assert response.json()["detail"]
+    assert _preview_post(client, media, {"config_json": '{"mode": "fast"}'}).status_code == 200  # removed key: ignored
+
+
+def test_preview_rejects_an_unparseable_video(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = _preview_client(monkeypatch, tmp_path)
+    response = client.post("/api/preview", files={"file": ("junk.mp4", b"not a video at all", "video/mp4")})
+    assert response.status_code == 400
+    assert "cannot probe" in response.json()["detail"] or "frame" in response.json()["detail"]
+
+
+def test_preview_removes_its_temporary_folder(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = _preview_client(monkeypatch, tmp_path)
+    assert _preview_post(client, media).status_code == 200
+    cache = tmp_path / "cache"
+    leftovers = list((cache / "preview").rglob("*")) if (cache / "preview").exists() else []
+    assert leftovers == []  # the throwaway folder is gone
+
+
+def test_preview_does_not_create_a_job(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = _preview_client(monkeypatch, tmp_path)
+    response = _preview_post(client, media)
+    assert response.status_code == 200
+    assert not (tmp_path / "out" / "jobs").exists() or list((tmp_path / "out" / "jobs").iterdir()) == []
+
+
+def test_preview_returns_500_when_the_renderer_blows_up(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = _preview_client(monkeypatch, tmp_path)
+
+    def boom(*args: Any, **kwargs: Any) -> bytes:
+        raise RuntimeError("encoder exploded")
+
+    monkeypatch.setattr("autoclip.server.routers.api.preview_image", boom)
+    response = _preview_post(client, media)
+    assert response.status_code == 500
+    assert response.json()["detail"] == "preview failed"

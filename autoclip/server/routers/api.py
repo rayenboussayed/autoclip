@@ -2,21 +2,39 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import secrets
 import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Response,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import FileResponse, JSONResponse
 
+from ...core.errors import AutoclipError, ConfigError
+from ...core.preview import preview_image
 from ...core.process import terminate_tree
 from ..auth import require_auth
 from ..config import get_settings
 from ..schemas import JobCreated, JobState, JobStatus, OutputFile
-from ..service import run_job, zip_outputs
+from ..service import build_config, run_job, zip_outputs
 from ..state import registry
+
+log = logging.getLogger("autoclip.server")
 
 router = APIRouter(prefix="/api", tags=["api"], dependencies=[])
 
@@ -25,6 +43,37 @@ _TASKS: set[asyncio.Task[Any]] = set()
 # How long an idle websocket waits before a keepalive frame. A module constant (not a literal in the
 # loop) so tests can shrink it instead of patching asyncio.sleep globally.
 KEEPALIVE_SECONDS = 30.0
+
+
+async def _read_custom_config(config: UploadFile | None, config_json: str | None) -> dict[str, Any] | None:
+    """The optional user config from the multipart form (a JSON file or a raw JSON string).
+
+    ``config`` (the file) is read first, ``config_json`` (the string) overrides it — the same precedence
+    for every endpoint that accepts one. Never-trusted keys (``input``/``output_dir``) are dropped.
+    """
+    custom: dict[str, Any] | None = None
+    if config is not None:
+        try:
+            custom = json.loads((await config.read()).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise HTTPException(status_code=400, detail=f"invalid config JSON: {e}") from e
+    if config_json:
+        try:
+            custom = json.loads(config_json)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"invalid config_json: {e}") from e
+    if custom is not None and not isinstance(custom, dict):
+        raise HTTPException(status_code=400, detail="config must be a JSON object")
+    if custom is not None:
+        custom.pop("input", None)
+        custom.pop("output_dir", None)
+    return custom
+
+
+def _safe_filename(name: str | None) -> str:
+    """The client's filename as a bare basename; never trusted as a path component."""
+    filename = Path(name or "upload.bin").name
+    return filename if filename not in ("", ".", "..") else "upload.bin"
 
 
 @router.post("/jobs", response_model=JobCreated, status_code=status.HTTP_201_CREATED)
@@ -42,31 +91,13 @@ async def create_job(
     if len(data) == 0:
         raise HTTPException(status_code=400, detail="empty upload")
 
-    custom: dict[str, Any] | None = None
-    if config is not None:
-        try:
-            custom = json.loads((await config.read()).decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as e:
-            raise HTTPException(status_code=400, detail=f"invalid config JSON: {e}") from e
-    if config_json:
-        try:
-            custom = json.loads(config_json)
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"invalid config_json: {e}") from e
-    if custom is not None and not isinstance(custom, dict):
-        raise HTTPException(status_code=400, detail="config must be a JSON object")
-    if custom is not None:
-        custom.pop("input", None)
-        custom.pop("output_dir", None)
+    custom = await _read_custom_config(config, config_json)
 
     settings.output_dir.mkdir(parents=True, exist_ok=True)
     settings.cache_dir.mkdir(parents=True, exist_ok=True)
     job_dir = settings.output_dir / "jobs"
     job_dir.mkdir(parents=True, exist_ok=True)
-    # the client's filename is never trusted as a path component
-    filename = Path(file.filename or "upload.bin").name
-    if filename in ("", ".", ".."):
-        filename = "upload.bin"
+    filename = _safe_filename(file.filename)
     job = registry.create(
         filename=filename,
         input_path=Path(),  # set below
@@ -79,7 +110,6 @@ async def create_job(
     job.output_dir.mkdir(parents=True, exist_ok=True)
     job.input_path.write_bytes(data)
 
-    settings = get_settings()
     background_tasks.add_task(_run_job_task, job.job_id)
     return JobCreated(
         job_id=job.job_id,
@@ -87,6 +117,50 @@ async def create_job(
         ws_url=f"/api/jobs/{job.job_id}/ws",
         download_url=f"/api/jobs/{job.job_id}/download",
     )
+
+
+@router.post("/preview")
+async def preview(
+    file: UploadFile = File(...),  # noqa: B008
+    kind: str = Form(default="short"),
+    config_json: str | None = Form(default=None),
+    config: UploadFile | None = File(default=None),  # noqa: B008
+    _user: str = Depends(require_auth),
+) -> Response:
+    """A PNG of one representative frame with the configured layout and captions (mock caption text).
+
+    Nothing is persisted and no job is created: the upload is written to a throwaway folder under the
+    cache dir, one frame is rendered and the folder is deleted before the response is returned.
+    """
+    settings = get_settings()
+    if kind not in ("short", "long"):
+        raise HTTPException(status_code=400, detail="kind must be 'short' or 'long'")
+    data = await file.read()
+    if len(data) > settings.max_file_size:
+        raise HTTPException(status_code=413, detail=f"file exceeds MAX_FILE_SIZE ({settings.max_file_size} bytes)")
+    if len(data) == 0:
+        raise HTTPException(status_code=400, detail="empty upload")
+
+    custom = await _read_custom_config(config, config_json)
+    root = settings.cache_dir / "preview" / uuid4().hex
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        src = root / _safe_filename(file.filename)
+        src.write_bytes(data)
+        try:
+            cfg = build_config(custom, src, root / "out")
+        except ConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        try:
+            png = await asyncio.to_thread(preview_image, src, cfg, kind)
+        except AutoclipError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:
+            log.warning("preview failed: %s: %s", type(e).__name__, e)
+            raise HTTPException(status_code=500, detail="preview failed") from e
+        return Response(content=png, media_type="image/png", headers={"Cache-Control": "no-store"})
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 async def _run_job_task(job_id: str) -> None:

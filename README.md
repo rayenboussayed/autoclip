@@ -229,6 +229,13 @@ short and a long clip do not collide). The service calls the pipeline stages one
 transcript, selection, render) so progress is visible while the job runs; it is stateless apart from
 the render cache on disk.
 
+The upload page offers a **Preview**: it takes one representative frame of the video and renders it
+with the captions and layout your config would use (a mock sentence, highlighted word, the configured
+font, theme and position — never a Whisper call and never the real clip), so you can see the look
+before committing to the run. The preview uploads the file once more and the PNG is discarded after
+the response; nothing is written to the output folder and no job is created. A preview is an
+illustration — real captions follow the transcript and the cut.
+
 ```bash
 pip install -e ".[server]"
 python -m autoclip.server              # http://127.0.0.1:8000/view/  (HTML) and /docs (OpenAPI)

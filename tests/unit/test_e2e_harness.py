@@ -92,7 +92,10 @@ def test_choose_bbc_entry_prefers_the_bbc_clip_then_falls_back_to_the_last() -> 
 def test_download_config_is_minimal_and_keeps_the_e2e_cookies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AUTOCLIP_E2E_COOKIES", raising=False)
     config = harness.download_config(tmp_path / "out", "https://youtu.be/x")
-    assert config == {"input": ["https://youtu.be/x"], "_output_dir": str(tmp_path / "out")}  # quality/metadata/subtitles are automatic in 4.0
+    assert config == {
+        "input": ["https://youtu.be/x"],
+        "_output_dir": str(tmp_path / "out"),
+    }  # quality/metadata/subtitles are automatic in 4.0
 
     monkeypatch.setenv("AUTOCLIP_E2E_COOKIES", "/tmp/cookies.txt")
     with_cookies = harness.download_config(tmp_path / "out", "https://youtu.be/x")

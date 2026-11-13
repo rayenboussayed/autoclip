@@ -33,18 +33,23 @@ def _publish(job: Job, step: str, message: str, percent: float, state: str | Non
     )
 
 
-def prepare_config(job: Job, custom: dict[str, JsonValue] | None) -> Config:
+def build_config(custom: dict[str, JsonValue] | None, input_path: Path, output_dir: Path) -> Config:
     """The runtime configuration of a job: the uploaded file config plus the server's own input/output.
 
     The server owns the input and the output folder, so a user config can never point the job at
-    another file or write outside its own job folder.
+    another file or write outside its own folder.
     """
-    get_settings()
     file_cfg = parse(FileConfig, dict(custom or {}))
-    cfg = file_cfg.to_config(RuntimeOverrides(input=[str(job.input_path)], output_dir=str(job.output_dir)))
-    cfg.input = [str(job.input_path)]
-    cfg.output_dir = str(job.output_dir)
+    cfg = file_cfg.to_config(RuntimeOverrides(input=[str(input_path)], output_dir=str(output_dir)))
+    cfg.input = [str(input_path)]
+    cfg.output_dir = str(output_dir)
     return cfg
+
+
+def prepare_config(job: Job, custom: dict[str, JsonValue] | None) -> Config:
+    """The runtime configuration of a job (the uploaded file config plus the server's own input/output)."""
+    get_settings()
+    return build_config(custom, job.input_path, job.output_dir)
 
 
 def _file_config(job: Job, custom: dict[str, JsonValue] | None) -> dict[str, JsonValue]:
