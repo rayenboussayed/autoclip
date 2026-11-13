@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import sys
 import urllib.request
@@ -159,6 +160,10 @@ def test_fetch_model_downloads_once_and_reuses_the_file(tmp_path: Path, monkeypa
         return Response()
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    from autoclip.core.denoise import SHERPA_MODEL_SHA256
+
+    payload = b"onnx-bytes"
+    monkeypatch.setitem(SHERPA_MODEL_SHA256, "gtcrn_simple", hashlib.sha256(payload).hexdigest())
     path = fetch_model("gtcrn", tmp_path)
     assert path.name == "gtcrn_simple.onnx" and path.read_bytes() == b"onnx-bytes"
     assert len(calls) == 1 and "gtcrn_simple.onnx" in calls[0]
@@ -202,6 +207,22 @@ def test_an_invalid_model_is_reported(tmp_path: Path, monkeypatch: pytest.Monkey
 
     enhancer = SpeechEnhancer(True, tmp_path)
     assert not enhancer.active  # the invalid model disables the enhancement instead of failing the run
+
+
+def test_fetch_model_rejects_a_wrong_sha256(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class Response:
+        def read(self) -> bytes:
+            return b"tampered-bytes"
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: Response())
+    with pytest.raises(OSError, match="SHA-256"):
+        fetch_model("gtcrn", tmp_path)  # the wrong digest must never be trusted on disk
 
 
 def test_fetch_model_retries_then_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

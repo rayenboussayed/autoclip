@@ -332,3 +332,48 @@ def test_render_internal_fade_darkens_the_start(media: Media, tmp_path: Path, mo
     monkeypatch.setattr(render_mod, "video_fade_seconds", lambda duration, *args, **kwargs: 0.0)
     plain, _, _ = render(media, tmp_path / "b", moment(0, 4))
     assert first_frame_mean(faded) < first_frame_mean(plain) - 30
+
+
+def test_render_with_skip_pauses_keeps_the_whole_window(media: Media, tmp_path: Path) -> None:
+    """skip.pauses keeps the whole window: no pauses shortened, no fillers cut (contrast with test_render_full_featured_clip)."""
+    clip_full = render(media, tmp_path / "with_skip", moment(), skip={"pauses": True})
+    clip_rest = render(media, tmp_path / "without", moment())
+    info_full, info_rest = probe(clip_full[0]), probe(clip_rest[0])
+    assert info_full.duration == pytest.approx(moment().end - moment().start, abs=0.3)
+    assert info_rest.duration < info_full.duration - 1  # pauses were removed only for the default run
+
+
+def test_render_with_skip_audio_enhance_skips_processing(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import numpy as np
+
+    from autoclip.core import render as render_module
+
+    seen: list[dict[str, Any]] = []
+
+    def spy_enhance_audio(*args, **kwargs):  # type: ignore[no-untyped-def]
+        seen.append(kwargs)
+        return np.zeros(44100, dtype=np.float32)
+
+    monkeypatch.setattr(render_module, "enhance_audio", spy_enhance_audio)
+    render(media, tmp_path / "enhanced_off", moment(), skip={"audio_enhance": True})
+    assert seen and all(kw.get("enhance") is False for kw in seen)
+    render(media, tmp_path / "enhanced_on", moment())
+    assert seen[-1].get("enhance") is None or seen[-1].get("enhance") is True  # the default requests the full enhance
+
+
+def test_render_with_skip_denoise_keeps_audio_untouched(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import numpy as np
+
+    from autoclip.core import render as render_module
+
+    seen: list[dict[str, Any]] = []
+
+    def spy_enhance_audio(*args, **kwargs):  # type: ignore[no-untyped-def]
+        seen.append(kwargs)
+        return np.zeros(44100, dtype=np.float32)
+
+    monkeypatch.setattr(render_module, "enhance_audio", spy_enhance_audio)
+    render(media, tmp_path / "denoise_off", moment(), skip={"denoise": True})
+    assert seen and all(kw.get("denoise") is False for kw in seen)
+    render(media, tmp_path / "denoise_on", moment())
+    assert seen[-1].get("denoise") is None or seen[-1].get("denoise") is True

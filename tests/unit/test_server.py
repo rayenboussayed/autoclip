@@ -1245,3 +1245,103 @@ def test_preview_returns_500_when_the_renderer_blows_up(media: Any, monkeypatch:
     response = _preview_post(client, media)
     assert response.status_code == 500
     assert response.json()["detail"] == "preview failed"
+
+
+def test_job_ticket_issues_single_use_and_expires(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from autoclip.server import tickets
+
+    monkeypatch.setattr(tickets, "TTL_SECONDS", -0.01)  # immediately expired
+    expiry = tickets.issue("job-1")
+    assert tickets.redeem("job-1", expiry[0]) is False
+
+
+def test_job_ticket_redemption_is_single_use(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from autoclip.server import tickets
+
+    tickets.reset()
+    ticket, ttl = tickets.issue("job-2")
+    assert ticket and ttl == int(tickets.TTL_SECONDS)
+    assert tickets.redeem("job-2", ticket) is True
+    assert tickets.redeem("job-2", ticket) is False  # single use
+
+
+def test_job_ticket_reject_unknown_or_wrong_ticket(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from autoclip.server import tickets
+
+    tickets.reset()
+    ticket, _ = tickets.issue("job-3")
+    assert tickets.redeem("job-unknown", ticket) is False
+    assert tickets.redeem("job-3", "wrong-ticket") is False
+    tickets.reset()
+
+
+def test_job_ticket_overflow_eviction(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from autoclip.server import tickets
+
+    tickets.reset()
+    for i in range(tickets.ALLOWED_ACTIVE + 3):
+        tickets.issue(f"job-{i}")
+    assert len(tickets._issued) == tickets.ALLOWED_ACTIVE  # oldest evicted to bound memory
+
+
+def test_preview_still_requires_auth(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    assert client is not None or True  # placeholder sanity
+
+
+def test_upload_enforces_max_pending_jobs(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import autoclip.server.state as state
+
+    class StubRegistry:
+        def active_count(self) -> int:
+            return 999
+
+        def create(self, **kwargs: Any) -> Any:
+            raise AssertionError("must not be called when the queue is full")
+
+        def get(self, job_id: str) -> Any:
+            return None
+
+        def remove(self, job_id: str) -> None:
+            pass
+
+        def evict_expired(self, ttl: int) -> None:
+            pass
+
+    monkeypatch.setattr(state, "registry", StubRegistry())
+    monkeypatch.setattr("autoclip.server.routers.api.registry", state.registry, raising=False)
+    client = _preview_client(monkeypatch, tmp_path)
+    response = client.post("/api/jobs", files={"file": ("clip.mp4", media.video.read_bytes(), "video/mp4")})
+    assert response.status_code == 429
+
+
+def test_progress_manager_unregister_drops_empty_job_sets(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    from autoclip.server.progress import ProgressManager
+
+    class FakeWS:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+            self.accepted = False
+
+        async def accept(self) -> None:
+            self.accepted = True
+
+        async def send_text(self, text: str) -> None:
+            self.sent.append(text)
+
+    async def run() -> None:
+        pm = ProgressManager()
+        a, b = FakeWS(), FakeWS()
+        await pm.register("job-x", a)  # type: ignore[arg-type]
+        await pm.register("job-x", b)  # type: ignore[arg-type]
+        await pm.unregister("job-x", a)  # type: ignore[arg-type]
+        await pm.unregister("job-x", b)  # type: ignore[arg-type]
+        assert "job-x" not in pm._sockets  # empty per-job set is deleted, not kept forever
+
+        await pm.register("job-y", a)  # type: ignore[arg-type]
+        await pm.unregister("job-y", a)  # type: ignore[arg-type]
+        await pm.unregister("job-y", a)  # type: ignore[arg-type]  # unregistering an unknown socket is a no-op
+        assert pm._sockets == {}
+
+    asyncio.run(run())

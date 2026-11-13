@@ -427,7 +427,7 @@ def get_transcript(
             store.put_segments(downloaded)
             return True
     selected_model = transcript_model(cfg)
-    cache_file, key = work_dir / f"{stem}.transcript.json", _cache_key(src, selected_model, enhance=True)
+    cache_file, key = work_dir / f"{stem}.transcript.json", _cache_key(src, selected_model, enhance=not cfg.skip.denoise)
     segments = []
     if cache_file.exists():
         data = json.loads(cache_file.read_text(encoding="utf-8"))
@@ -444,7 +444,7 @@ def get_transcript(
             log.info("the video has no audio: there is no transcript to produce")
             return False
         noisy = decode_audio(src, 0.0, info.duration, 16000)
-        make = snr_db(noisy) < ENHANCE_SNR_THRESHOLD_DB
+        make = not cfg.skip.denoise and snr_db(noisy) < ENHANCE_SNR_THRESHOLD_DB
         enhancer = SpeechEnhancer(True, default_models_dir()) if make else None
         try:
             segments = transcribe(src, cfg, info, db, enhancer, model_name_override=selected_model)

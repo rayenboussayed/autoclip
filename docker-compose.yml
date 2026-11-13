@@ -5,14 +5,16 @@ services:
       dockerfile: Dockerfile
     image: autoclip-server:latest
     ports:
-      - "${PORT:-8000}:${PORT:-8000}"
+      # Loopback only by default. To expose: set HOST to a LAN IP or 0.0.0.0 AND set both AUTH_* values.
+      - "127.0.0.1:${PORT:-8000}:${PORT:-8000}"
     environment:
       PORT: "${PORT:-8000}"
-      HOST: "0.0.0.0"
+      HOST: "${HOST:-127.0.0.1}"
       MAX_FILE_SIZE: "${MAX_FILE_SIZE:-1073741824}"
       AUTH_USERNAME: "${AUTH_USERNAME:-}"
       AUTH_PASSWORD: "${AUTH_PASSWORD:-}"
       MAX_CONCURRENT_JOBS: "${MAX_CONCURRENT_JOBS:-1}"
+      MAX_PENDING_JOBS: "${MAX_PENDING_JOBS:-8}"
       OUTPUT_DIR: "/data/outputs"
       CACHE_DIR: "/data/cache"
       JOB_TTL_SECONDS: "${JOB_TTL_SECONDS:-3600}"
@@ -20,6 +22,14 @@ services:
     volumes:
       - autoclip-cache:/data/cache
       - autoclip-output:/data/outputs
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=64m
+    mem_limit: ${MEM_LIMIT:-4g}
+    pids_limit: ${PIDS_LIMIT:-256}
     restart: unless-stopped
 
 volumes:

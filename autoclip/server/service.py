@@ -228,10 +228,11 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
                 _publish(job, "completed", f"Done with {failed_count} failure(s)", 100.0, state="completed")
             else:
                 _publish(job, "completed", "Done", 100.0, state="completed")
-    except Exception as e:
+    except Exception:
+        log.exception("job %s failed", job.job_id)
         job.process = None
-        job.update(state=JobState.failed, error=str(e))
-        _publish(job, "failed", str(e), 100.0, state="failed")
+        job.update(state=JobState.failed, error="job failed")  # client sees no traceback; operator reads the log
+        _publish(job, "failed", "job failed", 100.0, state="failed")
         log.exception("server job %s failed", job.job_id)
 
 

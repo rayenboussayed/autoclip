@@ -62,36 +62,14 @@ class RuntimeDecision:
     source: str
 
 
-def _container_cpu_quota() -> float | None:
-    try:
-        quota_text, period_text = Path("/sys/fs/cgroup/cpu.max").read_text().split()
-        quota, period = int(quota_text), int(period_text)
-        return int(quota) / int(period)
-    except (OSError, ValueError):
-        pass
-    root = Path("/sys/fs/cgroup")
-    quota_file = root / "cpu/cpu.cfs_quota_us"
-    period_file = root / "cpu/cpu.cfs_period_us"
-    try:
-        q = int(quota_file.read_text().strip())
-        period = int(period_file.read_text().strip())
-        return q / period if q and period else None
-    except (OSError, ValueError):
-        return None
-
-
 def detect_cpu_count() -> int:
     """Cores available to this process, including container and affinity limits."""
     n = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1
-    # delegate quota probes to the resources module so the existing monkeypatch-based tests still work
-    try:
-        from ..resources import cgroup_cpu_quota as _quota
+    from ..resources import cgroup_cpu_quota as _quota
 
-        quota = _quota()
-    except Exception:
-        quota = _container_cpu_quota()
-    if quota:
-        n = min(n, math.ceil(quota))
+    quota = _quota()
+    if quota is not None and quota > 0:  # 0/negative/unreadable means "unlimited"
+        n = min(n, max(1, math.ceil(quota)))
     return max(1, n)
 
 

@@ -248,10 +248,12 @@ docker compose up --build
 | `GET /view/` | the HTML upload page (Jinja2 + HTMX + DaisyUI) |
 | `GET /view/jobs/{job_id}` | the job page with progress and the clip links |
 | `POST /api/jobs` | multipart upload: `file` plus an optional `config_json` string or `config` JSON file |
-| `GET /api/jobs/{job_id}` | state (`queued`/`running`/`completed`/`failed`), step, percent, error, outputs |
+| `POST /api/preview` | one frame with the configured layout/captions, mock text; no job created, nothing transcribed |
+| `GET /api/jobs/{job_id}` | state (`queued`/`running`/`completed`/`failed`/`cancelled`), step, percent, error, outputs |
+| `POST /api/jobs/{job_id}/ticket` | mint a short-lived, single-use WebSocket ticket (preferred over `?token=`) |
 | `GET /api/jobs/{job_id}/download` | a ZIP of the finished clips and their sidecars |
 | `DELETE /api/jobs/{job_id}` | remove the job and its files |
-| `WS /api/jobs/{job_id}/ws` | the current snapshot, then every step/percent update (plus keepalive frames) |
+| `WS /api/jobs/{job_id}/ws` | the current snapshot, then every step/percent update (plus keepalive frames); auth via `?ticket=` or `?token=` (ticket preferred) |
 
 The uploaded config keeps only the nine keys; `input` and `output_dir` are always overridden because the server owns
 the uploaded file and the job folder. The defaults are the same as the command line - notably the download short side
@@ -260,17 +262,22 @@ unless the config asks for something else.
 
 | environment variable | default | meaning |
 | --- | --- | --- |
-| `HOST` / `PORT` | `0.0.0.0` / `8000` | where uvicorn listens |
+| `HOST` / `PORT` | `127.0.0.1` / `8000` | where uvicorn listens; set `HOST` to `0.0.0.0` and configure both `AUTH_*` to serve the API on the network |
 | `MAX_FILE_SIZE` | `1073741824` (1 GiB) | larger uploads get HTTP 413 |
 | `MAX_CONCURRENT_JOBS` | `1` | renders running at once (the rest wait in the queue) |
+| `MAX_PENDING_JOBS` | `8` | queued-and-running cap; excess POSTs get HTTP 429 |
+| `CORS_ALLOW_ORIGINS` | `""` | comma-separated browser origins; empty = same-origin only; `*` allowed but without credentials |
 | `OUTPUT_DIR` / `CACHE_DIR` | `.server/outputs` / `.server/cache` | jobs, work folders and ZIPs |
 | `JOB_TTL_SECONDS` | `3600` | expired jobs are evicted in the background |
 | `AUTH_USERNAME` / `AUTH_PASSWORD` | empty | HTTP Basic auth **only when both are set**; otherwise the API is public |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | export OpenTelemetry spans to a collector (none are exported when unset) |
 
-If auth is enabled, the WebSocket takes the same credentials as `?token=<user>:<password>` (put the
-server behind HTTPS when it is reachable from outside). The Docker image installs ffmpeg and the
-`server` extra; `docker-compose.yml` mounts two named volumes and reads the same variables.
+If auth is enabled, connect the WebSocket with a `?ticket=` issued by `POST /api/jobs/{job_id}/ticket`
+(short-lived, single-use; preferred) or `?token=<user>:<password>` (kept for backwards compatibility, put
+the server behind HTTPS when it is reachable from outside — `?token=` prints the credentials in your access
+logs). `docker-compose.yml` mounts two named volumes, binds the container to the loopback interface only by
+default, and reads the same variables. To expose the API on the network, set `HOST` to a LAN IP or `0.0.0.0`
+and configure both `AUTH_USERNAME` and `AUTH_PASSWORD` — without them, the server refuses to start.
 
 ## Where the work runs
 
@@ -370,7 +377,6 @@ rest of the config - useful for a quick render, a silent clip or a run that must
 | `fade` | No video or audio fades. |
 | `thumbnail` | Keep the frame JPEG instead of generating an AI thumbnail. |
 | `llm` | No Ollama calls (ranking, titles, social captions). |
-| `snap` | Do not snap cut points to shot changes. |
 
 `--skip audio` mutes the clips and stops audio decoding. Setting `--skip caption`/`--skip title` lets ranges/split runs
 avoid transcription entirely when no text is needed.

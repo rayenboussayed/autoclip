@@ -85,11 +85,10 @@ async def create_job(
     _user: str = Depends(require_auth),
 ) -> JobCreated:
     settings = get_settings()
-    data = await file.read()
-    if len(data) > settings.max_file_size:
+    if registry.active_count() >= settings.max_pending_jobs:
+        raise HTTPException(status_code=429, detail="too many pending jobs; wait for one to finish")
+    if file.size is not None and file.size > settings.max_file_size:
         raise HTTPException(status_code=413, detail=f"file exceeds MAX_FILE_SIZE ({settings.max_file_size} bytes)")
-    if len(data) == 0:
-        raise HTTPException(status_code=400, detail="empty upload")
 
     custom = await _read_custom_config(config, config_json)
 
@@ -108,7 +107,16 @@ async def create_job(
     job.output_dir = job_dir / job.job_id / "out"
     job.input_path.parent.mkdir(parents=True, exist_ok=True)
     job.output_dir.mkdir(parents=True, exist_ok=True)
-    job.input_path.write_bytes(data)
+    try:
+        size = await _spool_upload(file, job.input_path, settings.max_file_size)
+    except _UploadTooLarge as e:
+        shutil.rmtree(job_dir / job.job_id, ignore_errors=True)
+        registry.remove(job.job_id)
+        raise HTTPException(status_code=413, detail=f"file exceeds MAX_FILE_SIZE ({settings.max_file_size} bytes)") from e
+    if size == 0:
+        shutil.rmtree(job_dir / job.job_id, ignore_errors=True)
+        registry.remove(job.job_id)
+        raise HTTPException(status_code=400, detail="empty upload")
 
     background_tasks.add_task(_run_job_task, job.job_id)
     return JobCreated(

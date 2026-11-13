@@ -188,10 +188,9 @@ class SkipCfg(Section):
     fade: Bool = False  # no video or audio fades
     thumbnail: Bool = False  # keep the frame JPEG instead of generating an AI thumbnail
     llm: Bool = False  # no Ollama calls (ranking, titles, social captions)
-    snap: Bool = False  # do not snap cut points to shot changes
 
 
-SkipName = Literal["stt", "denoise", "audio_enhance", "audio", "pauses", "caption", "title", "fade", "thumbnail", "llm", "snap"]
+SkipName = Literal["stt", "denoise", "audio_enhance", "audio", "pauses", "caption", "title", "fade", "thumbnail", "llm"]
 SKIP_NAMES: tuple[SkipName, ...] = (
     "stt",
     "denoise",
@@ -203,7 +202,6 @@ SKIP_NAMES: tuple[SkipName, ...] = (
     "fade",
     "thumbnail",
     "llm",
-    "snap",
 )
 
 
@@ -417,6 +415,7 @@ REMOVED_KEYS: dict[str, str] = {
     "clips.lexicon_file": "drop a lexicon.json next to the config file instead",
     "clips.skip_intro_seconds": "no longer configurable",
     "clips.snap_to_cuts": "shot-change snapping is automatic",
+    "skip.snap": "no snapping step exists in 4.0; shot-change snapping was removed in the 4.0 rewrite",
     "clips.pad_start": "padding is chosen automatically",
     "clips.pad_end": "padding is chosen automatically",
     "clips.split_seconds": "pass --split",

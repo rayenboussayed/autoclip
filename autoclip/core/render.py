@@ -228,8 +228,10 @@ def render_clip(vclip: MoviePyClip, job: RenderJob, store: Store, cache: Cache) 
     has_audio = has_audio and not cfg.skip.audio  # a muted clip needs no decoding either
     title_on = not cfg.skip.title
     words = [Word(w.start - start, w.end - start, w.text, w.pseudo) for w in store.window_words(moment.start, moment.end)]
-    audio = enhance_audio(src, start, dur, threads) if has_audio else None
-    keep = compute_keep(audio, words, dur, job.fillers, kcfg.min_seconds) if audio is not None else [(0.0, dur)]
+    enhance = not cfg.skip.audio_enhance
+    denoise = not cfg.skip.denoise
+    audio = enhance_audio(src, start, dur, threads, enhance=enhance, denoise=denoise) if has_audio else None
+    keep = compute_keep(audio, words, dur, job.fillers, kcfg.min_seconds) if audio is not None and not cfg.skip.pauses else [(0.0, dur)]
 
     parts, kept = [], []  # clamp to the real video stream: containers often report a slightly longer duration
     for a, b in keep:

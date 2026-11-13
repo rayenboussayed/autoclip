@@ -225,7 +225,10 @@ def generate_sd_thumbnail(source_frame: Path, out_path: Path, prompt: str, devic
                 else:  # pragma: no cover
                     device = "cpu"  # pragma: no cover
             dtype = torch.float16 if device in ("cuda", "mps") else torch.float32  # pragma: no cover
-            pipe = StableDiffusionImg2ImgPipeline.from_pretrained("CompVis/stable-diffusion-v1-4", torch_dtype=dtype)  # pragma: no cover
+            # pinned revision: upstream has not changed since 2022, pinned verification cannot roll with an upstream release
+            pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+                "CompVis/stable-diffusion-v1-4", torch_dtype=dtype, revision="133a221b8aa7292a167afc5127cb63fb5005638b"
+            )  # pragma: no cover
             pipe = pipe.to(device)  # pragma: no cover
             image = Image.open(source_frame).convert("RGB")  # pragma: no cover
             image = image.resize((512, 512))  # pragma: no cover

@@ -14,6 +14,7 @@ than ``ENHANCE_SNR_THRESHOLD_DB`` is transcribed untouched.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import sys
 import urllib.request
@@ -62,6 +63,17 @@ SHERPA_MODELS: dict[str, str] = {
     "dpdfnet4": "dpdfnet4",
     "dpdfnet8": "dpdfnet8",
 }
+#: SHA256 of each model file, used to verify the download before it is trusted.
+#: Update together with SHERPA_MODELS when upstream re-releases.
+#: SHA256 digests of the five sherpa-onnx speech-enhancement models, verified at download.
+#: Pinned from upstream releases on 2026-11-13; bump intentionally with a re-download check.
+SHERPA_MODEL_SHA256: dict[str, str] = {
+    "gtcrn_simple": "e77603ac0c23dac3227dd2d7135b3a585cbee2679048aecfa886657d3ae1b534",
+    "dpdfnet_baseline": "debaf0e8893479fca91b8b4c1eae8db195aa8980ccc9012f5809fde2b738151a",
+    "dpdfnet2": "ce35d6025fc71df0ef10d1540e1b7916837bbfe5f6896deb744508d2cad487a9",
+    "dpdfnet4": "71b588bc26163941aa82a592cce924b08c1fbdc0879fe44f5a2d4eac44bd8420",
+    "dpdfnet8": "2751c1f5a4e849d23a07c675b4c838158b249b42152f10cc318522dd339134f0",
+}
 MODEL_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/{name}.onnx"
 
 
@@ -83,12 +95,15 @@ def fetch_model(model: str, model_dir: Path, timeout: float = 120.0) -> Path:
         return dest
     model_dir.mkdir(parents=True, exist_ok=True)
     url = MODEL_URL.format(name=name)
+    want_sha = SHERPA_MODEL_SHA256.get(name)
     log.info("downloading speech enhancement model %s", name)
     last_exc: Exception | None = None
     for _attempt in range(3):
         try:
             with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - fixed https url
                 data = response.read()
+            if want_sha is not None and (got := hashlib.sha256(data).hexdigest()) != want_sha:
+                raise OSError(f"SHA-256 mismatch for {name}: got {got}, expected {want_sha}")
             break
         except Exception as exc:  # transient network problems are allowed to retry
             last_exc = exc

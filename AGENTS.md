@@ -94,7 +94,7 @@ autoclip/
                     not user-facing configuration, logged as `automation ...`
     log.py          LOG, setup_logging, traced decorator, speed_text
     store.py        SQLite Store (WAL), MemoryLRU, Cache (RAM LRU in front of SQLite kv), is_boundary
-    media.py        ffmpeg discovery, probe (PyAV), energy track, decode_audio, scene cuts, snapping, trim_video
+    media.py        ffmpeg discovery, probe (PyAV), energy track, decode_audio, trim_video
     audio.py        enhance_audio (denoise/loudness/limiter), compute_keep (pauses/fillers), Timeline, build_audio
     unsilence.py    remove_silence: pydub silence detection + MoviePy re-encode (audio decoded by media.decode_audio)
     transcript.py   parse srt/json, downloaded subtitles, faster-whisper (chunked), disk cache, get_transcript
@@ -243,8 +243,7 @@ least-burdensome bitrate (an unknown bitrate or frame rate always loses), so the
    windows of earlier scenes (1 s gap). **Scene order therefore means priority.**
 4. Optional LLM re-rank per scene (`_rerank`: `0.4*z(heuristic) + 0.6*(llm-5)/2`; any failure keeps heuristic order);
    `skip.llm` turns it off. Padding for text picks uses the internal constants `CLIP_PAD_START` and
-   `CLIP_PAD_END`; audio-only picks snap to quiet frames; optional snap to shot cuts is controlled by
-   `skip.snap`.
+   `CLIP_PAD_END`; audio-only picks snap to quiet frames.
 
 Candidates are **not stored in SQLite** (an earlier design did; it exploded to millions of rows for long clips x scenes).
 
@@ -348,8 +347,8 @@ step, percent, outputs); nothing else is persisted except the job folder and the
     automatic captions are used when no manual one exists), then the disk cache, then Whisper. `--skip stt` stops
     before Whisper. Only a real subtitle/transcript file is handed to `get_transcript` (other formats are converted
     or dropped); an empty one is unusable and falls back.
-16. **Nothing is skipped by default; `skip.*` only removes steps.** The eleven switches are `stt`, `denoise`,
-    `audio_enhance`, `audio`, `pauses`, `caption`, `title`, `fade`, `thumbnail`, `llm` and `snap`, all `false` in
+16. **Nothing is skipped by default; `skip.*` only removes steps.** The ten switches are `stt`, `denoise`,
+    `audio_enhance`, `audio`, `pauses`, `caption`, `title`, `fade`, `thumbnail` and `llm`, all `false` in
     `SkipCfg`. `skip.stt` still uses a sidecar, a downloaded subtitle or the disk cache and never calls Whisper;
     `skip.audio` mutes the clip and stops audio decoding, so pause removal cannot run; `skip.denoise` transcribes raw
     audio and disables noise reduction of the clip audio; `skip.thumbnail` keeps the frame JPEG; `skip.llm` forbids
@@ -383,8 +382,8 @@ The **file** schema is exactly nine keys (`FileConfig`): `input`, `clips.preset`
 
 `Config` (runtime) = `input`, `output_dir`, `mode`, `quality`, `download`, `clips`,
 `llm`, `image`, `video`, `captions`, `skip`. `KindCfg` = `count`, `min_seconds`, `max_seconds`, `aspect`,
-`ranges` (no `target_seconds` in 4.0). `SkipCfg` = `stt`, `denoise`, `audio_enhance`, `audio`, `pauses`, `caption`,
-`title`, `fade`, `thumbnail`, `llm`, `snap` (all `false`; see invariant 16). `DownloadCfg` = `cookies`, `time_range`,
+`ranges` (no `target_seconds` in 4.0). `SkipCfg` = `stt`, `denoise`, `audio_enhance`, `audio`, `pauses`,
+`caption`, `title`, `fade`, `thumbnail`, `llm` (all `false`; see invariant 16). `DownloadCfg` = `cookies`, `time_range`,
 `platforms` (runtime overrides or derived from the allow/deny lists; never file keys). `PlatformsCfg` = `allow`, `deny` only in the file; `groups`,
 `settings`, `group_by_platform` are gone (groups are named directly in allow/deny). `LlmCfg` = `base_url`, `model` and
 `system_prompt` (the last from the file; empty keeps the built-in editor messages). `ImageCfg` = `prompt` (from the
@@ -415,7 +414,7 @@ inflated bitrates and throttle); `audio_language: null` follows `info["language"
   absolute) and leaves http(s) URLs **verbatim**. **Exception:** a relative `output_dir` is resolved against the current working directory instead, so the output
   folder is independent of where the config file lives.
 * `scenes`: `"all"` | one name | list; `ClipsCfg.scene_list()` expands it. `"scenes"` means the scene *types* (the keys of
-  `STYLES`); shot-change snapping is automatic (`snap` skip switch).
+  `STYLES`).
 * `download.allow`/`download.deny`: names are extractor **families** (`youtube`, `tiktok`, ...), aliases (`x`, `vm.tiktok`, `html5`)
   or groups. User groups must match `@[a-z0-9][a-z0-9_-]*`, may not shadow a built-in group, are checked for unknown
   members and cycles at load time (a cycle is a `ConfigError`); family names are checked against yt-dlp at run time
@@ -572,7 +571,7 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
    audio alone. Only the DPDFNet models support `attenuation_limit_db`; a *larger* value allows *more* suppression.
 9. **The padding and the cut snapping can push a clip over its maximum.** `CLIP_PAD_START`/`CLIP_PAD_END` and the
    cut snapping add up to ~3 s to a window that was within the range, so the window is clamped to `max_seconds` again
-   after the snapping. The minimum is the harder half: the pause removal happens at render time, so `compute_keep`
+   after the snapping. (Shot-change snapping itself was removed in 4.0.) The minimum is the harder half: the pause removal happens at render time, so `compute_keep`
    gets the kind's `min_seconds` and gives the smallest cuts back when the clip would end up too short.
 10. **Drawing text straight onto an RGBA canvas leaves dark fringes.** `render_text_image` draws text/outline/highlight on
    separate pre-coloured transparent layers and alpha-composites them.
@@ -583,8 +582,8 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 14. **Scenes compete for a finite set of moments.** In short videos later scenes may get fewer clips than `count`; this is
     intended (and documented), not a bug.
 15. **Do not use `caplog` for CLI tests** (see section 8) and do not call `setup_logging` in library code.
-16. **Config key names matter:** `scenes` = scene types (a list is per-type clips, not a blend); shot-change snapping is
-    `skip.snap`. Do not reintroduce `style`, `snap_scenes` or a `snap_to_cuts` file key.
+16. **Config key names matter:** `scenes` = scene types (a list is per-type clips, not a blend). Do not reintroduce
+    `style`, `snap_scenes`, a `snap_to_cuts` file key or a `skip.snap` entry; shot-change snapping is gone with it.
 17. **A frozen build has no Python and no package.** `tools/frozen_entry.py` is its entry point (a frozen
     `__main__` cannot use a relative import); it only calls `autoclip.frozen.main`, where no argument opens
     the desktop app and any argument runs the command line. The app runs *itself* for a pipeline
@@ -770,7 +769,7 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 * **moment** - a selected window (`Moment`) before rendering; **clip** - the rendered file.
 * **candidate** - a possible window (run of sentences) considered during selection.
 * **chunk** - a ~5-minute piece of audio given to Whisper and to the denoiser (not a file on disk).
-* **energy track** - per-0.5 s loudness (dB) of the whole file, used for scoring, snapping and chunk boundaries.
+* **energy track** - per-0.5 s loudness (dB) of the whole file, used for scoring and chunk boundaries.
 * **sprite** - a pre-rendered RGBA caption image cached compressed and blitted by `CaptionTrack`.
 * **work dir** - `{output_dir}/.work/{video}/`: database and transcript cache for one video.
 * **originals cache** - `{output_dir}/.work/downloads/`: the downloaded files and their

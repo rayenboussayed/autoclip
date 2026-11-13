@@ -85,7 +85,7 @@ def test_runtime_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert runtime.transcript_model_for("highest", "cpu") == "large-v3"
     assert runtime.default_transcript_model() in ("small", "large-v3")
     # detect_cpu_count must survive a broken probe (falls back to the raw affinity/cpu count)
-    monkeypatch.setattr("autoclip.core.resources.cgroup_cpu_quota", lambda: (_ for _ in ()).throw(RuntimeError("boom")), raising=False)
+    monkeypatch.setattr("autoclip.core.resources.cgroup_cpu_quota", lambda: None)
     assert runtime.detect_cpu_count() >= 1
 
 

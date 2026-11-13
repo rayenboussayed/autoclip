@@ -12,7 +12,7 @@
 </div>
 <script>
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(proto + '://' + location.host + '/api/jobs/{{ job.job_id }}/ws');
+  const ws = new WebSocket(proto + '://' + location.host + '/api/jobs/{{ job.job_id | tojson }}/ws');
   ws.onmessage = (ev) => {
     const d = JSON.parse(ev.data);
     if (d.keepalive) return;

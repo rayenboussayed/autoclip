@@ -718,3 +718,31 @@ def test_allow_gpu_false_keeps_the_encoder_out(media: Media, tmp_path: Path, mon
     cfg = asr_cfg(media, tmp_path)
     assert pick_encoder(cfg.video, cfg.quality, allow_gpu=False).name == "libx264"
     assert not tried  # the GPU encoders were not even probed
+
+
+def test_skip_denoise_prevents_enhancer_creation_even_for_noisy_audio(
+    media: Media,
+    tmp_path: Path,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    info_db: tuple[MediaInfo, F32],
+) -> None:
+    """When the raw audio is asked for (skip.denoise), no enhancer is created at all, however noisy the input."""
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec)
+    built: list[tuple[Any, ...]] = []
+
+    class Enhancer:
+        def __init__(self, *args: Any) -> None:
+            built.append(args)
+
+    monkeypatch.setattr(transcript, "SpeechEnhancer", Enhancer)
+    monkeypatch.setattr(transcript, "snr_db", lambda _x: 10.0)  # loud enough to normally trigger enhancement
+
+    video = bare_media(media, tmp_path, "bare.mp4")
+    cfg = make_cfg(media, tmp_path / "out", source=video, skip={"denoise": True})
+    get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
+    assert built == []  # enhancer never created
+
+    cfg2 = make_cfg(media, tmp_path / "out2", source=video)  # default: denoise on
+    get_transcript(video, cfg2, tmp_path, store, *info_db, need_text=True)

@@ -78,6 +78,15 @@ test:
 test-no-cov:
 	pytest --no-cov
 
+test-focused:
+	$(PYTHON) -m pytest --no-cov
+
+test-config:
+	$(PYTHON) -m pytest tests/unit/test_config.py --no-cov
+
+test-app:
+	$(PYTHON) -m pytest tests/unit/test_app.py tests/unit/test_session_direct.py --no-cov
+
 test-network:
 	AUTOCLIP_NETWORK_TESTS=1 $(PYTHON) -m pytest -m "network and not e2e" --no-cov
 

@@ -641,8 +641,6 @@ def test_run_batch_reports_the_worker_peak_rss(media: Media, tmp_path: Path, mon
     """peak_rss_mb reflects the LATEST worker peak saved in the per-video database, not only the parent's own idle RSS."""
     import sqlite3
 
-    from autoclip.core.batch import run_batch
-
     jobs, store, _ = parallel_jobs(media, tmp_path, 1)
 
     from autoclip.core.batch import _db_peak_rss
@@ -671,3 +669,56 @@ def test_db_peak_rss_survives_a_read_only_probe_failure(tmp_path: Path, monkeypa
     work.mkdir(parents=True)
     monkeypatch.setattr(Path, "glob", broken_glob)
     assert _db_peak_rss(tmp_path) == 0  # an unreadable .work directory is reported as 0 bytes, not a crash
+
+
+def test_db_peak_rss_returns_zero_for_an_empty_clips_table(tmp_path: Path) -> None:
+    from autoclip.core.store import Store
+
+    store = Store(tmp_path / "empty.db", fresh=True)
+    store.close()
+    store2 = Store(tmp_path / "empty.db", fresh=True)
+    assert store2.max_peak_rss() == 0
+    store2.close()
+
+
+def test_db_peak_rss_returns_the_largest_peak(tmp_path: Path) -> None:
+    import sqlite3
+
+    from autoclip.core.store import Store
+
+    db = tmp_path / "big.db"
+    store = Store(db, fresh=True)
+    store.save_moment("short", "best", 1, Moment(0, 1, "one", score=1.0))
+    store.finish_clip(1, ok=True, file="x.mp4", size=(100, 100), trimmed=1.0, wall=1.0, peak_rss=2048)
+    store.close()
+    store2 = Store(db, fresh=False)
+    assert store2.max_peak_rss() == 2048
+    store2.close()
+
+
+def test_render_all_retries_a_job_whose_pool_submit_fails(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A submit-time BrokenProcessPool must requeue the clip for in-process retry (clips never dropped)."""
+    jobs, store, _ = parallel_jobs(media, tmp_path, 2)
+
+    class BoomOnPurposePool:
+        def __init__(self, *a: object, **k: object) -> None:
+            pass
+
+        def __enter__(self) -> "BoomOnPurposePool":
+            return self
+
+        def __exit__(self, *a: object) -> None:
+            pass
+
+        def submit(self, fn: object, /, *args: object, **kwargs: object) -> object:
+            raise BrokenProcessPool("dead worker")
+
+        def shutdown(self, *a: object, **k: object) -> None:
+            pass
+
+    import autoclip.core.runner as runner_mod
+
+    monkeypatch.setattr(runner_mod, "ProcessPoolExecutor", BoomOnPurposePool)
+    render_all(jobs, 100 << 20)  # must not raise, must render both clips in-process
+    assert statuses(store) == ["done", "done"]
+    store.close()
