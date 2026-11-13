@@ -19,6 +19,7 @@ release mentions the source tag/commit for traceability.
 - feat: a resource-admission gate in the render pool: before each submission the engine re-checks memory pressure and, when a job is in flight, holds back new submissions until a clip finishes (never starves an idle batch); an OOM-killed worker defers the next submission too
 - feat: the engine now reports real peak RSS into its resource history instead of a synthetic 0, so the adaptive CPU budget is fed by measurement, not by threads x workers / cores
 - fix: the server sanitises the uploaded filename; a traversing or absolute name no longer writes outside the job folder
+- fix: the e2e ladder passes its per-case output folder to the CLI (everything landed in the user's default output folder and polluted shared originals); stale assertions about log format and clip dimensions were replaced with checks derived from the code itself
 - feat: the AI helpers share a per-run circuit breaker: one failed Ollama call (timeout, missing model, off-schema reply) disables them for the rest of the run with one log line, so a hung server costs one 180 s stall instead of N — the heuristic result is kept
 - chore: the dead EMA helper was removed; the `silence_threshold` runtime decision is labelled accurately; persisted utilization samples are restored on configure()
 - refactor: the desktop app lost the unused control kinds and the advanced/visible_when machinery; the option catalogue stays exactly the nine file keys
