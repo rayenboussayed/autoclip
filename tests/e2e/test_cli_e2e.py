@@ -110,8 +110,14 @@ def test_manifest_video_renders_short_and_long_clips(
         assert 0 <= start < end <= info.duration + 1, (kind, clip, info.duration)
         assert 0 < trimmed <= end - start + 0.01, (kind, clip)
     short, long = clips["short"][0], clips["long"][0]
-    assert (short["width"], short["height"]) == (144, 256), short
-    assert (long["width"], long["height"]) == (256, 144), long
+    from autoclip.core.internal.quality import quality_short_side  # noqa: PLC0415
+    from autoclip.core.render import canvas_size  # noqa: PLC0415
+
+    side = quality_short_side("high")  # the default output quality tier
+    short_dims = canvas_size("9:16", side, info.width, info.height)
+    long_dims = canvas_size("16:9", side, info.width, info.height)
+    assert (short["width"], short["height"]) == short_dims, short
+    assert (long["width"], long["height"]) == long_dims, long
     assert 14.5 <= float(short["trimmed"]) <= 45.5, short
     assert 179.5 <= float(long["trimmed"]) <= 600.5, long
     for kind, clip in (("short", short), ("long", long)):
@@ -150,7 +156,7 @@ def test_download_only_saves_the_original_subtitles_and_metadata(downloaded_bbc:
     metadata = list(downloaded_bbc.path.parent.glob("*.info.json"))
     assert len(metadata) == 1, [path.name for path in metadata]
     assert len(downloaded_files(result)) == 1
-    assert result.log_path is not None and "saved " in result.log_path.read_text(encoding="utf-8")
+    assert result.log_path is not None and "downloaded " in result.log_path.read_text(encoding="utf-8")
 
 
 def test_pipeline_renders_explicit_ranges(e2e_run: E2ERun, downloaded_bbc: DownloadedMedia) -> None:

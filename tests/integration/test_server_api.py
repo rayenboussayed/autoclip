@@ -138,3 +138,27 @@ def test_job_websocket_reports_terminal_state(client: TestClient, media: Any, mo
 
     finished = _wait_for_job(client, job_id)
     assert finished["state"] == "completed", finished
+
+
+def test_create_job_sanitises_a_traversing_filename(client: TestClient, media: Any, tmp_path: Path) -> None:
+    """A filename with path components is written inside the job folder, never outside it."""
+    response = client.post("/api/jobs", files={"file": ("../../escaped.mp4", media.video.read_bytes(), "video/mp4")})
+    assert response.status_code == 201, response.text
+    job_id = response.json()["job_id"]
+    assert (tmp_path / "out" / "jobs" / job_id / "escaped.mp4").is_file()
+    assert not (tmp_path / "escaped.mp4").exists()
+
+
+def test_create_job_sanitises_an_absolute_filename(client: TestClient, media: Any, tmp_path: Path) -> None:
+    response = client.post("/api/jobs", files={"file": ("/tmp/escaped-absolute.mp4", media.video.read_bytes(), "video/mp4")})
+    assert response.status_code == 201, response.text
+    job_id = response.json()["job_id"]
+    assert (tmp_path / "out" / "jobs" / job_id / "escaped-absolute.mp4").is_file()
+    assert not (tmp_path / "out" / "escaped-absolute.mp4").exists()
+
+
+def test_create_job_falls_back_to_a_safe_name_for_dotdot(client: TestClient, media: Any, tmp_path: Path) -> None:
+    response = client.post("/api/jobs", files={"file": ("..", media.video.read_bytes(), "video/mp4")})
+    assert response.status_code == 201, response.text
+    job_id = response.json()["job_id"]
+    assert (tmp_path / "out" / "jobs" / job_id / "upload.bin").is_file()

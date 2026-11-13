@@ -39,8 +39,8 @@ DEFAULT_CACHE = Path(__file__).resolve().parent.parent / ".cache" / "e2e"
 RESERVED_CASE_NAMES = frozenset({"clips"})
 #: The download ladder: every extra level adds this much source video (up to the full length).
 CHUNK_SECONDS = 360
-#: The ``saved <path> (<platform>)`` line the command line logs for every original it downloads.
-_SAVED_LINE = re.compile(r"(?:^|\|\s*)saved (.+?) \(\w+\)\s*$", re.MULTILINE)
+#: The ``downloaded <name> | path=<path> | ... | platform=<family>`` line logged once per original (4.0 format).
+_SAVED_LINE = re.compile(r"(?:^|\|\s*)downloaded .+? \| path=(.+?) \|", re.MULTILINE)
 DEFAULT_LEVEL = 1
 LEDGER_NAME = "levels.json"
 #: The manifest cases always render one short and one long clip; the long kind uses the production range.
@@ -256,15 +256,24 @@ class E2ERun:
         *,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> CaseResult:
-        """Write ``config`` in a new case folder and run ``python -m autoclip <args> <config>``."""
+        """Write ``config`` in a new case folder and run ``python -m autoclip <args> <config>``.
+
+        A reserved ``_output_dir`` key (ignored by the config loader, which skips ``_``-prefixed
+        keys) is turned into ``--output-dir`` so every case writes into its own folder instead of
+        the user's default output directory.
+        """
         case_dir = self.directory / _slug(name)
         if case_dir.name in RESERVED_CASE_NAMES:
             raise ValueError(f"e2e case {name!r} would collide with the run-level {case_dir.name}/ folder")
         if case_dir.exists():
             raise ValueError(f"e2e case {name!r} already ran in {case_dir}")
         case_dir.mkdir(parents=True)
+        payload = dict(config)
+        output_dir = payload.pop("_output_dir", None)
+        if output_dir:
+            args = ("--output-dir", str(output_dir), *args)
         config_path = case_dir / "config.json"
-        config_path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+        config_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         command = [sys.executable, "-m", "autoclip", *args, str(config_path)]
         env = os.environ.copy()
         env["PYTHONPATH"] = os.pathsep.join([str(ROOT), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
@@ -297,6 +306,11 @@ class E2ERun:
         stderr_path.write_text(stderr, encoding="utf-8")
         log_name = config.get("logging", {}).get("file") if isinstance(config.get("logging"), dict) else None
         log_path = case_dir / str(log_name) if log_name else None
+        if log_path is None and output_dir:  # 4.0 logs land in <output_dir>/logs/autoclip_<ts>.log
+            matches = (
+                sorted(Path(output_dir).glob("logs/*.log"), key=lambda path_: path_.stat().st_mtime) if Path(output_dir).exists() else []
+            )
+            log_path = matches[-1] if matches else None
         result = CaseResult(
             name=name,
             directory=case_dir,
@@ -386,7 +400,7 @@ def download_config(output_dir: Path, url: str) -> dict[str, Any]:
     Partial downloads no longer exist (``download.time_range`` was removed in 4.0); the ladder always
     downloads the whole video.
     """
-    data: dict[str, Any] = {"input": [url]}
+    data: dict[str, Any] = {"input": [url], "_output_dir": str(output_dir)}
     cookies = os.environ.get("AUTOCLIP_E2E_COOKIES")
     if cookies:
         data["download"] = {"cookies": cookies}
@@ -407,6 +421,7 @@ def pipeline_config(output_dir: Path, source: Path, transcript: Path | None = No
     data: dict[str, Any] = {
         "input": [str(source)],
         "clips": merge({"preset": "shorts", "scenes": "best"}, clips or {}),
+        "_output_dir": str(output_dir),
     }
     return data
 
@@ -415,17 +430,20 @@ def downloaded_files(case: CaseResult) -> list[Path]:
     """The media files this run saved, or every media file in its originals cache.
 
     The ladder cache is shared between runs, so its folder can also hold originals of an earlier
-    format id (the format id is part of the cache key). The ``saved`` lines of the run name exactly
-    the files it produced; when they are absent (a hand-made case) the cache folder is the answer.
+    format id (the format id is part of the cache key). The ``downloaded ... | path=...`` lines of
+    the run name exactly the files it produced; when they are absent (a hand-made case) the cache
+    folder is the answer.
     """
     from autoclip.core.download import MEDIA_EXTS
+
+    def _path_of(match: re.Match[str]) -> Path:  # noqa: PLC0206
+        raw = match.group(1)
+        return Path.home() / raw[2:] if raw.startswith("~/") else _resolve(Path(raw), case.directory)
 
     saved = [
         path
         for match in _SAVED_LINE.finditer(case.stdout)
-        if (path := _resolve(Path(match.group(1)), case.directory)).is_file()
-        and path.suffix.lower().lstrip(".") in MEDIA_EXTS
-        and ".media." not in path.name
+        if (path := _path_of(match)).is_file() and path.suffix.lower().lstrip(".") in MEDIA_EXTS and ".media." not in path.name
     ]
     if saved:
         return sorted(saved)

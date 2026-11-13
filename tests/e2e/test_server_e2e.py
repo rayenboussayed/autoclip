@@ -166,17 +166,7 @@ def live_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[LiveServer
 
 def _upload_config(media: Media) -> dict[str, Any]:
     """A fast, deterministic config for the fixture video (the server overrides input/output)."""
-    return {
-        "clips": {
-            "kinds": ["short"],
-            "scenes": ["best"],
-            "short": {"count": 1, "min_seconds": 5, "max_seconds": 10, "aspect": "9:16"},
-        },
-        "transcript": {"mode": "file", "file": str(media.transcript)},
-        "video": {"short_side": 480, "gpu": "off"},
-        "compute": {"device": "cpu"},
-        "logging": {"enabled": False},
-    }
+    return {"clips": {"preset": "shorts", "scenes": "best", "ranges": ["00:00:04-00:00:10"]}}
 
 
 def _wait_for_completion(base_url: str, job_id: str) -> dict[str, Any]:
@@ -269,7 +259,7 @@ def test_server_renders_an_uploaded_video(live_server: LiveServer, media: Media,
     assert info.width == 320, (info.width, info.height)
     assert 4.5 <= info.duration <= 10.5, info.duration
     rows = json.loads(next(rendered.parent.glob("clips.json")).read_text(encoding="utf-8"))
-    assert len(rows) == 1 and rows[0]["scene"] == "best", rows
+    assert len(rows) == 1 and rows[0]["scene"] == "custom", rows  # ranges always render the custom scene
 
     # Deleting removes the job from the registry and its files from the disk.
     status, deleted, _ = _request(f"{live_server.base_url}/api/jobs/{job_id}", method="DELETE")

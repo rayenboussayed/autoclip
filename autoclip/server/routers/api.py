@@ -63,13 +63,17 @@ async def create_job(
     settings.cache_dir.mkdir(parents=True, exist_ok=True)
     job_dir = settings.output_dir / "jobs"
     job_dir.mkdir(parents=True, exist_ok=True)
+    # the client's filename is never trusted as a path component
+    filename = Path(file.filename or "upload.bin").name
+    if filename in ("", ".", ".."):
+        filename = "upload.bin"
     job = registry.create(
-        filename=file.filename or "upload",
+        filename=filename,
         input_path=Path(),  # set below
         output_dir=Path(),  # set below
         config={"_custom": custom} if custom else {},
     )
-    job.input_path = job_dir / job.job_id / (file.filename or "upload.bin")
+    job.input_path = job_dir / job.job_id / filename
     job.output_dir = job_dir / job.job_id / "out"
     job.input_path.parent.mkdir(parents=True, exist_ok=True)
     job.output_dir.mkdir(parents=True, exist_ok=True)
