@@ -173,9 +173,8 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
                 pct = float(ev.get("percent", job.percent))
                 msg = str(ev.get("message", ""))
                 _publish(job, step, msg, pct)
-            elif ev.get("event") == "result":
-                if isinstance(ev.get("failed"), int):
-                    result_failed = ev["failed"]
+            elif ev.get("event") == "result" and isinstance(ev.get("failed"), int):
+                result_failed = ev["failed"]
         rc = proc.wait()
         job.process = None
         if job.cancel_requested:
