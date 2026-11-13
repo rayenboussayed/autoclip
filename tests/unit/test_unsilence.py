@@ -370,3 +370,42 @@ def test_assembly_splitting_honours_the_30_percent_slack(media: Media, tmp_path:
         (600.0, 900.0),
         (900.0, 1000.0),
     ]
+
+
+def test_remove_silence_concatenates_with_chain_not_compose(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The unsilence reassembly must splice frames ("chain"); "compose" holds every part in memory."""
+    _skip_without_audioop()
+    cfg = make_cfg(media, tmp_path, None)
+    destination = tmp_path / "chain_dst.mp4"
+
+    class FakeClip:
+        fps = 10.0
+        duration = 10.0
+
+        def subclipped(self: Any, s: float, e: float) -> Any:
+            return self
+
+        def close(self) -> None:
+            return None
+
+    class FakeAssembled:
+        def write_videofile(self: Any, path: Any, *a: Any, **k: Any) -> None:
+            Path(path).write_bytes(b"x")
+
+        def close(self) -> None:
+            return None
+
+    import moviepy
+
+    seen: dict[str, Any] = {}
+
+    def fake_concat(parts: Any, **kwargs: Any) -> Any:
+        seen["method"] = kwargs.get("method")
+        return FakeAssembled()
+
+    monkeypatch.setattr(moviepy, "VideoFileClip", lambda *a, **k: FakeClip())
+    monkeypatch.setattr(moviepy, "concatenate_videoclips", fake_concat)
+    returned = remove_silence(media.video, cfg, destination)
+    assert returned == destination
+    assert destination.exists()
+    assert seen["method"] == "chain"  # "compose" was measured at ~15 MB per part (6 GB at ~400 parts)

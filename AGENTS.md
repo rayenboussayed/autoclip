@@ -682,6 +682,8 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     64-bit Windows. The tkinter check runs before hiding, so a missing toolkit still produces a readable error. Windows
     Terminal may ignore the request - the app still opens. Unit tests use a fake `ctypes.windll`; real Windows
     behaviour is not verified in this sandbox.
+33. **The unsilence re-encode must never use MoviePy `method="compose"`.** Compose holds all concatenated parts as simultaneous layers; RSS grows linearly with the segment count (~15 MB per segment — measured 437 MB at 10 parts, 4.9 GB at 300), which OOM-killed a several-hour recording. `method="chain"` splices frames in order, is flat (~98 MB) and ~6x faster; `tests/unit/test_unsilence.py::test_remove_silence_concatenates_with_chain_not_compose` pins it. All parts come from one source, so they share size, fps and aspect — compose's resolution-mismatch handling is never needed.
+
 
 ## 10. Recipes
 

@@ -10,6 +10,7 @@ release mentions the source tag/commit for traceability.
 - ci: dev tools (pytest, pytest-cov, mypy, ruff) are pinned to the versions this release was verified with; CI installs them fresh and cannot drift underneath it again
 - ci: nested if combined (ruff 0.17.5, SIM102)
 - ci: the optional Ollama import no longer relies on `type: ignore[assignment]`, which a fresh environment without the `ai` extra reported as unused under strict mypy
+- fix: the unsilence re-encode uses MoviePy `method="chain"` instead of `"compose"`; the compose path holds every kept segment in memory (measured ~15 MB per segment — 437 MB at 10 parts, 4.9 GB at 300), so several-hour recordings were OOM-killed; the fix keeps RSS flat (~98 MB) and is ~6x faster
 
 ## [4.0.0] — 2026-11-13 11:08:55 UTC (tag `v4.0.0`, commit `bf27517`)
 

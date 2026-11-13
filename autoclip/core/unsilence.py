@@ -187,7 +187,11 @@ def remove_silence(
                 parts.append(clip.subclipped(start, end))
                 if cancel is not None:
                     cancel.check()
-            assembled = concatenate_videoclips(parts, method="compose")
+            # Never "compose" here: MoviePy keeps a layer per part and holds every one in memory,
+            # so RSS grows linearly with the segment count (measured: 437 MB at 10 parts,
+            # 4.9 GB at 300, ~6 GB at the kill point). "chain" splices frames in order; all parts
+            # come from one source, so they share size, fps and aspect.
+            assembled = concatenate_videoclips(parts, method="chain")
             _profile = quality_profile(cfg.quality)
             try:
                 assembled.write_videofile(
