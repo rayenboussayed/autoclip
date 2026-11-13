@@ -92,7 +92,7 @@ def test_choose_bbc_entry_prefers_the_bbc_clip_then_falls_back_to_the_last() -> 
 def test_download_config_is_minimal_and_keeps_the_e2e_cookies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AUTOCLIP_E2E_COOKIES", raising=False)
     config = harness.download_config(tmp_path / "out", "https://youtu.be/x")
-    assert config == {"input": ["https://youtu.be/x"]}  # quality/metadata/subtitles are automatic in 4.0
+    assert config == {"input": ["https://youtu.be/x"], "_output_dir": str(tmp_path / "out")}  # quality/metadata/subtitles are automatic in 4.0
 
     monkeypatch.setenv("AUTOCLIP_E2E_COOKIES", "/tmp/cookies.txt")
     with_cookies = harness.download_config(tmp_path / "out", "https://youtu.be/x")
@@ -281,11 +281,11 @@ def test_downloaded_files_prefers_the_files_the_run_saved(tmp_path: Path) -> Non
     stale.write_text("x", encoding="utf-8")
     fresh.write_text("x", encoding="utf-8")
     (folder / "video [id] [137+140] [0-360s].auto.en.srt").write_text("x", encoding="utf-8")
-    case.stdout = f"08:25:12 | saved {fresh} (youtube)\n08:25:12 | finished: 1 original(s) downloaded, 0 URL(s) failed\n"
+    case.stdout = f"08:25:12 | downloaded video | path={fresh} | sidecar=- | platform=youtube | subtitle=-\n"
     assert harness.downloaded_files(case) == [fresh]
 
-    # A saved path that no longer exists (or is not media) falls back to the cache folder.
-    case.stdout = "08:00:00 | saved missing.mp4 (youtube)\n"
+    # A downloaded path that no longer exists (or is not media) falls back to the cache folder.
+    case.stdout = "08:00:00 | downloaded missing.mp4 | path=missing.mp4 | sidecar=- | platform=youtube | subtitle=-\n"
     assert {path.name for path in harness.downloaded_files(case)} == {stale.name, fresh.name}
 
 
