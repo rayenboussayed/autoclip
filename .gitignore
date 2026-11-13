@@ -45,3 +45,4 @@ runs/
 .idea/
 .vscode/
 .DS_Store
+coverage.json
