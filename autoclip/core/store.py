@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS words(start REAL, end REAL, text TEXT, pseudo INTEGER
 CREATE INDEX IF NOT EXISTS ix_words_start ON words(start);
 CREATE TABLE IF NOT EXISTS clips(id INTEGER PRIMARY KEY, kind TEXT, scene TEXT, n INTEGER, start REAL, end REAL,
                                  score REAL, llm_score REAL, title TEXT, caption TEXT, text TEXT, status TEXT, file TEXT,
-                                 width INTEGER, height INTEGER, trimmed REAL, wall REAL, error TEXT);
+                                 width INTEGER, height INTEGER, trimmed REAL, wall REAL, error TEXT, peak_rss INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v BLOB NOT NULL, size INTEGER, atime REAL);
 CREATE INDEX IF NOT EXISTS ix_kv_atime ON kv(atime);
 """
@@ -161,12 +161,18 @@ class Store:
         trimmed: float = 0.0,
         wall: float = 0.0,
         error: str = "",
+        peak_rss: int = 0,
     ) -> None:
-        """Record the render outcome of a clip."""
+        """Record the render outcome of a clip (plus the worker's own peak RSS when known)."""
         self.conn.execute(
-            "UPDATE clips SET status=?, file=?, width=?, height=?, trimmed=?, wall=?, error=? WHERE id=?",
-            ("done" if ok else "failed", file, size[0], size[1], trimmed, wall, error, clip_id),
+            "UPDATE clips SET status=?, file=?, width=?, height=?, trimmed=?, wall=?, error=?, peak_rss=? WHERE id=?",
+            ("done" if ok else "failed", file, size[0], size[1], trimmed, wall, error, int(max(peak_rss, 0)), clip_id),
         )
+
+    def max_peak_rss(self) -> int:
+        """Peak RSS (bytes) of any clip rendered in this database, 0 when none did."""
+        row = self.conn.execute("SELECT COALESCE(MAX(peak_rss), 0) FROM clips").fetchone()
+        return int(row[0]) if row else 0
 
     def clips(self, kind: str | None = None) -> list[ClipRow]:
         """Clip rows (optionally of one kind) in creation order."""
@@ -175,11 +181,13 @@ class Store:
 
     # -- cache blobs ----------------------------------------------------------------------------
     def kv_get(self, key: str) -> bytes | None:
-        """A cached blob (its access time is refreshed) or ``None``."""
-        row = self.conn.execute("SELECT v FROM kv WHERE k=?", (key,)).fetchone()
+        """A cached blob (its access time is refreshed only past a 30 s grace window) or ``None``."""
+        row = self.conn.execute("SELECT v, atime FROM kv WHERE k=?", (key,)).fetchone()
         if row is None:
             return None
-        self.conn.execute("UPDATE kv SET atime=? WHERE k=?", (time.time(), key))
+        now = time.time()
+        if now - float(row[1]) > 30.0:  # one write per blob per half-minute, not one per read
+            self.conn.execute("UPDATE kv SET atime=? WHERE k=?", (now, key))
         return bytes(row["v"])
 
     def kv_put(self, key: str, value: bytes) -> None:

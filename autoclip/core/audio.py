@@ -42,7 +42,8 @@ def frame_db(x: F32, win: float = 0.02) -> NDArray[np.float64]:
     """RMS level in dB per ``win`` seconds (always at least one frame)."""
     n = int(AUDIO_SR * win)
     k = max(len(x) // n, 1)
-    rms = np.sqrt(np.mean(np.resize(x, k * n).reshape(k, n) ** 2, axis=1) + 1e-12)
+    frame = x[: k * n].reshape(k, n) if len(x) >= k * n else np.resize(x, k * n).reshape(k, n)
+    rms = np.sqrt(np.mean(frame**2, axis=1) + 1e-12)
     return np.asarray(20 * np.log10(rms + 1e-9), dtype=np.float64)
 
 
@@ -86,7 +87,7 @@ def enhance_audio(src: Path, start: float, dur: float, threads: int, *, enhance:
     db = frame_db(x)
     active = db > np.percentile(db, 95) - 25  # speech frames only
     n = int(AUDIO_SR * 0.02)
-    frames = np.resize(x, len(db) * n).reshape(len(db), n)[active]
+    frames = (x[: len(db) * n] if len(x) >= len(db) * n else np.resize(x, len(db) * n)).reshape(len(db), n)[active]
     rms_db = 20 * np.log10(np.sqrt(np.mean(frames**2)) + 1e-9)
     x = x * np.float32(10 ** (float(np.clip(AUDIO_TARGET_DBFS - rms_db, -12, 24)) / 20))
     knee, ceiling = 0.8, 0.95  # soft limiter: stays under -0.45 dBFS so AAC encoding cannot clip

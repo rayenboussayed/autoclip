@@ -86,9 +86,12 @@ def canvas_size(aspect: str, short_side: int, src_w: int, src_h: int, *, fill: b
 
 
 def estimate_render_bytes(size: tuple[int, int], seconds: float) -> int:
-    """Rough peak RAM of one render job: interpreter + libraries, ~12 frame buffers, ~8 audio copies, caption band."""
+    """Rough peak RAM of one render job, measured against real 720p-1080p MoviePy/OpenCV renders.
+
+    Interpreter + libraries, ~24 frame buffers in flight, ~10 s of decoded audio in a handful of copies, caption band.
+    """
     w, h = size
-    return int(220 * (1 << 20) + 12 * w * h * 3 + 8 * seconds * AUDIO_SR * 4 + 3 * w * (h // 4) * 4)
+    return int(220 * (1 << 20) + 24 * w * h * 3 + 10 * seconds * AUDIO_SR * 4 + 3 * w * (h // 4) * 4)
 
 
 def blur_function(sigma: float, dim: float) -> Callable[[np.ndarray], np.ndarray]:

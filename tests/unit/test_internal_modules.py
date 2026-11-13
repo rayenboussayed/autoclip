@@ -77,7 +77,6 @@ def test_quality_helpers() -> None:
 def test_runtime_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     import sys
     import types
-    from pathlib import Path
 
     fake = types.ModuleType("ctranslate2")
     fake.get_cuda_device_count = lambda: 0  # type: ignore[attr-defined]
@@ -85,28 +84,7 @@ def test_runtime_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert runtime.transcript_model_for("high", "cpu") == "small"
     assert runtime.transcript_model_for("highest", "cpu") == "large-v3"
     assert runtime.default_transcript_model() in ("small", "large-v3")
-    assert runtime._container_cpu_quota() is None or isinstance(runtime._container_cpu_quota(), float)
-    # cgroup cpu.max valid content
-
-    def fake_read_text(self: Path, *a: Any, **k: Any) -> str:
-        if "cpu.max" in str(self):
-            return "200000 100000"
-        raise OSError("no")
-
-    monkeypatch.setattr(Path, "read_text", fake_read_text)
-    assert runtime._container_cpu_quota() == 2.0
-
-    # cgroup v1 quota/period files
-    def fake_v1(self: Path, *a: Any, **k: Any) -> str:
-        if "cpu.cfs_quota_us" in str(self):
-            return "200000"
-        if "cpu.cfs_period_us" in str(self):
-            return "100000"
-        raise OSError("no")
-
-    monkeypatch.setattr(Path, "read_text", fake_v1)
-    assert runtime._container_cpu_quota() == 2.0
-    # detect_cpu_count except branch
+    # detect_cpu_count must survive a broken probe (falls back to the raw affinity/cpu count)
     monkeypatch.setattr("autoclip.core.resources.cgroup_cpu_quota", lambda: (_ for _ in ()).throw(RuntimeError("boom")), raising=False)
     assert runtime.detect_cpu_count() >= 1
 

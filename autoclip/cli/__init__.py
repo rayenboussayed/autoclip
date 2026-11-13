@@ -251,7 +251,7 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
     RESOURCES.configure(cfg)
     from ..core.internal.decisions import log_decisions
 
-    log_decisions()
+    log_decisions(cfg)
     snap = RESOURCES.snapshot()
     has_urls = any(is_url(item) for item in cfg.input)
     input_labels = [redact_url(item) if is_url(item) else safe_path_text(Path(item)) for item in cfg.input]

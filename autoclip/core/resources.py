@@ -39,6 +39,17 @@ def _read_int(path: Path) -> int | None:
     return int(text) if text.isdigit() else None
 
 
+def _cgroup_memory_limit(root: Path) -> int | None:
+    for limit_file, _ in (
+        ("memory.max", "memory.current"),
+        ("memory/memory.limit_in_bytes", "memory/memory.usage_in_bytes"),
+    ):
+        limit = _read_int(root / limit_file)
+        if limit is not None and limit < 1 << 60:  # v1 reports ~2**63 when unlimited
+            return limit
+    return None
+
+
 def cgroup_memory_available(root: Path = CGROUP_ROOT) -> int | None:
     """Bytes still available under a container memory limit (cgroup v2, then v1); ``None`` if unlimited."""
     for limit_file, used_file in (
@@ -117,6 +128,8 @@ class ResourceMonitor:
         self.memory_reserve_mb = self.profile.memory_reserve_mb
         self.cpus = detect_cpu_count()
         self._cpu_samples = deque(maxlen=adaptive.SAMPLE_CAP)
+        self.peak_rss = 0  # each batch starts a fresh worker story; the server hits configure per job
+        self._oom = False
         if cfg is not None and getattr(cfg, "output_dir", None):
             self._state_path = Path(cfg.output_dir) / ".work" / "adaptive.json"
         else:
@@ -136,15 +149,19 @@ class ResourceMonitor:
         """Measure now (a few cheap syscalls)."""
         memory = psutil.virtual_memory()
         available = memory.available
+        total = memory.total
         in_container = cgroup_memory_available()
         if in_container is not None:
             available = min(available, in_container)
+            limit = _cgroup_memory_limit(CGROUP_ROOT)
+            if limit is not None:  # the ratio must be against the same ceiling, not the host's RAM
+                total = min(total, limit)
         rss = self._proc.memory_info().rss
         self.peak_rss = max(self.peak_rss, rss)
         now = time.monotonic()
         if now - self._cpu_time >= 0.5:  # psutil reports "since the last call": avoid noisy 0% reads
             self._cpu_last, self._cpu_time = psutil.cpu_percent(None), now
-        return Snapshot(self._cpu_last, memory.total, available, rss)
+        return Snapshot(self._cpu_last, total, available, rss)
 
     def brief(self) -> str:
         """One-line state for log messages."""
@@ -188,13 +205,13 @@ class ResourceMonitor:
     def record_job(self, wall: float, peak_rss: int = 0, threads: int = 1, workers: int = 1) -> None:
         """Feed one finished job's outcome into the adaptive history (best-effort).
 
-        There is no trustworthy per-job CPU signal in the parent process, so the utilization
-        history is a coarse thread/core upper bound, not a measurement. The RSS history is honest:
-        the caller may pass the job's own peak (a spawned worker knows it); the parent always
-        folds in its own current RSS, which bounds in-process runs and retry loops.
+        The utilization history is coarse but measured: it is the system CPU sampled at job
+        completion (the same reading the health lines show). The RSS history is exact: the
+        caller passes the job's own peak (a spawned worker knows it), and the parent always
+        folds in its own current RSS to bound in-process runs and retry loops.
         """
         try:
-            observed = min(100.0, (max(threads, 1) * max(workers, 1) / max(self.cpus, 1)) * 100.0)
+            observed = float(self._cpu_last) if self._cpu_last > 0.0 else 50.0
             self._cpu_samples.append(observed)
             own = self._proc.memory_info().rss
             for sample in (own, peak_rss):
@@ -211,12 +228,13 @@ class ResourceMonitor:
         """
         try:
             snap = self.snapshot()
+            usable = self.usable_memory()
             decision = decide_admission(
                 stage,
                 cost_bytes,
-                Pressure(snap.mem_available, snap.mem_total, snap.pressure == "high", self._oom),
+                Pressure(usable, snap.mem_total, snap.pressure == "high", self._oom),
             )
-            free_mb = snap.mem_available // MB
+            free_mb = usable // MB
         except Exception as e:  # best-effort; a missing reading must never stop a run
             log.debug("admission check failed for %s: %s", stage, e)
             decision = AutoDecision(stage, "go", "monitor-unavailable")

@@ -722,3 +722,15 @@ def test_admission_logs_its_decision(monkeypatch: pytest.MonkeyPatch, caplog: py
     with caplog.at_level(logging.INFO, logger="autoclip"):
         mon.admission("thumbnail", 0)
     assert "automation admission stage=thumbnail action=skip | source=ram-high" in caplog.text
+
+
+def test_snapshot_uses_the_cgroup_limit_as_the_pressure_denominator(monkeypatch: pytest.MonkeyPatch) -> None:
+    mon = ResourceMonitor()
+    mon.configure()
+    monkeypatch.setattr(mon, "_proc", type("_P", (), {"memory_info": lambda self: type("_M", (), {"rss": 10})()})())
+    monkeypatch.setattr("autoclip.core.resources.psutil.virtual_memory", type("_V", (), {"total": 64 << 30, "available": 60 << 30}))  # noqa: PLW0108
+    monkeypatch.setattr("autoclip.core.resources.cgroup_memory_available", lambda root=None: 2 << 30)
+    monkeypatch.setattr("autoclip.core.resources._cgroup_memory_limit", lambda root: 2 << 30)
+    snap = mon.snapshot()
+    assert snap.mem_total == (2 << 30)  # the cgroup ceiling, not the host's 64 GB
+    assert snap.mem_available == 2 << 30  # cgroup ceiling wins over the host's headroom

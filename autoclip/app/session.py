@@ -226,7 +226,7 @@ def run_pipeline(
     _RESOURCES.configure(cfg)
     from ..core.internal.decisions import log_decisions as _log_decisions
 
-    _log_decisions()
+    _log_decisions(cfg)
     snap = _RESOURCES.snapshot()
     from ..core.log import LOG as log
     from ..core.log import health_check as _health

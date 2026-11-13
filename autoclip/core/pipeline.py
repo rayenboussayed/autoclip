@@ -222,9 +222,9 @@ def process_video(
             raise AutoclipError("no clips found for any requested kind (is the video shorter than the length ranges?)")
         reporter("select", 1.0, f"{len(jobs)} clips planned")
         log.info("system health before render: %s", health_check("render"))
-        reporter("render", 0.0, f"0/{len(jobs)} clips rendered")
+        reporter("render", 0.0, f"0/{len(jobs)} clips to process")
         render_all(jobs, needs, report=reporter, cancel=cancel)
-        reporter("render", 1.0, f"{len(jobs)}/{len(jobs)} clips rendered")
+        reporter("render", 1.0, f"{len(jobs)}/{len(jobs)} clips processed")
         rows = store.clips()
         log.info(
             "output base: %s | clips=%d (failed=%d)",

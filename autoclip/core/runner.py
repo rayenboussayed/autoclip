@@ -49,7 +49,7 @@ def render_job(job: RenderJob) -> bool:
             blocks = [f"{k}\n{_srt_time(c.start)} --> {_srt_time(c.end)}\n{c.text}\n" for k, c in enumerate(lines, 1)]
             job.dst.with_suffix(".srt").write_text("\n".join(blocks), encoding="utf-8")
         wall = time.perf_counter() - t0
-        store.finish_clip(job.clip_id, ok=True, file=job.dst.name, size=size, trimmed=m.trimmed, wall=wall)
+        store.finish_clip(job.clip_id, ok=True, file=job.dst.name, size=size, trimmed=m.trimmed, wall=wall, peak_rss=RESOURCES.peak_rss)
         log.info(
             "[%d] done in %.1fs: %.1fs -> %.1fs after trimming (output=%s; sidecars=%s,%s)",
             job.clip_id,
@@ -63,7 +63,14 @@ def render_job(job: RenderJob) -> bool:
         return True
     except Exception as e:
         log.exception("[%d] render failed", job.clip_id)
-        store.finish_clip(job.clip_id, ok=False, file=job.dst.name, wall=time.perf_counter() - t0, error=f"{type(e).__name__}: {e}")
+        store.finish_clip(
+            job.clip_id,
+            ok=False,
+            file=job.dst.name,
+            wall=time.perf_counter() - t0,
+            error=f"{type(e).__name__}: {e}",
+            peak_rss=RESOURCES.peak_rss,
+        )
         return False
     finally:
         if vclip is not None:
@@ -145,7 +152,14 @@ def render_all(
                         job.threads,
                         RESOURCES.brief(),
                     )
-                    fut = pool.submit(render_job, job)
+                    try:
+                        fut = pool.submit(render_job, job)
+                    except BrokenProcessPool:
+                        # the pool is dead (a worker was OOM-killed): do not drop the popped job, retry it alone later
+                        log.warning("the render pool is broken before clip %d started: it will be retried alone", job.clip_id)
+                        RESOURCES.notify_oom()
+                        retry.append(job)
+                        break
                     running[fut] = job
                     started_at[fut] = time.perf_counter()
                 if not running:
@@ -174,6 +188,10 @@ def render_all(
         if pool is not None:
             with contextlib.suppress(Exception):
                 pool.shutdown(wait=False, cancel_futures=True)
+        # never drop a popped-but-unsubmitted clip: it must be retried, not silently lost
+        for future in list(running):
+            job = running.pop(future)
+            retry.append(job)
         retry.extend(list(pending))
         pending.clear()
     if cancel is not None and cancel.cancelled:

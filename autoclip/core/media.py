@@ -167,7 +167,9 @@ def decode_audio(src: Path, start: float, dur: float, sr: int, filters: Sequence
                     rc = proc.wait()
                     if rc == 0:
                         payload = np.frombuffer(b"".join(chunks), dtype=np.float32)
-                        return np.pad(payload, (0, total))[:total]
+                        if len(payload) >= total:
+                            return payload[:total].copy()  # one copy, not pad+copy into a 2x buffer
+                        return np.pad(payload, (0, total - len(payload)))
                 serr.seek(0)
                 last_detail = serr.read().decode("utf-8", "replace").strip()[-1000:]
         except OSError as e:  # pragma: no cover

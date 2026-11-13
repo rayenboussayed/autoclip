@@ -6,6 +6,7 @@ single implementation so progress and cancellation behave identically everywhere
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,6 +48,24 @@ def _unique_name(candidate: str, used: set[str]) -> str:
 
 
 @traced
+def _db_peak_rss(root: Path) -> int:
+    """Worker peak RSS (bytes) recorded by the best clip across every per-video database, 0 when none."""
+    peak = 0
+    try:
+        databases = list(root.glob(".work/*/autoclip.db")) if root.is_dir() else []
+    except OSError:
+        return 0
+    for db in databases:
+        try:
+            with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+                row = conn.execute("SELECT COALESCE(MAX(peak_rss), 0) FROM clips").fetchone()
+                if row and row[0]:
+                    peak = max(peak, int(row[0]))
+        except sqlite3.Error:
+            continue  # a half-written or foreign database is not fatal to the run's report
+    return peak
+
+
 def run_batch(
     cfg: Config,
     *,
@@ -116,7 +135,9 @@ def run_batch(
             done += ok
             failed += bad
     elapsed = time.perf_counter() - t0
-    peak = RESOURCES.peak_rss / MB
-    log.info("finished: %d clip(s) done, %d failed in %.1fs (peak rss %.0fMB)", done, failed, elapsed, peak)
+    parent_peak = RESOURCES.peak_rss // MB
+    peak_db = _db_peak_rss(Path(cfg.output_dir)) // MB
+    peak = max(parent_peak, peak_db)
+    log.info("finished: %d clip(s) done, %d failed in %.1fs (peak rss %.0fMB, workers %.0fMB)", done, failed, elapsed, peak, peak_db)
     reporter("package", 1.0, "batch complete")
     return BatchResult(clips_done=done, clips_failed=failed, elapsed_seconds=elapsed, peak_rss_mb=peak)
