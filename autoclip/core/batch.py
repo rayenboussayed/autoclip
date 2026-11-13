@@ -47,7 +47,6 @@ def _unique_name(candidate: str, used: set[str]) -> str:
     return f"{candidate} ({n})"
 
 
-@traced
 def _db_peak_rss(root: Path) -> int:
     """Worker peak RSS (bytes) recorded by the best clip across every per-video database, 0 when none."""
     peak = 0
@@ -66,6 +65,7 @@ def _db_peak_rss(root: Path) -> int:
     return peak
 
 
+@traced
 def run_batch(
     cfg: Config,
     *,

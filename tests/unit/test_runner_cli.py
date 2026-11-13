@@ -635,3 +635,39 @@ def test_render_all_defers_submissions_while_another_job_is_in_flight(
     assert admission_calls, "admission is consulted when a job is in flight"
     assert all(stage == "render" for stage, _ in admission_calls)
     store.close()
+
+
+def test_run_batch_reports_the_worker_peak_rss(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """peak_rss_mb reflects the LATEST worker peak saved in the per-video database, not only the parent's own idle RSS."""
+    import sqlite3
+
+    from autoclip.core.batch import run_batch
+
+    jobs, store, _ = parallel_jobs(media, tmp_path, 1)
+
+    from autoclip.core.batch import _db_peak_rss
+
+    assert _db_peak_rss(tmp_path / "missing") == 0  # no databases in a foreign folder
+    work = tmp_path / ".work" / "t"
+    work.mkdir(parents=True)
+    db = work / "autoclip.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE clips(id INTEGER PRIMARY KEY, kind TEXT, scene TEXT, n INTEGER, start REAL, end REAL,"
+            " score REAL, llm_score REAL, title TEXT, caption TEXT, text TEXT, status TEXT, file TEXT,"
+            " width INTEGER, height INTEGER, trimmed REAL, wall REAL, error TEXT, peak_rss INTEGER NOT NULL DEFAULT 0)"
+        )
+        conn.execute("INSERT INTO clips(peak_rss) VALUES (1048576)")
+    assert _db_peak_rss(tmp_path) == 1048576
+
+
+def test_db_peak_rss_survives_a_read_only_probe_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core.batch import _db_peak_rss
+
+    def broken_glob(self: Path, _pattern: str) -> object:
+        raise OSError("no access")
+
+    work = tmp_path / ".work" / "noaccess"
+    work.mkdir(parents=True)
+    monkeypatch.setattr(Path, "glob", broken_glob)
+    assert _db_peak_rss(tmp_path) == 0  # an unreadable .work directory is reported as 0 bytes, not a crash
