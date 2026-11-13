@@ -4,7 +4,13 @@ All notable changes to autoclip, oldest to newest. Release timestamps come from
 Git tags (and commit metadata for untagged but version-stamped commits). Each
 release mentions the source tag/commit for traceability.
 
-## [4.0.0] — 2026-11-06 14:15:01 +0100 (commit `92d47c7`)
+## [Unreleased]
+
+- ci: the binary smoke test builds one short clip via the 4.0 file schema; the old 3.x JSON silently degraded to defaults, produced zero clips, and every build target failed at "Check the binary" before any release was cut
+- ci: dev tools (pytest, pytest-cov, mypy, ruff) are pinned to the versions this release was verified with; CI installs them fresh and cannot drift underneath it again
+- ci: nested if combined (ruff 0.17.5, SIM102)
+
+## [4.0.0] — 2026-11-13 11:08:55 UTC (tag `v4.0.0`, commit `bf27517`)
 
 - feat: reduce the config file to nine keys (seven then two: `llm.system_prompt` and `image.prompt`); everything else is derived at run time or passed as a runtime override
 - feat: invalid config *values* now warn and fall back to the default instead of aborting the run
