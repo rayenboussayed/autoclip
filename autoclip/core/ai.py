@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 from functools import cache
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 from pydantic.json_schema import JsonSchemaValue
@@ -24,10 +25,13 @@ from .models import Moment
 
 log = logging.getLogger("autoclip")
 
+ollama: Any
 try:
-    import ollama
+    import ollama as _ollama
+
+    ollama = _ollama
 except Exception:  # pragma: no cover - optional dependency
-    ollama = None  # type: ignore[assignment]
+    ollama = None
 
 #: One queue for every AI model call in this process (Ollama and Stable Diffusion share it).
 _AI_LOCK = threading.Lock()
