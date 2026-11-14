@@ -1644,6 +1644,48 @@ def test_adding_videos_dedupes_and_a_drop_event_is_accepted(tmp_path: Path) -> N
         app.destroy()
 
 
+def test_dnd_probe_reports_a_broken_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The probe gate decides DnD availability without ever touching Tk: happy path, child failure and a crashed probe."""
+
+    import autoclip.app.window as window_mod
+
+    window_mod._dnd_available.cache_clear()
+
+    class _Probe:
+        @staticmethod
+        def run(*args: object, **kwargs: object) -> object:
+            class _Result:
+                returncode = 0
+                stdout = b"ok\n"
+
+            return _Result()
+
+    monkeypatch.setattr("subprocess.run", _Probe.run)
+    assert window_mod._dnd_available() is True
+
+    class _Dead:
+        @staticmethod
+        def run(*args: object, **kwargs: object) -> object:
+            class _Result:
+                returncode = 1
+                stdout = b""
+
+            return _Result()
+
+    window_mod._dnd_available.cache_clear()
+    monkeypatch.setattr("subprocess.run", _Dead.run)
+    assert window_mod._dnd_available() is False
+
+    window_mod._dnd_available.cache_clear()
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise TimeoutError("probe timed out")
+
+    monkeypatch.setattr("subprocess.run", _boom)
+    assert window_mod._dnd_available() is False
+    window_mod._dnd_available.cache_clear()
+
+
 @needs_display
 def test_the_window_survives_a_missing_drag_and_drop_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When tkinterdnd2 cannot be enabled, the window still builds and the button remains."""

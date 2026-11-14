@@ -9,9 +9,12 @@ stopped at any time and the app stays responsive.
 from __future__ import annotations
 
 import contextlib
+import functools
 import os
 import platform
 import queue
+import subprocess
+import sys
 import tkinter as tk
 import traceback
 from pathlib import Path
@@ -29,40 +32,6 @@ except Exception:  # pragma: no cover - depends on the installed extras
     DND_FILES = None
     _TkinterDnD = None
     _DND_FILES = None
-
-_DND_AVAILABLE: bool | None = None
-
-
-def _dnd_available() -> bool:
-    """Whether TkinterDnD loads without killing the process.
-
-    TkinterDnD calls ``XInitThreads`` on X11 builds where Tk was not initialized for threaded access; the
-    result is a fatal X11 assertion (SIGABRT) that no Python handler can catch. Probe it in a subprocess
-    once per process: a native abort there is contained, and the app simply runs without drag-and-drop
-    (the Add-videos button is always there).
-    """
-    global _DND_AVAILABLE
-    if _DND_AVAILABLE is not None:
-        return _DND_AVAILABLE
-    import subprocess
-    import sys
-
-    script = (
-        "import tkinter\n"
-        "from tkinterdnd2 import TkinterDnD\n"
-        "root = tkinter.Tk()\n"
-        "root.withdraw()\n"
-        "TkinterDnD.require(root)\n"
-        "print('ok')\n"
-        "root.destroy()\n"
-    )
-    try:
-        probe = subprocess.run([sys.executable, "-c", script], capture_output=True, timeout=30)
-    except Exception:
-        _DND_AVAILABLE = False
-        return _DND_AVAILABLE
-    _DND_AVAILABLE = probe.returncode == 0 and b"ok" in probe.stdout
-    return _DND_AVAILABLE
 
 import threading
 from collections.abc import Callable
@@ -85,6 +54,31 @@ from .session import (
     unflatten,
     write_config,
 )
+
+
+@functools.cache
+def _dnd_available() -> bool:
+    """Whether TkinterDnD loads without killing the process.
+
+    TkinterDnD calls ``XInitThreads`` on X11 builds where Tk was not initialized for threaded access; the
+    result is a fatal X11 assertion (SIGABRT) that no Python handler can catch. Probe it in a subprocess
+    once per process: a native abort there is contained, and the app simply runs without drag-and-drop
+    (the Add-videos button is always there).
+    """
+    script = (
+        "import tkinter\n"
+        "from tkinterdnd2 import TkinterDnD\n"
+        "root = tkinter.Tk()\n"
+        "root.withdraw()\n"
+        "TkinterDnD.require(root)\n"
+        "print('ok')\n"
+        "root.destroy()\n"
+    )
+    try:
+        probe = subprocess.run([sys.executable, "-c", script], check=False, capture_output=True, timeout=30)
+    except Exception:
+        return False
+    return probe.returncode == 0 and b"ok" in probe.stdout
 
 
 def system_theme() -> str:
