@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import types
+from collections.abc import Callable
 from dataclasses import is_dataclass
 from pathlib import Path
 from typing import Any, Union, cast, get_args, get_origin, get_type_hints
@@ -1644,6 +1645,27 @@ def test_adding_videos_dedupes_and_a_drop_event_is_accepted(tmp_path: Path) -> N
         app.destroy()
 
 
+@needs_display
+def test_dnd_backend_attaches_when_it_can(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With a probe that loads the extension and a backend that attaches, the app enables drag-and-drop."""
+
+    import autoclip.app.window as window_mod
+
+    monkeypatch.setattr(window_mod, "_dnd_available", lambda: True)
+
+    class _GoodDnD:
+        @staticmethod
+        def require(_root: Any) -> None:
+            return None
+
+    monkeypatch.setattr(window_mod, "_TkinterDnD", _GoodDnD)
+    app = window_mod.AutoclipApp(tmp_path / "config.json")
+    try:
+        assert app._dnd is True and app.dnd is True
+    finally:
+        app.destroy()
+
+
 def test_dnd_probe_reports_a_broken_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """The probe gate decides DnD availability without ever touching Tk: happy path, child failure and a crashed probe."""
 
@@ -1691,6 +1713,7 @@ def test_the_window_survives_a_missing_drag_and_drop_backend(tmp_path: Path, mon
     """When tkinterdnd2 cannot be enabled, the window still builds and the button remains."""
     import autoclip.app.window as window_mod
 
+    monkeypatch.setattr(window_mod, "_dnd_available", lambda: True)
     monkeypatch.setattr(window_mod, "_TkinterDnD", None)
     app = window_mod.AutoclipApp(tmp_path / "config.json")
     try:
@@ -1709,6 +1732,7 @@ def test_the_window_falls_back_when_enabling_drag_and_drop_raises(tmp_path: Path
         def require(_root: Any) -> None:
             raise RuntimeError("cannot attach")
 
+    monkeypatch.setattr(window_mod, "_dnd_available", lambda: True)
     monkeypatch.setattr(window_mod, "_TkinterDnD", _BrokenDnD)
     app = window_mod.AutoclipApp(tmp_path / "config.json")
     try:
@@ -1716,6 +1740,33 @@ def test_the_window_falls_back_when_enabling_drag_and_drop_raises(tmp_path: Path
         assert app.dnd is False
     finally:
         app.destroy()
+
+
+def test_dnd_binds_when_the_holder_supports_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the holder registers and binds cleanly, the drop path is wired up."""
+
+    import autoclip.app.form as form_mod
+
+    events: list[tuple[str, Callable[[Any], Any]]] = []
+
+    class _Holder:
+        @staticmethod
+        def drop_target_register(files: Any) -> None:
+            assert files == ["DND_Files"]
+
+        @staticmethod
+        def dnd_bind(event: str, callback: Callable[[Any], Any]) -> None:
+            events.append((event, callback))
+
+    class _FakeSelf:
+        @staticmethod
+        def _on_drop_videos(_event: Any) -> str | None:
+            return None
+
+    monkeypatch.setattr(form_mod, "_DND_FILES", ["DND_Files"])
+    form_mod.Form._enable_drag_and_drop(_FakeSelf(), _Holder())  # type: ignore[arg-type]
+    assert [event for event, _ in events] == ["<<Drop>>"]
+    assert events[0][1] is _FakeSelf._on_drop_videos
 
 
 def test_drag_and_drop_registration_is_a_no_op_without_its_files_constant(monkeypatch: pytest.MonkeyPatch) -> None:
