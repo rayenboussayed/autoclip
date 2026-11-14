@@ -347,8 +347,10 @@ def test_the_default_output_folder_follows_the_operating_system(system: str, env
 
 
 def test_default_config_keeps_the_stable_defaults() -> None:
+    import sys
+
     cfg = parse(FileConfig, {}).to_config()
-    assert Path(cfg.output_dir) == Path.home() / "Videos" / "clips"
+    assert Path(cfg.output_dir) == Path.home() / ("Movies" if sys.platform == "darwin" else "Videos") / "clips"
 
 
 def test_runtime_config_validation_errors() -> None:

@@ -80,6 +80,7 @@ def test_gating_skips_e2e_network_and_memory_unless_opted_in(
     monkeypatch.delenv("AUTOCLIP_E2E_TESTS", raising=False)
     monkeypatch.delenv("AUTOCLIP_NETWORK_TESTS", raising=False)
     monkeypatch.delenv("AUTOCLIP_MEMORY_TESTS", raising=False)
+    monkeypatch.setattr("platform.system", lambda: "Linux")  # the memory gate is Linux-only by design
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     e2e = FakeItem({"e2e", "network"})
@@ -99,10 +100,20 @@ def test_gating_skips_e2e_network_and_memory_unless_opted_in(
         assert "AUTOCLIP_MEMORY_TESTS=1" in str(memory.markers[0].kwargs["reason"])
 
 
+def test_memory_tests_are_linux_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The memory budgets are calibrated for Linux: other platforms force-skip them even with the flag set."""
+    monkeypatch.setenv("AUTOCLIP_MEMORY_TESTS", "1")
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    memory = FakeItem({"memory"})
+    gate([memory])
+    assert memory.markers, "memory tests must be skipped off Linux even when opted in"
+
+
 def test_e2e_tests_enable_the_network_marker_too(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTOCLIP_E2E_TESTS", "1")
     monkeypatch.delenv("AUTOCLIP_NETWORK_TESTS", raising=False)
     monkeypatch.setenv("AUTOCLIP_MEMORY_TESTS", "1")
+    monkeypatch.setattr("platform.system", lambda: "Linux")
     network = FakeItem({"network"})
     memory = FakeItem({"memory"})
     gate([network, memory])

@@ -20,7 +20,7 @@ denoise = ["noisereduce>=3.0"]
 enhance = ["sherpa-onnx>=1.13,<2"]
 server = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "jinja2>=3.1", "python-multipart>=0.0.9", "pydantic-settings>=2.4", "opentelemetry-api>=1.26", "opentelemetry-sdk>=1.26", "opentelemetry-instrumentation-fastapi>=0.47b0", "opentelemetry-exporter-otlp>=1.26", "aiofiles>=23"]
 ai = ["ollama>=0.4", "torch>=2.0", "diffusers>=0.30", "pillow>=12.0"]
-dev = ["pytest>=9,<10", "pytest-cov>=7,<8", "mypy>=2.4.0,<2.4.1", "ruff>=0.17.3,<0.18", "vulture>=2.14", "deptry>=0.20", "noisereduce>=3.0", "sherpa-onnx>=1.13,<2", "fastapi>=0.115", "uvicorn[standard]>=0.30", "websockets>=12", "jinja2>=3.1", "python-multipart>=0.0.9", "pydantic-settings>=2.4", "opentelemetry-api>=1.26", "opentelemetry-sdk>=1.26", "opentelemetry-instrumentation-fastapi>=0.47b0", "opentelemetry-exporter-otlp>=1.26", "aiofiles>=23", "httpx>=0.27", "tkinterdnd2>=0.7"]
+dev = ["pytest>=9,<10", "pytest-cov>=7,<8", "mypy>=2.4.0,<2.4.1", "ruff>=0.17.3,<0.18", "vulture>=2.14", "deptry>=0.20", "ollama>=0.4", "noisereduce>=3.0", "sherpa-onnx>=1.13,<2", "fastapi>=0.115", "uvicorn[standard]>=0.30", "websockets>=12", "jinja2>=3.1", "python-multipart>=0.0.9", "pydantic-settings>=2.4", "opentelemetry-api>=1.26", "opentelemetry-sdk>=1.26", "opentelemetry-instrumentation-fastapi>=0.47b0", "opentelemetry-exporter-otlp>=1.26", "aiofiles>=23", "httpx>=0.27", "tkinterdnd2>=0.7"]
 
 [project.scripts]
 autoclip = "autoclip.cli:main"
