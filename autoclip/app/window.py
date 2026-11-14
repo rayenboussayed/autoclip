@@ -168,6 +168,7 @@ class AutoclipApp(tk.Tk):
         self.values: dict[str, JsonValue] = default_values()
         self._forms: list[Form] = []
         self._handle: PipelineHandle | None = None
+        self._cancelled = False
         self._lines: queue.Queue[str] = queue.Queue()
 
         self._build_header()
@@ -470,10 +471,6 @@ class AutoclipApp(tk.Tk):
         on_line: Callable[[str], None],
         output_dir: Path | str | None = None,
     ) -> None:
-        import contextlib
-
-        with contextlib.suppress(Exception):
-            pass
         try:
             run_pipeline(config_path, cancel=cancel, on_line=on_line, output_dir=output_dir)
         except Exception as exc:  # pragma: no cover - defensive
@@ -495,11 +492,17 @@ class AutoclipApp(tk.Tk):
                 return
             while True:
                 line = self._lines.get_nowait()
-                if line == "":
+                if line.startswith("done:"):
+                    rc = int(line.removeprefix("done:") or "0")
+                    if not self._cancelled:
+                        self._set_status("Finished." if rc == 0 else f"Finished with failures (exit {rc}).")
+                elif line == "":
                     self._handle = None
                     self.run_button.configure(state="normal")
                     self.stop_button.configure(state="disabled")
-                    self._set_status("Finished.")
+                    if not self._cancelled:
+                        self._set_status("Finished.")
+                    self._cancelled = False
                 else:
                     self._append(line)
         except queue.Empty:
@@ -511,6 +514,7 @@ class AutoclipApp(tk.Tk):
         handle = self._handle
         if handle is None:
             return
+        self._cancelled = True
         self._append("stopping...")
         cancel_pipeline(handle)
         self._set_status("Stopped.")

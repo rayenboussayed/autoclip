@@ -60,43 +60,54 @@ def error_lines(output: str) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    ("env", "e2e_skipped", "network_skipped"),
+    ("env", "e2e_skipped", "network_skipped", "memory_skipped"),
     [
-        ({}, True, True),
-        ({"AUTOCLIP_NETWORK_TESTS": "1"}, True, False),
-        ({"AUTOCLIP_E2E_TESTS": "1"}, False, False),
-        ({"AUTOCLIP_E2E_TESTS": "1", "AUTOCLIP_NETWORK_TESTS": "0"}, False, False),
-        ({"AUTOCLIP_NETWORK_TESTS": "true"}, True, True),
-        ({"AUTOCLIP_E2E_TESTS": "yes"}, True, True),
-        ({"AUTOCLIP_NETWORK_TESTS": "0"}, True, True),
+        ({}, True, True, True),
+        ({"AUTOCLIP_NETWORK_TESTS": "1"}, True, False, True),
+        ({"AUTOCLIP_E2E_TESTS": "1"}, False, False, True),
+        ({"AUTOCLIP_E2E_TESTS": "1", "AUTOCLIP_NETWORK_TESTS": "0"}, False, False, True),
+        ({"AUTOCLIP_NETWORK_TESTS": "true"}, True, True, True),
+        ({"AUTOCLIP_E2E_TESTS": "yes"}, True, True, True),
+        ({"AUTOCLIP_NETWORK_TESTS": "0"}, True, True, True),
+        ({"AUTOCLIP_MEMORY_TESTS": "1"}, True, True, False),
+        ({"AUTOCLIP_MEMORY_TESTS": "0"}, True, True, True),
+        ({"AUTOCLIP_MEMORY_TESTS": "yes"}, True, True, True),
     ],
 )
-def test_gating_skips_e2e_and_network_unless_opted_in(
-    monkeypatch: pytest.MonkeyPatch, env: dict[str, str], e2e_skipped: bool, network_skipped: bool
+def test_gating_skips_e2e_network_and_memory_unless_opted_in(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str], e2e_skipped: bool, network_skipped: bool, memory_skipped: bool
 ) -> None:
     monkeypatch.delenv("AUTOCLIP_E2E_TESTS", raising=False)
     monkeypatch.delenv("AUTOCLIP_NETWORK_TESTS", raising=False)
+    monkeypatch.delenv("AUTOCLIP_MEMORY_TESTS", raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     e2e = FakeItem({"e2e", "network"})
     network = FakeItem({"network"})
+    memory = FakeItem({"memory"})
     plain = FakeItem(set())
-    gate([e2e, network, plain])
+    gate([e2e, network, memory, plain])
     assert bool(e2e.markers) is e2e_skipped
     assert bool(network.markers) is network_skipped
+    assert bool(memory.markers) is memory_skipped
     assert plain.markers == []
     if e2e_skipped:
         assert "AUTOCLIP_E2E_TESTS=1" in str(e2e.markers[0].kwargs["reason"])
     if network_skipped:
         assert "AUTOCLIP_NETWORK_TESTS=1" in str(network.markers[0].kwargs["reason"])
+    if memory_skipped:
+        assert "AUTOCLIP_MEMORY_TESTS=1" in str(memory.markers[0].kwargs["reason"])
 
 
 def test_e2e_tests_enable_the_network_marker_too(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTOCLIP_E2E_TESTS", "1")
     monkeypatch.delenv("AUTOCLIP_NETWORK_TESTS", raising=False)
+    monkeypatch.setenv("AUTOCLIP_MEMORY_TESTS", "1")
     network = FakeItem({"network"})
-    gate([network])
+    memory = FakeItem({"memory"})
+    gate([network, memory])
     assert network.markers == []
+    assert memory.markers == []
 
 
 def test_annotation_escapes_github_commands_and_clamps_the_line(capsys: pytest.CaptureFixture[str]) -> None:

@@ -6,7 +6,7 @@ CONFIG ?= config.json
 	build appimage snap \
 	lint format format-check mypy vulture deptry \
 	test test-no-cov test-focused test-config test-app test-network test-e2e test-ladder \
-	test-all \
+	test-memory test-all \
 	check
 
 install:
@@ -96,7 +96,10 @@ test-e2e:
 test-ladder:
 	AUTOCLIP_E2E_TESTS=1 AUTOCLIP_E2E_LEVEL=3 $(PYTHON) -m pytest tests/e2e -m e2e --no-cov
 
-check: mypy vulture deptry lint format-check test-all
+test-memory:
+	AUTOCLIP_MEMORY_TESTS=1 $(PYTHON) -m pytest tests/memory --no-cov
+
+check: mypy vulture deptry lint format-check test-all test-memory
 
 test-all:
 	AUTOCLIP_NETWORK_TESTS=1 AUTOCLIP_E2E_TESTS=1 AUTOCLIP_E2E_LEVEL=3 $(PYTHON) -m pytest

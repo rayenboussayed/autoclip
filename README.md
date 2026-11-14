@@ -418,10 +418,12 @@ next run starts close to the learned optimum.
 The build workflow (`.github/workflows/build.yml`) builds a standalone app for **Linux and macOS on
 x64 and arm64, and Windows on x64** - no Python installation needed on the machine that runs it.
 To release, bump `version` in `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml` (they
-must match) and push to `main`: the workflow checks that `v<version>` is not tagged yet, builds all
-five targets, then creates the tag and publishes the release - one zip per target, plus the AppImage
-and the snap of the two Linux targets. A push to `main` that does not change the version skips the
-build; a pull request that touches the build still builds, without releasing.
+must match) and push to `main`: the workflow first runs the full ci gate (ruff, format, mypy,
+vulture, deptry, pytest with the 100% branch-coverage gate) and the memory-regression benchmarks on
+the `check` job - the build only runs when they pass - then builds all five targets, then creates the
+tag and publishes the release - one zip per target, plus the AppImage and the snap of the two Linux
+targets. A push to `main` that does not change the version skips the build (and the release); a pull
+request that touches the build still builds, without releasing.
 
 To build it yourself (for the machine you are on):
 
@@ -557,6 +559,24 @@ AUTOCLIP_E2E_TESTS=1 pytest tests/e2e/test_server_e2e.py -m e2e --no-cov
 
 The `e2e` GitHub workflow runs the end-to-end cases by hand (Actions -> e2e -> Run workflow) and keeps
 `tests/results/` as a downloadable artifact; `network.yml` runs the downloader checks weekly.
+
+### Memory regression
+
+`tests/memory/` is the opt-in memory-regression suite. It measures peak RSS of the engine in child
+processes (the parent's tree, polled every 10 ms) for three shapes of work: `process_video` on the 40 s
+fixture, the many-parts unsilence re-encode, a 720p render at `medium` quality, and the CLI as a
+subprocess (fixture and many-parts). Budgets live in `tests/memory/budgets.py`; they are measured
+values with headroom, recalibrated in the file's header comment - not guesses.
+
+```bash
+AUTOCLIP_MEMORY_TESTS=1 pytest tests/memory --no-cov   # Linux only; self-skips elsewhere
+make test-memory                                       # the same, via the Makefile
+```
+
+The suite writes `tests/results/memory/<timestamp>/metrics.json` with the wall time and peak of every
+case. The gate refuses to pass when a meter never sampled (`MIN_SAMPLES`), so a broken poller cannot
+silently "pass" a budget. CI runs it on Linux (the release gate and the PR gate); it does not run on
+macOS or Windows, where the fixtures and budgets are not calibrated.
 
 The package has four parts:
 

@@ -11,11 +11,12 @@ import logging
 import math
 import os
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 from .config import Config, KindCfg, parse_hms
 from .errors import AutoclipError
-from .events import CancelToken, Reporter
+from .events import Cancelled, CancelToken, Reporter
 from .internal.automation import SPLIT_SECONDS
 from .internal.quality import quality_short_side
 from .log import health_check, safe_path_text, traced
@@ -25,7 +26,7 @@ from .moments import energy_track, make_title, select_moments
 from .render import canvas_size, estimate_render_bytes
 from .resources import RESOURCES
 from .runner import render_all
-from .store import Cache, Store
+from .store import Cache, ClipRow, Store
 from .transcript import get_transcript
 
 log = logging.getLogger("autoclip")
@@ -88,6 +89,38 @@ def ranges_moments(
 def needs_text(cfg: Config) -> bool:
     """Whether the run needs a transcript: highlights select on text, captions and titles read it."""
     return cfg.clips.mode == "highlights" or cfg.captions.enabled or not cfg.skip.title
+
+
+def _number(value: float | None) -> float | None:
+    return round(value, 2) if value is not None else None
+
+
+def _write_clip_summaries(root: Path, stem: str, rows: Sequence[ClipRow]) -> None:
+    """Write ``clips.json`` for every kind present, from the rows the database holds right now (done only).
+
+    Also used on the cancellation path: a partial run still leaves an index for what finished.
+    """
+    for clip_kind in dict.fromkeys(r["kind"] for r in rows):
+        done = [r for r in rows if r["kind"] == clip_kind and r["status"] == "done"]
+        summary = [
+            {
+                "file": r["file"],
+                "scene": r["scene"],
+                "start": round(r["start"], 2),
+                "end": round(r["end"], 2),
+                "title": r["title"],
+                "caption": r["caption"],
+                "text": r["text"],
+                "score": _number(r["score"]),
+                "llm_score": _number(r["llm_score"]),
+                "width": r["width"],
+                "height": r["height"],
+                "trimmed": round(r["trimmed"], 2),
+                "wall": round(r["wall"], 2),
+            }
+            for r in done
+        ]
+        (root / clip_kind / stem / "clips.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 @traced
@@ -223,7 +256,11 @@ def process_video(
         reporter("select", 1.0, f"{len(jobs)} clips planned")
         log.info("system health before render: %s", health_check("render"))
         reporter("render", 0.0, f"0/{len(jobs)} clips to process")
-        render_all(jobs, needs, report=reporter, cancel=cancel)
+        try:
+            render_all(jobs, needs, report=reporter, cancel=cancel)
+        except Cancelled:
+            _write_clip_summaries(root, stem, store.clips())  # keep what finished: a half-written run is still useful
+            raise
         reporter("render", 1.0, f"{len(jobs)}/{len(jobs)} clips processed")
         rows = store.clips()
         log.info(
@@ -261,29 +298,8 @@ def process_video(
         except Exception as e:
             log.warning("Stable Diffusion thumbnail pass failed (%s: %s)", type(e).__name__, e)
 
+    _write_clip_summaries(root, stem, rows)
     for clip_kind in dict.fromkeys(r["kind"] for r in rows):
-        done = [r for r in rows if r["kind"] == clip_kind and r["status"] == "done"]
-        summary = [
-            {
-                "file": r["file"],
-                "scene": r["scene"],
-                "start": round(r["start"], 2),
-                "end": round(r["end"], 2),
-                "title": r["title"],
-                "caption": r["caption"],
-                "text": r["text"],
-                "score": round(r["score"], 2) if isinstance(r["score"], (int, float)) and not isinstance(r["score"], bool) else r["score"],
-                "llm_score": round(r["llm_score"], 2)
-                if isinstance(r["llm_score"], (int, float)) and not isinstance(r["llm_score"], bool)
-                else r["llm_score"],
-                "width": r["width"],
-                "height": r["height"],
-                "trimmed": round(r["trimmed"], 2),
-                "wall": round(r["wall"], 2),
-            }
-            for r in done
-        ]
-        (root / clip_kind / stem / "clips.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
         log.info("output folder: %s", safe_path_text(root / clip_kind / stem))
         for r in rows:
             if r["kind"] != clip_kind:

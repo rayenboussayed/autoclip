@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import JsonValue
+from .config import get_settings
 from .schemas import JobState
 
 
@@ -98,8 +99,22 @@ class JobRegistry:
             expired = [jid for jid, j in self._jobs.items() if j.finished_at and now - j.finished_at > ttl_seconds]
             for jid in expired:
                 j = self._jobs.pop(jid)
-                if j.output_dir.exists():
-                    shutil.rmtree(j.output_dir, ignore_errors=True)
+                self._delete_job_files(j)
+
+    def active_count(self) -> int:
+        """Jobs still queued or running (what a new POST would have to fit behind)."""
+        with self._lock:
+            return sum(1 for j in self._jobs.values() if j.finished_at is None)
+
+    @staticmethod
+    def _delete_job_files(j: Job) -> None:
+        if j.output_dir.exists():
+            shutil.rmtree(j.output_dir, ignore_errors=True)
+        if j.input_path.exists():
+            j.input_path.unlink(missing_ok=True)
+        zip_path = get_settings().cache_dir / f"{j.job_id}.zip"
+        if zip_path.is_file():
+            zip_path.unlink()
 
 
 registry = JobRegistry()

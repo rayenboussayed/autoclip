@@ -49,18 +49,20 @@ pytest tests/unit/test_moments.py -k scene --no-cov   # a focused run (always ad
 AUTOCLIP_NETWORK_TESTS=1 pytest -m "network and not e2e" --no-cov   # the real-YouTube downloader checks
 AUTOCLIP_E2E_TESTS=1 pytest tests/e2e -m e2e --no-cov               # CLI/server end-to-end runs (results in tests/results)
 AUTOCLIP_E2E_TESTS=1 AUTOCLIP_E2E_LEVEL=3 pytest tests/e2e -m e2e --no-cov   # 18-minute ladder level (cache is reused)
+AUTOCLIP_MEMORY_TESTS=1 pytest tests/memory --no-cov   # memory-regression budgets (Linux only)
 ```
 
 The `Makefile` is now the command catalogue: `make check`, `make test`, `make test-focused`,
 `make test-config`, `make test-app`, `make test-network`, `make test-e2e`, `make test-ladder`,
-`make test-all`, `make lint`, `make format`, `make format-check`, `make mypy`, `make vulture`,
+`make test-memory`, `make test-all`, `make lint`, `make format`, `make format-check`, `make mypy`, `make vulture`,
 and `make deptry`. Use `PYTHON=...` and `CONFIG=...` overrides.
 
 **Definition of done** (these must pass before you finish; `make check` runs them as one
 script): `ruff check .`, `ruff format --check .`, `mypy autoclip tests tools`, `vulture`, `deptry .`,
 `pytest` (100% statement + branch coverage gate). The repository now ships a
 `Makefile`; `make check` is the required final verification, and `make test-all` runs `test` plus
-the network and e2e tiers. Before every commit, rerun `make check`, fix every warning and error
+the network and e2e tiers; `make test-memory` runs the Linux-only memory-regression suite.
+Before every commit, rerun `make check`, fix every warning and error
 it reports, and only then commit. A full `pytest` takes about one minute (real ffmpeg encodes,
 real worker processes).
 
@@ -126,11 +128,14 @@ autoclip/
     templates/      base/index/job/404 (Jinja2 + HTMX + DaisyUI from a CDN)
 tests/            support.py - pure helpers shared by both suites; conftest.py - fixtures and the e2e/network gates
   unit/           mirrors the modules (the default, offline `pytest` run); test_version.py guards the versions
-                  test_support.py / test_e2e_harness.py / test_conftest.py - the shared helpers, the e2e harness and
-                  the suite's own gating/annotations, all exercised offline
+                  test_support.py / test_e2e_harness.py / test_memory_harness.py / test_conftest.py - the shared
+                  helpers, the e2e harness and its annotations, the memory harness, the suite gates, all exercised offline
   e2e/            opt-in real-network checks: test_network.py, the CLI cases and the localhost server case
     harness.py      pure e2e logic: results folders, subprocess runs, config builders, clip/DB readers, ladder/cache
     conftest.py     the e2e fixtures and the outcome-recording hook around that harness
+  memory/         opt-in Linux memory-regression budgets (AUTOCLIP_MEMORY_TESTS=1); docs/memory-regression.md
+    harness.py      child-process RSS polling (parent + children) and budget comparison; fixtures in conftest.py
+    budgets.py      the named budgets with dated measurements (never guess)
   assets/         youtube.json - the videos the e2e cases use
   results/        per-run configs, logs and outputs (ignored by git)
 autoclip.spec     the PyInstaller spec: a standalone build (engine + command line + desktop app + yt-dlp/EJS)
@@ -145,6 +150,7 @@ tools/            frozen_entry.py - the frozen build's entry point: freeze_suppo
                   compare_stt.py   - development aid: STT models x enhancement backends on one scene
                   verify_output.py - development aid: checks a finished output directory
 docs/             stt-comparison.md - the measured comparison of transcription models and denoisers
+                 memory-regression.md - the memory suite: budgets, recalibration rules, known limits
 AGENTS.md        this file (guidance for coding agents)
 pyproject.toml    deps, ruff, mypy(strict), pytest(+coverage gate, `network` marker), coverage(multiprocessing)
 .github/workflows/ci.yml       ubuntu/macos/windows x py3.11/3.12/3.13, then re-run with Pillow>=12.3
@@ -520,6 +526,12 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     optional extra is genuinely absent); `tests/e2e/test_server_e2e.py` is the real-process check. The module-level
     `KEEPALIVE_SECONDS`/`EVICT_SECONDS` are patched instead of `asyncio.sleep`, `get_settings.cache_clear()` runs
     between tests, and the auth env vars are reset so one test cannot make another public or private.
+  * Memory: `tests/memory/` is the opt-in memory-regression suite (Linux only, `AUTOCLIP_MEMORY_TESTS=1`,
+    `make test-memory`). Budgets in `tests/memory/budgets.py` are measured values with headroom - recalibrate only
+    with a fresh measurement, note the date, and never tighten one below the measurement. Subprocess isolation is
+    deliberate: in-process budgets measured 21-22 samples and ±10 % noise, so every case polls the parent-plus-children
+    RSS tree of a child process instead. A meter that records fewer than `MIN_SAMPLES` fails the case. The release gate
+    and the PR gate run it on Linux. See `docs/memory-regression.md`.
   * OS-specific logic (font folders, GPU priority per OS, cgroups) is tested by **passing the platform/paths in**
     (`font_dirs(system, env, home)`, `pick_encoder(cfg, system)`, `cgroup_*(root)`), never by running on that OS.
   * Hardware: `hardware.works` is `functools.cache`d - the test module clears it (`_fresh_probe_cache`). A software
@@ -681,7 +693,10 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     64-bit Windows. The tkinter check runs before hiding, so a missing toolkit still produces a readable error. Windows
     Terminal may ignore the request - the app still opens. Unit tests use a fake `ctypes.windll`; real Windows
     behaviour is not verified in this sandbox.
-33. **The unsilence re-encode must never use MoviePy `method="compose"`.** Compose holds all concatenated parts as simultaneous layers; RSS grows linearly with the segment count (~15 MB per segment — measured 437 MB at 10 parts, 4.9 GB at 300), which OOM-killed a several-hour recording. `method="chain"` splices frames in order, is flat (~98 MB) and ~6x faster; `tests/unit/test_unsilence.py::test_remove_silence_concatenates_with_chain_not_compose` pins it. All parts come from one source, so they share size, fps and aspect — compose's resolution-mismatch handling is never needed.
+33. **Do not drop or relocate the `@traced` on `process_video`.** A scripted edit stole the decorator once (it ended up
+   on the helper above the function), the `[START] process_video` line vanished from the app pane and the suite
+   caught it. If a refactor moves that function, keep the decorator on it and let nothing else take it.
+34. **The unsilence re-encode must never use MoviePy `method="compose"`.** Compose holds all concatenated parts as simultaneous layers; RSS grows linearly with the segment count (~15 MB per segment — measured 437 MB at 10 parts, 4.9 GB at 300), which OOM-killed a several-hour recording. `method="chain"` splices frames in order, is flat (~98 MB) and ~6x faster; `tests/unit/test_unsilence.py::test_remove_silence_concatenates_with_chain_not_compose` pins it. All parts come from one source, so they share size, fps and aspect — compose's resolution-mismatch handling is never needed.
 
 
 ## 10. Recipes

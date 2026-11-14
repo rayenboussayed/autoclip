@@ -315,3 +315,42 @@ def test_process_video_no_transcript_needed(media: Any, tmp_path: Path, monkeypa
 
     rc = process_video(media.video, cfg, None, ce(cfg.video, cfg.quality))
     assert rc[0] >= 0
+
+
+def test_process_video_cancel_writes_the_partial_index(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cancelled run keeps the clips that finished: clips.json holds exactly those rows."""
+    import json
+    import sqlite3
+
+    import autoclip.core.pipeline as pipeline_mod
+    from autoclip.core.events import Cancelled
+    from autoclip.core.hardware import cpu_encoder as ce
+
+    install_stub_whisper(monkeypatch, media, {}, cuda=0)
+    out = tmp_path / "out-cancel"
+    out.mkdir()
+    cfg = make_cfg(
+        media,
+        out,
+        clips={
+            "mode": "ranges",
+            "kinds": ["short"],
+            "short": {"count": 1, "min_seconds": 5, "max_seconds": 10, "ranges": ["00:00:00-00:00:05"]},
+        },
+    )
+
+    def fake_render_all(jobs: list[Any], needs: Any, *, report: Any = None, cancel: Any = None) -> None:
+        with sqlite3.connect(jobs[0].db_path) as conn:
+            conn.execute(
+                "UPDATE clips SET status='done', file=?, width=320, height=180, trimmed=5.0, wall=1.0 WHERE id=?",
+                ("kept_clip.mp4", jobs[0].clip_id),
+            )
+        raise Cancelled("user stopped the run")
+
+    monkeypatch.setattr(pipeline_mod, "render_all", fake_render_all)
+    with pytest.raises(Cancelled):
+        process_video(media.video, cfg, None, ce(cfg.video, cfg.quality))
+    clips_json = out / "short" / "talk" / "clips.json"
+    assert clips_json.is_file()
+    rows = json.loads(clips_json.read_text(encoding="utf-8"))
+    assert [r["file"] for r in rows] == ["kept_clip.mp4"]

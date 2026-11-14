@@ -5,6 +5,7 @@ import json
 import logging
 import secrets
 import shutil
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,8 @@ from ..config import get_settings
 from ..schemas import JobCreated, JobState, JobStatus, OutputFile
 from ..service import build_config, run_job, zip_outputs
 from ..state import registry
+from ..tickets import issue as issue_ticket
+from ..tickets import redeem as redeem_ticket
 
 log = logging.getLogger("autoclip.server")
 
@@ -43,6 +46,10 @@ _TASKS: set[asyncio.Task[Any]] = set()
 # How long an idle websocket waits before a keepalive frame. A module constant (not a literal in the
 # loop) so tests can shrink it instead of patching asyncio.sleep globally.
 KEEPALIVE_SECONDS = 30.0
+
+
+class _UploadTooLarge(Exception):
+    """Upload exceeded MAX_FILE_SIZE."""
 
 
 async def _read_custom_config(config: UploadFile | None, config_json: str | None) -> dict[str, Any] | None:
@@ -74,6 +81,26 @@ def _safe_filename(name: str | None) -> str:
     """The client's filename as a bare basename; never trusted as a path component."""
     filename = Path(name or "upload.bin").name
     return filename if filename not in ("", ".", "..") else "upload.bin"
+
+
+async def _spool_upload(file: UploadFile, dest: Path, max_size: int) -> int:
+    """Stream ``file`` to ``dest`` enforcing ``max_size`` as a hard cap; returns bytes written.
+
+    Raises ``_UploadTooLarge`` when the cap is exceeded (the partial file is removed).
+    """
+    written = 0
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(dest, "wb") as out:
+            while chunk := await file.read(1 << 20):
+                written += len(chunk)
+                if written > max_size:
+                    raise _UploadTooLarge
+                out.write(chunk)
+    except _UploadTooLarge:
+        dest.unlink(missing_ok=True)
+        raise
+    return written
 
 
 @router.post("/jobs", response_model=JobCreated, status_code=status.HTTP_201_CREATED)
@@ -143,18 +170,20 @@ async def preview(
     settings = get_settings()
     if kind not in ("short", "long"):
         raise HTTPException(status_code=400, detail="kind must be 'short' or 'long'")
-    data = await file.read()
-    if len(data) > settings.max_file_size:
+    if file.size is not None and file.size > settings.max_file_size:
         raise HTTPException(status_code=413, detail=f"file exceeds MAX_FILE_SIZE ({settings.max_file_size} bytes)")
-    if len(data) == 0:
-        raise HTTPException(status_code=400, detail="empty upload")
 
     custom = await _read_custom_config(config, config_json)
     root = settings.cache_dir / "preview" / uuid4().hex
     root.mkdir(parents=True, exist_ok=True)
     try:
         src = root / _safe_filename(file.filename)
-        src.write_bytes(data)
+        try:
+            size = await _spool_upload(file, src, settings.max_file_size)
+        except _UploadTooLarge as e:
+            raise HTTPException(status_code=413, detail=f"file exceeds MAX_FILE_SIZE ({settings.max_file_size} bytes)") from e
+        if size == 0:
+            raise HTTPException(status_code=400, detail="empty upload")
         try:
             cfg = build_config(custom, src, root / "out")
         except ConfigError as e:
@@ -211,6 +240,9 @@ async def get_job(job_id: str, _user: str = Depends(require_auth)) -> JobStatus:
     )
 
 
+_download_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
 @router.get("/jobs/{job_id}/download")
 async def download_job(job_id: str, _user: str = Depends(require_auth)) -> FileResponse:
     job = registry.get(job_id)
@@ -218,10 +250,25 @@ async def download_job(job_id: str, _user: str = Depends(require_auth)) -> FileR
         raise HTTPException(status_code=404, detail="job not found")
     if job.state != JobState.completed:
         raise HTTPException(status_code=409, detail="job not completed")
-    zip_path = zip_outputs(job)
+    settings = get_settings()
+    zip_path = settings.cache_dir / f"{job.job_id}.zip"
+    async with _download_locks[job_id]:  # one rebuild per job: concurrent clicks share the archive
+        finished = job.finished_at if job.finished_at is not None else 0.0
+        if not (zip_path.is_file() and zip_path.stat().st_mtime >= finished):  # reuse archive built for this completion
+            zip_path = await asyncio.to_thread(zip_outputs, job)
     if not zip_path.is_file():
         raise HTTPException(status_code=500, detail="output archive missing")
     return FileResponse(zip_path, media_type="application/zip", filename=f"{job_id}.zip")
+
+
+@router.post("/jobs/{job_id}/ticket")
+async def job_ticket(job_id: str, _user: str = Depends(require_auth)) -> dict[str, str | int]:
+    """Mint a short-lived, single-use ticket for the WebSocket of this job (preferred over ?token=)."""
+    job = registry.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    ticket, ttl = issue_ticket(job_id)
+    return {"ticket": ticket, "expires_in": ttl}
 
 
 @router.websocket("/jobs/{job_id}/ws")
@@ -229,11 +276,16 @@ async def job_websocket(websocket: WebSocket, job_id: str) -> None:
     # Auth for WS is best-effort via query param token (?token=) when enabled.
     settings = get_settings()
     if settings.auth_enabled:
-        token = websocket.query_params.get("token", "")
-        expected = f"{settings.auth_username}:{settings.auth_password}"
-        # Browsers cannot set an Authorization header on a WebSocket, so the same credentials arrive
-        # as a query token; compare it the same constant-time way as the Basic header.
-        if not secrets.compare_digest(token, expected):
+        # Browsers cannot set an Authorization header on a WebSocket, so accept a one-time ticket minted
+        # by /api/jobs/{id}/ticket; ?token= is kept for backwards compatibility but logs credentials.
+        ticket = websocket.query_params.get("ticket", "")
+        ok = bool(ticket) and redeem_ticket(job_id, ticket)
+        if not ok:
+            token = websocket.query_params.get("token", "")
+            expected = f"{settings.auth_username}:{settings.auth_password}"
+            # compare in constant time; both sides are non-empty strings only here
+            ok = bool(token) and secrets.compare_digest(token.encode(), expected.encode())
+        if not ok:
             await websocket.close(code=1008)
             return
     job = registry.get(job_id)
@@ -279,6 +331,9 @@ async def delete_job(job_id: str, _user: str = Depends(require_auth)) -> JSONRes
     shutil.rmtree(job.output_dir, ignore_errors=True)
     if job.input_path.exists():
         job.input_path.unlink(missing_ok=True)
+    # the cached ZIP must not outlive the job it packages (eviction does the same)
+    zip_path = get_settings().cache_dir / f"{job_id}.zip"
+    zip_path.unlink(missing_ok=True)
     registry.remove(job_id)
     return JSONResponse({"deleted": job_id})
 

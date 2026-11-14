@@ -28,6 +28,14 @@ from ..core.events import CancelToken
 
 #: The folder of the project (the parent of the package), used to run the pipeline from a source checkout.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+log = logging.getLogger("autoclip")
+
+
+def _finish(code: int, on_line: Callable[[str], None]) -> int:
+    """Emit the exit marker then the clearing line: the window maps ``done:<code>`` to the final status."""
+    on_line(f"done:{code}")
+    on_line("")
+    return code
 
 
 def flatten(data: dict[str, JsonValue], prefix: str = "") -> dict[str, JsonValue]:
@@ -192,7 +200,7 @@ def run_pipeline(
         cfg = load_config(config_path, overrides)
     except ConfigError as e:
         on_line(f"error: {e}")
-        return 2
+        return _finish(2, on_line)
     log_file = _resolve_log_file(cfg)
     try:
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -268,12 +276,12 @@ def run_pipeline(
         except ConfigError as e:
             on_line(f"error: {e}")
             _cleanup_handlers(_LOG, (adapter,))
-            return 2
+            return _finish(2, on_line)
         except AutoclipError as e:
             log.error("%s", e)
             on_line(str(e))
             _cleanup_handlers(_LOG, (adapter,))
-            return 1
+            return _finish(1, on_line)
     from ..core.events import Reporter
 
     reporter_sink = on_line
@@ -298,19 +306,16 @@ def run_pipeline(
         )
         on_line(f"finished: {result.clips_done} done, {result.clips_failed} failed")
         _cleanup_handlers(_LOG, (adapter,))
-        on_line("")
-        return result.exit_code
+        return _finish(result.exit_code, on_line)
     except ConfigError as e:
         on_line(f"error: {e}")
         _cleanup_handlers(_LOG, (adapter,))
-        on_line("")
-        return 2
+        return _finish(2, on_line)
     except Exception as e:  # a broken run must not take the GUI down
         log.error("%s: %s", type(e).__name__, e, exc_info=True)
         on_line(f"error: {type(e).__name__}: {e}")
         _cleanup_handlers(_LOG, (adapter,))
-        on_line("")
-        return 1
+        return _finish(1, on_line)
 
 
 def _cleanup_handlers(logger: logging.Logger, handlers: tuple[logging.Handler, ...]) -> None:

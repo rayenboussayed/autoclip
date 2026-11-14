@@ -1696,3 +1696,29 @@ def test_drop_helpers_work_without_an_input_field(tmp_path: Path) -> None:
         form._on_drop_videos(cast(tk.Event, _DropEvent("dropped.mp4")))
     finally:
         app.destroy()
+
+
+@needs_display
+def test_done_lines_finish_the_run(tmp_path: Path) -> None:
+    """A ``done:<rc>`` marker from the worker ends the run: rc 0 says finished, anything else says failures."""
+    from autoclip.app.window import AutoclipApp
+
+    app = AutoclipApp(tmp_path / "config.json")
+    try:
+        app._cancelled = False
+        app._lines.put("done:0")
+        app._drain_log()
+        assert app.status["text"] == "Finished."
+        app._lines.put("done:1")
+        app._drain_log()
+        assert app.status["text"] == "Finished with failures (exit 1)."
+        app._cancelled = True
+        app._lines.put("done:0")
+        app._drain_log()
+        assert app.status["text"] == "Finished with failures (exit 1)."  # a cancelled stop leaves the status alone
+        app._lines.put("")  # the clearing line after done: in a stopped run must not reset the status either
+        app._drain_log()
+        assert app.status["text"] == "Finished with failures (exit 1)."
+        assert app._cancelled is False
+    finally:
+        app.destroy()

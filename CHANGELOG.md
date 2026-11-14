@@ -11,6 +11,28 @@ release mentions the source tag/commit for traceability.
 - ci: nested if combined (ruff 0.17.5, SIM102)
 - ci: the optional Ollama import no longer relies on `type: ignore[assignment]`, which a fresh environment without the `ai` extra reported as unused under strict mypy
 - fix: the unsilence re-encode uses MoviePy `method="chain"` instead of `"compose"`; the compose path holds every kept segment in memory (measured ~15 MB per segment — 437 MB at 10 parts, 4.9 GB at 300), so several-hour recordings were OOM-killed; the fix keeps RSS flat (~98 MB) and is ~6x faster
+- fix: a broken cgroup v1 "unlimited" CPU quota made `detect_cpu_count` report 1 core (the duplicate `_container_cpu_quota` returned negative quota); detection now delegates to one guarded `cgroup_cpu_quota` and ignores non-positive quotas
+- fix: memory-pressure detection paired host `mem_total` with the cgroup-capped `mem_available` (permanent "high pressure" in containers, pinning the cache to 4 MB); the snapshot now treats the cgroup limit as the total
+- fix: the render pool `BrokenProcessPool` path dropped a job it had popped for submission; `submit` is guarded and the outer exception path re-queues jobs that were in flight when the pool broke
+- fix: progress accounting counts real completions; worker peak RSS is recorded in SQLite (`clips.peak_rss`) and folded into the run's peak report ("peak rss … workers …")
+- fix: the admission gate now compares against the same `usable_memory()` the render planner uses, and `notify_oom` no longer leaks across batches (`configure()` clears it)
+- fix: `decode_audio` no longer allocates a padded 2x buffer, `frame_db`/`enhance_audio` avoid full-clip resize copies, and `kv_get` refreshes its access time at most every 30 s
+- fix: `estimate_render_bytes` raised to match the observed MoviePy+OpenCV behaviour (24 frame buffers, 10 audio copies)
+- feat: worker RSS affects the batch: `BatchResult` reports the parent/worker peak (`peak_rss_mb`) and the run summary includes the worker maximum read back from the per-video databases
+- feat: `skip.denoise`, `skip.audio_enhance` and `skip.pauses` are wired exactly as documented; the never-implemented `skip.snap` is removed from the schema and the docs
+- feat: the server streams uploads to a temporary file and deletes it on failure (no more in-memory buffering of a 1 GiB upload)
+- feat: `/api/jobs` refuses new work with 429 when `MAX_PENDING_JOBS` (default 8) is reached instead of queueing forever
+- feat: the server hides `/docs`, `/redoc` and `/openapi.json` when auth is enabled; CORS is same-origin by default (no headers at all) and a wildcard origin is served without credentials
+- feat: the server fails fast on a partial auth pair and on a non-loopback bind without auth; `AUTH_*` misconfiguration can never silently make the API public
+- feat: a WebSocket can authenticate with a single-use 60-second ticket minted by `POST /api/jobs/{id}/ticket` (`?token=` stays for backwards compatibility)
+- fix: non-ASCII credentials compare as "wrong" (401), never as an internal error; client-facing job failures report a generic message
+- fix: deleting a job also deletes its cached ZIP from `CACHE_DIR` (the lifespan eviction already did)
+- feat: the desktop app shows `done:<rc>` markers; a finished run reports "Finished." (or failures) instead of a bare clear
+- feat: the Docker image runs as a non-root user; the compose service is loopback-only by default with a read-only root filesystem, all capabilities dropped, `no-new-privileges`, a noexec tmpfs and memory/PID limits
+- feat: the five sherpa-onnx speech-enhancement models are verified by SHA256 at download; Stable Diffusion thumbnails pin the model revision
+- feat: `tests/memory/` — the opt-in Linux memory-regression suite (`AUTOCLIP_MEMORY_TESTS=1`, `make test-memory`): child-process RSS-tree polling against named, measured budgets (M1-M5, M9); fails when the meter never sampled
+- ci: the release build only happens after the full ci gate (ruff, format, mypy, vulture, deptry, pytest with the 100% branch-coverage gate, under xvfb) AND the memory-regression benchmarks pass on the `check` job; the PR gate runs the benchmarks on Linux too
+- fix: restore the `@traced` decorator on `process_video` (a scripted edit had consumed it into the helper above the function; the app pane lost the `[START] process_video` line)
 
 ## [4.0.0] — 2026-11-13 11:08:55 UTC (tag `v4.0.0`, commit `bf27517`)
 

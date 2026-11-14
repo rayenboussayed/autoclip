@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import subprocess
 import wave
 from collections.abc import Iterator
@@ -89,16 +90,22 @@ def _annotation(path: str, line: int, message: str) -> None:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip ``e2e`` and ``network`` tests unless their environment flag opts in (the suite is offline by default)."""
+    """Skip ``e2e`` and ``network`` and ``memory`` tests unless their environment flag opts in (offline by default)."""
     e2e_on = os.environ.get("AUTOCLIP_E2E_TESTS") == "1"
     network_on = e2e_on or os.environ.get("AUTOCLIP_NETWORK_TESTS") == "1"
+    memory_on = os.environ.get("AUTOCLIP_MEMORY_TESTS") == "1"
+    if platform.system() != "Linux":
+        memory_on = False  # the subprocess and cgroup RSS cases are Linux-only
     skip_e2e = pytest.mark.skip(reason="e2e test: set AUTOCLIP_E2E_TESTS=1 to run it")
     skip_network = pytest.mark.skip(reason="network test: set AUTOCLIP_NETWORK_TESTS=1 (or AUTOCLIP_E2E_TESTS=1) to run it")
+    skip_memory = pytest.mark.skip(reason="memory test: set AUTOCLIP_MEMORY_TESTS=1 on Linux to run it")
     for item in items:
         if "e2e" in item.keywords and not e2e_on:
             item.add_marker(skip_e2e)
         elif "network" in item.keywords and not network_on:
             item.add_marker(skip_network)
+        elif "memory" in item.keywords and not memory_on:
+            item.add_marker(skip_memory)
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:

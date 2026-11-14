@@ -51,6 +51,9 @@ jobs:
       - name: Re-run with the security-patched Pillow (virtual display)
         if: runner.os == 'Linux'
         run: pip install "Pillow>=12.3" && xvfb-run -a pytest
+      - name: Memory-regression benchmarks
+        if: runner.os == 'Linux'
+        run: env AUTOCLIP_MEMORY_TESTS=1 pytest tests/memory --no-cov
 
   build-os:
     name: build-os (${{ matrix.name }})

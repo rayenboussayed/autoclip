@@ -734,3 +734,31 @@ def test_snapshot_uses_the_cgroup_limit_as_the_pressure_denominator(monkeypatch:
     snap = mon.snapshot()
     assert snap.mem_total == (2 << 30)  # the cgroup ceiling, not the host's 64 GB
     assert snap.mem_available == 2 << 30  # cgroup ceiling wins over the host's headroom
+
+
+def test_cgroup_memory_limit_reads_valid_limits(tmp_path: Path) -> None:
+    from autoclip.core.resources import _cgroup_memory_limit
+
+    assert _cgroup_memory_limit(tmp_path) is None  # no files at all
+    (tmp_path / "memory.max").write_text(str(10_000))
+    assert _cgroup_memory_limit(tmp_path) == 10_000
+    # v1 "unlimited" sentinel (~2**63) is not a limit either
+    big = tmp_path / "big"
+    big.mkdir()
+    (big / "memory.max").write_text(str(2**63 - 4096))
+    assert _cgroup_memory_limit(big) is None
+    # v1 layout works too
+    v1 = tmp_path / "v1"
+    (v1 / "memory").mkdir(parents=True)
+    (v1 / "memory" / "memory.limit_in_bytes").write_text("512")
+    assert _cgroup_memory_limit(v1) == 512
+
+
+def test_kv_get_refreshes_a_stale_access_time(tmp_path: Path) -> None:
+    s = Store(tmp_path / "kv.db", fresh=True)
+    s.kv_put("old", b"payload")
+    s.conn.execute("UPDATE kv SET atime = 1 WHERE k = 'old'")  # older than the 30 s grace window
+    assert s.kv_get("old") == b"payload"
+    row = s.conn.execute("SELECT atime FROM kv WHERE k = 'old'").fetchone()
+    assert row is not None and float(row[0]) > 1.0  # the read refreshed the access time
+    s.close()

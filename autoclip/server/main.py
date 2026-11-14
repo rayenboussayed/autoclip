@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 
@@ -64,14 +63,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="autoclip server", version=__version__, lifespan=lifespan)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=os.environ.get("CORS_ALLOW_ORIGINS", "*").split(","),
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    settings = get_settings()
+    # docs leak the full API schema when the server is public; hide them unless auth is off or explicitly on loopback
+    hidden = {"docs_url": None, "redoc_url": None, "openapi_url": None} if settings.auth_enabled else {}
+    app = FastAPI(title="autoclip server", version=__version__, lifespan=lifespan, **hidden)  # type: ignore[arg-type]
+    # Same-origin by default: no CORS headers at all unless the operator opts in with an explicit list
+    allowed = [origin.strip() for origin in settings.cors_allow_origins.split(",") if origin.strip()]
+    if allowed:
+        if "*" in allowed:
+            app.add_middleware(
+                CORSMiddleware,
+                allow_origins=allowed,
+                allow_credentials=False,  # wildcard + credentials is an attack, not a convenience
+                allow_methods=["*"],
+                allow_headers=["*"],
+            )
+        else:
+            app.add_middleware(
+                CORSMiddleware,
+                allow_origins=allowed,
+                allow_credentials=True,
+                allow_methods=["*"],
+                allow_headers=["*"],
+            )
     app.include_router(api.router)
     app.include_router(view.router)
 

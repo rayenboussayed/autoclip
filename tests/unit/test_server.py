@@ -1285,7 +1285,16 @@ def test_job_ticket_overflow_eviction(media: Any, monkeypatch: pytest.MonkeyPatc
 
 
 def test_preview_still_requires_auth(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    assert client is not None or True  # placeholder sanity
+    """When credentials are configured, /api/preview rejects anonymous requests exactly like the other endpoints."""
+    monkeypatch.setenv("AUTH_USERNAME", "user")
+    monkeypatch.setenv("AUTH_PASSWORD", "pass")
+    monkeypatch.setenv("MAX_FILE_SIZE", str(256 * 1024 * 1024))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    server_config.get_settings.cache_clear()
+    with TestClient(create_app()) as client:
+        response = client.post("/api/preview", files={"file": ("clip.mp4", media.video.read_bytes(), "video/mp4")})
+        assert response.status_code == 401
 
 
 def test_upload_enforces_max_pending_jobs(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1333,15 +1342,305 @@ def test_progress_manager_unregister_drops_empty_job_sets(monkeypatch: pytest.Mo
     async def run() -> None:
         pm = ProgressManager()
         a, b = FakeWS(), FakeWS()
-        await pm.register("job-x", a)  # type: ignore[arg-type]
-        await pm.register("job-x", b)  # type: ignore[arg-type]
-        await pm.unregister("job-x", a)  # type: ignore[arg-type]
-        await pm.unregister("job-x", b)  # type: ignore[arg-type]
+        await pm.register("job-x", a)
+        await pm.register("job-x", b)
+        await pm.unregister("job-x", a)
+        await pm.unregister("job-x", b)
         assert "job-x" not in pm._sockets  # empty per-job set is deleted, not kept forever
 
-        await pm.register("job-y", a)  # type: ignore[arg-type]
-        await pm.unregister("job-y", a)  # type: ignore[arg-type]
-        await pm.unregister("job-y", a)  # type: ignore[arg-type]  # unregistering an unknown socket is a no-op
+        await pm.register("job-y", a)
+        await pm.unregister("job-y", a)
+        await pm.unregister("job-y", a)  # unregistering an unknown socket is a no-op
         assert pm._sockets == {}
 
     asyncio.run(run())
+
+
+def test_require_auth_rejects_surrogate_credentials_without_crashing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A credential whose bytes cannot be encoded is simply wrong (401), never a 500."""
+    from fastapi import HTTPException
+    from fastapi.security import HTTPBasicCredentials
+
+    from autoclip.server.auth import require_auth
+
+    monkeypatch.setenv("AUTH_USERNAME", "user")
+    monkeypatch.setenv("AUTH_PASSWORD", "pass")
+    server_config.get_settings.cache_clear()
+    with pytest.raises(HTTPException) as excinfo:
+        require_auth(HTTPBasicCredentials(username="x\ud800", password="y\ud800"))
+    assert excinfo.value.status_code == 401
+    assert require_auth(HTTPBasicCredentials(username="user", password="pass")) == "user"
+
+
+def test_cors_wildcard_allows_any_origin_without_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("CORS_ALLOW_ORIGINS", "*")
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    server_config.get_settings.cache_clear()
+    with TestClient(create_app()) as client:
+        response = client.get("/view/", headers={"Origin": "https://anywhere.example"})
+        assert response.headers.get("access-control-allow-origin") == "*"
+        assert "access-control-allow-credentials" not in response.headers
+
+
+def test_cors_explicit_origin_is_echoed_with_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("CORS_ALLOW_ORIGINS", "https://a.example, https://b.example")
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    server_config.get_settings.cache_clear()
+    with TestClient(create_app()) as client:
+        good = client.get("/view/", headers={"Origin": "https://a.example"})
+        assert good.headers.get("access-control-allow-origin") == "https://a.example"
+        assert good.headers.get("access-control-allow-credentials") == "true"
+        bad = client.get("/view/", headers={"Origin": "https://evil.example"})
+        assert "access-control-allow-origin" not in bad.headers
+
+
+def test_cors_is_absent_by_default(client: TestClient) -> None:
+    response = client.get("/view/", headers={"Origin": "https://a.example"})
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_docs_are_hidden_when_auth_is_enabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("AUTH_USERNAME", "user")
+    monkeypatch.setenv("AUTH_PASSWORD", "pass")
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    server_config.get_settings.cache_clear()
+    with TestClient(create_app()) as client:
+        assert client.get("/docs", auth=("user", "pass")).status_code == 404
+        assert client.get("/openapi.json", auth=("user", "pass")).status_code == 404
+        assert client.get("/redoc", auth=("user", "pass")).status_code == 404
+
+
+def test_settings_refuse_partial_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.server.config import Settings
+
+    monkeypatch.setenv("AUTH_USERNAME", "user")
+    monkeypatch.delenv("AUTH_PASSWORD", raising=False)
+    with pytest.raises(Exception, match="AUTH_USERNAME and AUTH_PASSWORD must be set together"):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_settings_refuse_a_public_bind_without_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.server.config import Settings
+
+    monkeypatch.setenv("HOST", "0.0.0.0")
+    monkeypatch.delenv("AUTH_USERNAME", raising=False)
+    monkeypatch.delenv("AUTH_PASSWORD", raising=False)
+    with pytest.raises(Exception, match="refusing to bind"):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_settings_allow_a_public_bind_with_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.server.config import Settings
+
+    monkeypatch.setenv("HOST", "0.0.0.0")
+    monkeypatch.setenv("AUTH_USERNAME", "user")
+    monkeypatch.setenv("AUTH_PASSWORD", "pass")
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.host == "0.0.0.0" and settings.auth_enabled
+
+
+def test_spool_upload_accepts_an_exact_fit_and_rejects_more(tmp_path: Path) -> None:
+    import asyncio
+    import io
+
+    from fastapi import UploadFile
+
+    from autoclip.server.routers.api import _spool_upload, _UploadTooLarge
+
+    dest = tmp_path / "ok.bin"
+    written = asyncio.run(_spool_upload(UploadFile(io.BytesIO(b"exact"), size=5, filename="ok.bin"), dest, 5))
+    assert written == 5 and dest.read_bytes() == b"exact"
+
+    big = tmp_path / "big.bin"
+    with pytest.raises(_UploadTooLarge):
+        asyncio.run(_spool_upload(UploadFile(io.BytesIO(b"way too big"), size=None, filename="big.bin"), big, 4))
+    assert not big.exists()  # the partial file is removed on the way out
+
+
+def test_create_job_rejects_an_unknown_sized_oversized_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import asyncio
+    import io
+
+    from fastapi import BackgroundTasks, HTTPException, UploadFile
+
+    from autoclip.server.routers import api
+    from autoclip.server.state import registry
+
+    monkeypatch.setenv("MAX_FILE_SIZE", "10")
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    server_config.get_settings.cache_clear()
+    try:
+        rate = UploadFile(io.BytesIO(b"x" * 64), size=None, filename="clip.mp4")
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(api.create_job(BackgroundTasks(), file=rate, config_json=None, config=None, _user=""))
+        assert excinfo.value.status_code == 413
+        assert registry._jobs == {}  # the job that was registered is removed again
+    finally:
+        with registry._lock:
+            registry._jobs.clear()
+
+
+def test_preview_rejects_an_unknown_sized_oversized_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import asyncio
+    import io
+
+    from fastapi import HTTPException, UploadFile
+
+    from autoclip.server.routers import api
+
+    monkeypatch.setenv("MAX_FILE_SIZE", "10")
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    server_config.get_settings.cache_clear()
+    file = UploadFile(io.BytesIO(b"x" * 64), size=None, filename="clip.mp4")
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(api.preview(file=file, kind="short", config_json=None, config=None, _user=""))
+    assert excinfo.value.status_code == 413
+
+
+def test_ticket_endpoint_issues_a_ticket_for_an_existing_job(client: TestClient, tmp_path: Path) -> None:
+    from autoclip.server.schemas import JobState
+    from autoclip.server.state import Job, registry
+
+    job = Job(job_id="ticket-job", filename="clip.mp4", input_path=tmp_path / "clip.mp4", output_dir=tmp_path / "tout", config={})
+    job.output_dir.mkdir()
+    job.state = JobState.running
+    with registry._lock:
+        registry._jobs[job.job_id] = job
+    try:
+        response = client.post("/api/jobs/ticket-job/ticket")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ticket"] and body["expires_in"] > 0
+    finally:
+        with registry._lock:
+            registry._jobs.pop(job.job_id, None)
+
+
+def test_ticket_endpoint_returns_404_for_an_unknown_job(client: TestClient) -> None:
+    response = client.post("/api/jobs/nope/ticket")
+    assert response.status_code == 404
+
+
+def test_websocket_accepts_a_valid_ticket_and_rejects_a_replay(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from fastapi.websockets import WebSocketDisconnect
+
+    from autoclip.server.schemas import JobState
+    from autoclip.server.state import Job, registry
+
+    monkeypatch.setenv("AUTH_USERNAME", "user")
+    monkeypatch.setenv("AUTH_PASSWORD", "pass")
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    server_config.get_settings.cache_clear()
+    with TestClient(create_app()) as client:
+        job = Job(job_id="ws-ticket", filename="clip.mp4", input_path=tmp_path / "clip.mp4", output_dir=tmp_path / "wsout2", config={})
+        job.output_dir.mkdir()
+        job.state = JobState.running
+        with registry._lock:
+            registry._jobs[job.job_id] = job
+        try:
+            ticket = client.post("/api/jobs/ws-ticket/ticket", auth=("user", "pass")).json()["ticket"]
+            with client.websocket_connect(f"/api/jobs/ws-ticket/ws?ticket={ticket}") as websocket:
+                assert websocket.receive_json()["job_id"] == job.job_id
+            # the ticket is single-use: it cannot be replayed to open a second connection
+            with pytest.raises(WebSocketDisconnect), client.websocket_connect(f"/api/jobs/ws-ticket/ws?ticket={ticket}") as websocket:
+                websocket.receive_json()
+        finally:
+            with registry._lock:
+                registry._jobs.pop(job.job_id, None)
+
+
+def test_download_reuses_a_cached_archive(client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.server import config as cfg_module
+    from autoclip.server.routers import api
+    from autoclip.server.schemas import JobState
+    from autoclip.server.state import Job, registry
+
+    job = Job(job_id="reuse-zip", filename="x.mp4", input_path=tmp_path / "x.mp4", output_dir=tmp_path / "reuseout", config={})
+    (tmp_path / "x.mp4").write_text("x", encoding="utf-8")
+    job.output_dir.mkdir()
+    job.state = JobState.completed
+    with registry._lock:
+        registry._jobs[job.job_id] = job
+
+    calls = {"n": 0}
+
+    def fake_zip(j: Any) -> Path:
+        calls["n"] += 1
+        target = Path(cfg_module.get_settings().cache_dir) / f"{j.job_id}.zip"
+        target.write_bytes(b"archive")
+        return target
+
+    monkeypatch.setattr(api, "zip_outputs", fake_zip)
+    try:
+        assert client.get("/api/jobs/reuse-zip/download").status_code == 200
+        assert client.get("/api/jobs/reuse-zip/download").status_code == 200
+        assert calls["n"] == 1  # the second download reuses the archive instead of rebuilding it
+    finally:
+        with registry._lock:
+            registry._jobs.pop(job.job_id, None)
+
+
+def test_delete_job_removes_the_cached_archive(client: TestClient, tmp_path: Path) -> None:
+    from autoclip.server import config as cfg_module
+    from autoclip.server.schemas import JobState
+    from autoclip.server.state import Job, registry
+
+    job = Job(job_id="delete-zip", filename="x.mp4", input_path=tmp_path / "x.mp4", output_dir=tmp_path / "delout", config={})
+    (tmp_path / "x.mp4").write_text("x", encoding="utf-8")
+    job.output_dir.mkdir()
+    job.state = JobState.completed
+    with registry._lock:
+        registry._jobs[job.job_id] = job
+    settings = cfg_module.get_settings()
+    zip_path = Path(settings.cache_dir) / "delete-zip.zip"
+    zip_path.write_bytes(b"archive")
+    try:
+        assert client.delete("/api/jobs/delete-zip").status_code == 200
+        assert not zip_path.exists()  # the cached archive is deleted with the job
+    finally:
+        with registry._lock:
+            registry._jobs.pop(job.job_id, None)
+
+
+def test_issue_sweeps_expired_tickets(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.server import tickets
+
+    tickets.reset()
+    monkeypatch.setattr(tickets, "TTL_SECONDS", -0.01)  # everything expires immediately
+    tickets.issue("job-stale-a")
+    tickets.issue("job-stale-b")
+    assert "job-stale-a" not in tickets._issued
+    tickets.reset()
+
+
+def test_eviction_deletes_the_cached_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from autoclip.server import config as cfg_module
+    from autoclip.server.schemas import JobState
+    from autoclip.server.state import Job, registry
+
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    cfg_module.get_settings.cache_clear()
+    settings = cfg_module.get_settings()
+    zip_path = Path(settings.cache_dir) / "evict-me.zip"
+    zip_path.write_bytes(b"archive")
+
+    job = Job(job_id="evict-me", filename="x.mp4", input_path=tmp_path / "x.mp4", output_dir=tmp_path / "evictout", config={})
+    job.output_dir.mkdir()
+    job.state = JobState.completed
+    job.finished_at = 1.0
+    with registry._lock:
+        registry._jobs[job.job_id] = job
+    try:
+        registry.evict_expired(0)
+        assert registry.get("evict-me") is None
+        assert not zip_path.exists()  # the cached archive is deleted with the job
+    finally:
+        with registry._lock:
+            registry._jobs.pop(job.job_id, None)

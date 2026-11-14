@@ -682,7 +682,6 @@ def test_db_peak_rss_returns_zero_for_an_empty_clips_table(tmp_path: Path) -> No
 
 
 def test_db_peak_rss_returns_the_largest_peak(tmp_path: Path) -> None:
-    import sqlite3
 
     from autoclip.core.store import Store
 
@@ -704,7 +703,7 @@ def test_render_all_retries_a_job_whose_pool_submit_fails(media: Media, tmp_path
         def __init__(self, *a: object, **k: object) -> None:
             pass
 
-        def __enter__(self) -> "BoomOnPurposePool":
+        def __enter__(self) -> BoomOnPurposePool:
             return self
 
         def __exit__(self, *a: object) -> None:

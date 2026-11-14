@@ -52,6 +52,7 @@ testpaths = ["tests"]
 markers = [
     "network: talks to the real internet (skipped unless AUTOCLIP_NETWORK_TESTS=1 or AUTOCLIP_E2E_TESTS=1)",
     "e2e: runs the command line against real URLs or starts the local server (skipped unless AUTOCLIP_E2E_TESTS=1)",
+    "memory: memory-regression budgets (skipped unless AUTOCLIP_MEMORY_TESTS=1 on Linux)",
 ]
 # Capture at the Python level, not the fd level: pytest's default fd capture replaces the standard OS
 # handles, and on Windows that intermittently breaks Tcl's file-channel reads ("couldn't read file

@@ -9,7 +9,6 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 from .automation import DEFAULT_TRANSCRIPT_MODELS, denoiser_threads, transcription_beam_size
 from .quality import download_quality_for
