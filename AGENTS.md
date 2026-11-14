@@ -70,8 +70,11 @@ real worker processes).
 `tests/unit/test_version.py` checks it), **add a new section to `CHANGELOG.md` with the release number and its git
 timestamp** (run `git log -1 --format=\"%ci|%H|%s\" HEAD` for the timestamp, and include the changes that went in), and
 **update `README.md`, `AGENTS.md` and `docs/` when behaviour or operating instructions changed**, and push to `main`.
-The build workflow checks that `v<version>` is not tagged yet, builds the five targets, then creates the tag and publishes
-the GitHub release. A push that does not change the version skips the build; a pull request builds without releasing.
+The build workflow first runs the whole ci pipeline (ruff, format, mypy, vulture, deptry and pytest with the 100%
+branch-coverage gate on an Ubuntu/macOS/Windows x Python 3.11/3.12/3.13 matrix) plus the Linux memory-regression
+benchmarks inline as its own jobs, and the build (and therefore the release) only starts when every one of them passes
+on this commit; a failed leg skips `build`/`installers`/`release`. A push that does not change the version skips the
+build; a pull request builds without releasing.
 A release that forgets to touch `CHANGELOG.md`, `README.md`, `AGENTS.md` or `docs/` is incomplete - all four are part
 of the release commit, next to the version bump.
 

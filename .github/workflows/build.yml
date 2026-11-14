@@ -3,9 +3,11 @@ name: build
 # A push to main builds and releases only when the package version has no matching v* tag yet, so a
 # release is a version bump and nothing else. Pull requests build without releasing; a manual dispatch
 # builds without releasing unless it runs on a tag. A v* tag pushed by hand still builds and releases.
-# The `check` job gates everything: a build (and therefore a release) is only attempted after the full
-# ci gate (lint, mypy, vulture, deptry, pytest with the 100% coverage gate) AND the memory-regression
-# benchmarks pass on the commit; when the version did not change the gate is skipped (nothing ships).
+# Everything that ships goes through the gate: a build (and therefore a release) is only attempted
+# after the whole ci pipeline (ruff, format, mypy, vulture, deptry and pytest with the 100%
+# branch-coverage gate on a 3-OS x 3-Python matrix) AND the Linux memory-regression benchmarks pass
+# on this commit. Any failed leg or benchmark skips the build and the release entirely. When the
+# version did not change the whole gate is skipped (nothing ships) and this push relies on ci.yml.
 on:
   workflow_dispatch:
   push:
@@ -111,36 +113,72 @@ jobs:
         if: steps.version.outputs.build != 'true'
         shell: bash
         run: echo "::notice::version unchanged on ${{ github.ref }}; the full ci gate is left to ci.yml (no release will be attempted)"
-      # The release path is gated: nothing is built or released unless this job's checks pass on this commit.
-      # These commands mirror ci.yml exactly (keep them in sync) and add the memory-regression benchmarks.
-      - name: Install the package
-        if: steps.version.outputs.build == 'true'
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+
+  # The release path is gated on the WHOLE ci pipeline: every OS x Python leg must be green
+  # (lint, types, dead code/deps, pytest with the 100% branch-coverage gate) before any
+  # build starts; these jobs mirror ci.yml exactly (keep them in sync).
+  ci:
+    name: ci (${{ matrix.os }}, ${{ matrix.python }})
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
       - name: Lint
-        if: steps.version.outputs.build == 'true'
         run: ruff check . && ruff format --check .
       - name: Type-check
-        if: steps.version.outputs.build == 'true'
         run: mypy autoclip tests tools
       - name: Dead code and dependency hygiene
-        if: steps.version.outputs.build == 'true'
         run: vulture && deptry .
-      # the desktop app tests need a display: a virtual one on Linux (no-op on other runners)
+      # the desktop app tests need a display: a virtual one on Linux (macOS and Windows have one)
       - name: Install a virtual display
-        if: steps.version.outputs.build == 'true'
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb
-      - name: Test (100% branch coverage gate)
-        if: steps.version.outputs.build == 'true'
+      - name: Test
+        if: runner.os != 'Linux'
+        run: pytest
+      - name: Test (virtual display)
+        if: runner.os == 'Linux'
         run: xvfb-run -a pytest
+      - name: Re-run with the security-patched Pillow
+        if: runner.os != 'Linux'
+        run: pip install "Pillow>=12.3" && pytest
+      - name: Re-run with the security-patched Pillow (virtual display)
+        if: runner.os == 'Linux'
+        run: pip install "Pillow>=12.3" && xvfb-run -a pytest
+
+  # Linux-only memory-regression benchmarks; the matrix legs enforce the rest of the pipeline.
+  memory:
+    name: memory-regression
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
       - name: Memory-regression benchmarks
-        if: steps.version.outputs.build == 'true'
         run: env AUTOCLIP_MEMORY_TESTS=1 pytest tests/memory --no-cov
 
   build:
     name: ${{ matrix.name }}
-    needs: check
+    needs: [check, ci, memory]
     if: needs.check.outputs.build == 'true'
     runs-on: ${{ matrix.os }}
     strategy:

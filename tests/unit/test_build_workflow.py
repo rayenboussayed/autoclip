@@ -73,3 +73,37 @@ def test_the_release_asset_names_match_the_installers() -> None:
     } <= artifacts
     assert 'asset="autoclip-$target.tar.gz"' in (ROOT / "install.sh").read_text(encoding="utf-8")
     assert '$asset = "autoclip-windows-x64.zip"' in (ROOT / "install.ps1").read_text(encoding="utf-8")
+
+
+def test_the_release_gate_runs_the_whole_pipeline_on_a_matrix() -> None:
+    """The release must not be reachable unless every OS x Python leg is green (lint, types, tests)."""
+    ci = _job("ci")
+    for os_name in ("ubuntu-latest", "macos-latest", "windows-latest"):
+        assert os_name in ci
+    for py in ("3.11", "3.12", "3.13"):
+        assert py in ci
+    for cmd in ("ruff check .", "ruff format --check .", "mypy autoclip tests tools", "vulture", "deptry .", "pytest"):
+        assert cmd in ci
+    assert "xvfb-run -a pytest" in ci  # the desktop app tests need a display on Linux
+    assert "fail-fast: false" in ci  # one leg must not cancel the others
+
+
+def test_the_build_needs_the_gate_jobs() -> None:
+    """Nothing is built unless the whole pipeline (check + ci legs + memory) passed."""
+    build = _job("build")
+    assert "needs: [check, ci, memory]" in build
+    assert "if: needs.check.outputs.build == 'true'" in build
+
+
+def test_the_release_gate_includes_the_memory_benchmarks() -> None:
+    """The benchmarks are part of the release gate, not an optional extra."""
+    memory = _job("memory")
+    assert "AUTOCLIP_MEMORY_TESTS=1" in memory
+    assert "tests/memory" in memory
+    assert "if: needs.check.outputs.build == 'true'" in memory
+
+
+def test_the_release_and_installers_need_check_and_build() -> None:
+    """The release is two hops away from the gate and nothing else."""
+    assert "needs: [check, build]" in _job("release")
+    assert "needs: [check, build]" in _job("installers")

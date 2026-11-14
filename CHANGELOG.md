@@ -31,7 +31,7 @@ release mentions the source tag/commit for traceability.
 - feat: the Docker image runs as a non-root user; the compose service is loopback-only by default with a read-only root filesystem, all capabilities dropped, `no-new-privileges`, a noexec tmpfs and memory/PID limits
 - feat: the five sherpa-onnx speech-enhancement models are verified by SHA256 at download; Stable Diffusion thumbnails pin the model revision
 - feat: `tests/memory/` — the opt-in Linux memory-regression suite (`AUTOCLIP_MEMORY_TESTS=1`, `make test-memory`): child-process RSS-tree polling against named, measured budgets (M1-M5, M9); fails when the meter never sampled
-- ci: the release build only happens after the full ci gate (ruff, format, mypy, vulture, deptry, pytest with the 100% branch-coverage gate, under xvfb) AND the memory-regression benchmarks pass on the `check` job; the PR gate runs the benchmarks on Linux too
+- ci: the release build only starts after the WHOLE pipeline passes on the commit: a 3-OS x 3-Python matrix running ruff, format, mypy, vulture, deptry and pytest with the 100% branch-coverage gate (the same commands as ci.yml, inlined as the `ci` job) plus the Linux memory-regression benchmarks; any failed leg skips the build and the release, which must be green before `build`/`installers`/`release` run at all. The PR gate runs the benchmarks on Linux too
 - fix: restore the `@traced` decorator on `process_video` (a scripted edit had consumed it into the helper above the function; the app pane lost the `[START] process_video` line)
 
 ## [4.0.0] — 2026-11-13 11:08:55 UTC (tag `v4.0.0`, commit `bf27517`)

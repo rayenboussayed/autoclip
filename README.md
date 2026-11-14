@@ -418,12 +418,14 @@ next run starts close to the learned optimum.
 The build workflow (`.github/workflows/build.yml`) builds a standalone app for **Linux and macOS on
 x64 and arm64, and Windows on x64** - no Python installation needed on the machine that runs it.
 To release, bump `version` in `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml` (they
-must match) and push to `main`: the workflow first runs the full ci gate (ruff, format, mypy,
-vulture, deptry, pytest with the 100% branch-coverage gate) and the memory-regression benchmarks on
-the `check` job - the build only runs when they pass - then builds all five targets, then creates the
-tag and publishes the release - one zip per target, plus the AppImage and the snap of the two Linux
-targets. A push to `main` that does not change the version skips the build (and the release); a pull
-request that touches the build still builds, without releasing.
+must match) and push to `main`: the workflow first runs the whole ci pipeline - ruff, format, mypy,
+vulture, deptry and pytest with the 100% branch-coverage gate on an Ubuntu/macOS/Windows x
+Python 3.11/3.12/3.13 matrix, plus the Linux memory-regression benchmarks - and the build (and
+therefore the release) only starts when every one of those jobs passes on this commit; if any leg is
+red, no build runs and no release is created. It then builds all five targets and creates the tag
+and the release - one zip per target, plus the AppImage and the snap of the two Linux targets. A push
+to `main` that does not change the version skips the build (and the release); a pull request that
+touches the build still builds, without releasing.
 
 To build it yourself (for the machine you are on):
 
