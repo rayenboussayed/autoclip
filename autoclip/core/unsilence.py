@@ -193,6 +193,9 @@ def remove_silence(
             # come from one source, so they share size, fps and aspect.
             assembled = concatenate_videoclips(parts, method="chain")
             _profile = quality_profile(cfg.quality)
+            import uuid
+
+            temp_audio = temporary.with_name(f".{temporary.stem}.{os.getpid()}-{uuid.uuid4().hex}.temp-audio.m4a")
             try:
                 assembled.write_videofile(
                     str(temporary),
@@ -204,9 +207,11 @@ def remove_silence(
                     audio_fps=clip.audio.fps if getattr(clip, "audio", None) is not None and getattr(clip.audio, "fps", None) else 44100,
                     ffmpeg_params=["-crf", str(_profile.crf)],
                     threads=1,
+                    temp_audiofile=str(temp_audio),
                     logger=None,
                 )
             finally:
+                temp_audio.unlink(missing_ok=True)
                 assembled.close()
         finally:
             for part in parts:

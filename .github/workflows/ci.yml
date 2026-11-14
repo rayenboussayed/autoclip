@@ -13,29 +13,52 @@ jobs:
         python: ["3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
     steps:
+      # No step is ever skipped: everything runs even after a failure so nothing fails silently.
       - uses: actions/checkout@v4
+        if: always()
       - uses: actions/setup-python@v5
+        if: always()
         with:
           python-version: ${{ matrix.python }}
-      - run: pip install -e ".[dev]"
-      - run: ruff check . && ruff format --check .
-      - run: mypy autoclip tests tools
-      - run: vulture
-      - run: deptry .
-      # the desktop app tests need a display: a virtual one on Linux (macOS and Windows have one)
+      - name: Install the package
+        if: always()
+        run: pip install -e ".[dev]"
+      - name: Lint
+        if: always()
+        run: ruff check . && ruff format --check .
+      - name: Type-check
+        if: always()
+        run: mypy autoclip tests tools
+      - name: Dead code and dependency hygiene
+        if: always()
+        run: vulture && deptry .
+      # The desktop app tests need a display; Linux uses a virtual one (macOS and Windows have one).
       - name: Install a virtual display
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y xvfb
-      # pytest enforces >= 95% branch coverage (see pyproject.toml); spawned workers are measured too
+        if: always()
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y xvfb
+          else
+            echo "no virtual display needed on ${{ runner.os }}; using the runner's own display"
+          fi
+      # pytest enforces 100% branch coverage (see pyproject.toml); spawned workers are measured too
       - name: Test
-        if: runner.os != 'Linux'
-        run: pytest
-      - name: Test (virtual display)
-        if: runner.os == 'Linux'
-        run: xvfb-run -a pytest
+        if: always()
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            xvfb-run -a pytest
+          else
+            pytest
+          fi
       - name: Re-run with the security-patched Pillow (MoviePy's own pin is merely conservative)
-        if: runner.os != 'Linux'
-        run: pip install "Pillow>=12.3" && pytest
-      - name: Re-run with the security-patched Pillow (virtual display)
-        if: runner.os == 'Linux'
-        run: pip install "Pillow>=12.3" && xvfb-run -a pytest
+        if: always()
+        shell: bash
+        run: |
+          pip install "Pillow>=12.3"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            xvfb-run -a pytest
+          else
+            pytest
+          fi

@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import logging
 import math
+import os
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -175,6 +176,13 @@ def encode(comp: MoviePyClip, dst: Path, fps: float, encoder: Encoder, threads: 
     # Write to a ``.part`` sibling (keeping the container extension so ffmpeg infers the muxer) and
     # rename on success so a killed job leaves no half-written clip.
     target = dst.with_name(f"{dst.stem}.part{dst.suffix}")
+    # MoviePy derives its temporary audio from the *file name* (not the full path) and places it in the
+    # current working directory, so two same-stem clips rendered concurrently (e.g. short/talk/x.mp4 and
+    # long/talk/x.mp4) raced each other and one lost its temp audio mid-encode. Give the temp audio a
+    # unique path next to the output instead.
+    import uuid
+
+    temp_audio = target.with_name(f".{target.stem}.{os.getpid()}-{uuid.uuid4().hex}.temp-audio.m4a")
     # MoviePy's ``write_videofile`` ignores its ``pixel_format`` argument, so a mask-bearing
     # CompositeVideoClip would otherwise reach libx265 as raw ``rgba`` (i444). Forcing the
     # output format here is what keeps HEVC encoders from rejecting the input.
@@ -183,18 +191,22 @@ def encode(comp: MoviePyClip, dst: Path, fps: float, encoder: Encoder, threads: 
         params += ["-tag:v", "hvc1"]  # QuickTime/Safari only play HEVC in MP4 with this tag
     if mp4:
         params += ["-movflags", "+faststart"]
-    comp.write_videofile(
-        str(target),
-        fps=fps,
-        codec=encoder.name,
-        audio_codec="aac",
-        audio_bitrate=f"{quality_profile(quality).aac_bitrate_kbps}k",
-        preset=encoder.preset,
-        pixel_format="yuv420p",
-        threads=threads,
-        ffmpeg_params=params,
-        logger=None,
-    )
+    try:
+        comp.write_videofile(
+            str(target),
+            fps=fps,
+            codec=encoder.name,
+            audio_codec="aac",
+            audio_bitrate=f"{quality_profile(quality).aac_bitrate_kbps}k",
+            preset=encoder.preset,
+            pixel_format="yuv420p",
+            threads=threads,
+            ffmpeg_params=params,
+            temp_audiofile=str(temp_audio),
+            logger=None,
+        )
+    finally:
+        temp_audio.unlink(missing_ok=True)
     log.info(
         "  encoded %.1fs of video in %.1fs (%s, %s, %d threads)",
         comp.duration,

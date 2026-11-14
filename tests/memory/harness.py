@@ -106,12 +106,16 @@ def parse_vm_hwm(text: str) -> int | None:
 
 
 def children_rusage_kb() -> int | None:
-    """Largest child resident (kB) from ``getrusage(RUSAGE_CHILDREN)`` where the OS supports it."""
-    try:
-        import resource
+    """Largest child resident (kB) from ``getrusage(RUSAGE_CHILDREN)`` where the OS supports it (Unix-only)."""
+    import importlib
 
+    try:
+        resource = importlib.import_module("resource")
+    except ImportError:
+        return None  # Unix-only module; Windows has no rusage
+    try:
         return int(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)
-    except (ImportError, ValueError, OSError):
+    except (ValueError, OSError):
         return None
 
 
