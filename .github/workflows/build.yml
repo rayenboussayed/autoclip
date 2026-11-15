@@ -178,7 +178,9 @@ jobs:
           fi
       - name: Print the coverage gaps (on failure)
         if: failure()
-        run: python -m coverage report --show-missing || true
+        shell: bash
+        run: |
+          python -m coverage report --show-missing | awk '$NF ~ /%/ && $NF != "100.00%" { print "::error file=" $1 "::coverage gap: " $0 }' || true
 
   # Linux-only memory-regression benchmarks; the matrix legs enforce the rest of the pipeline.
   memory:
