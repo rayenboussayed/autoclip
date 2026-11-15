@@ -85,6 +85,9 @@ jobs:
           else
             echo "the memory budgets are calibrated for Linux; skipping this leg's benchmark"
           fi
+      - name: Print the coverage gaps (on failure)
+        if: failure()
+        run: python -m coverage report --show-missing || true
 
   build-os:
     name: build-os (${{ matrix.name }})

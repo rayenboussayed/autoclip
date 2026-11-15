@@ -62,3 +62,6 @@ jobs:
           else
             pytest
           fi
+      - name: Print the coverage gaps (on failure)
+        if: failure()
+        run: python -m coverage report --show-missing || true

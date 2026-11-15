@@ -176,6 +176,9 @@ jobs:
           else
             pytest
           fi
+      - name: Print the coverage gaps (on failure)
+        if: failure()
+        run: python -m coverage report --show-missing || true
 
   # Linux-only memory-regression benchmarks; the matrix legs enforce the rest of the pipeline.
   memory:
