@@ -180,7 +180,7 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          python -m coverage report --show-missing | awk '$NF ~ /%/ && $NF != "100.00%" { print "::error file=" $1 "::coverage gap: " $0 }' || true
+          python -m coverage report --show-missing | awk '$6 ~ /%/ && $6 != "100.00%" { print "::error file=" $1 "::coverage gap: " $0 }' || true
 
   # Linux-only memory-regression benchmarks; the matrix legs enforce the rest of the pipeline.
   memory:
