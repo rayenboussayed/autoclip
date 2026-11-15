@@ -67,3 +67,10 @@ jobs:
         shell: bash
         run: |
           python -m coverage report --show-missing | awk '$6 ~ /%/ && $6 != "100.00%" { print "::error file=" $1 "::coverage gap: " $0 }' || true
+      - name: Diagnose the pipeline environment (on failure)
+        if: failure()
+        shell: bash
+        run: |
+          echo "::error file=ci.log::ffmpeg_exe=$(python -c 'from autoclip.core.media import ffmpeg_exe; print(ffmpeg_exe())' 2>&1 | tail -1)" || true
+          echo "::error file=ci.log::curl=$(which curl ffmpeg 2>&1 | tr '\n' ' ') ffmpeg-version=$(python -c 'import subprocess; from autoclip.core.media import ffmpeg_exe; r=subprocess.run([ffmpeg_exe(), "-version"], capture_output=True, text=True, timeout=60); print("exit", r.returncode, "out", r.stdout.splitlines()[0] if r.stdout else "", "err", r.stderr.splitlines()[-1] if r.stderr else "")' 2>&1 | tail -1)" || true
+          echo "::error file=ci.log::witnesses=$(python -c 'import shutil, sys; print("python", sys.version.split("[")[0].strip(), "which-ffmpeg=", shutil.which("ffmpeg"))' 2>&1)" || true
