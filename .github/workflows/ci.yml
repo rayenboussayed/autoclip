@@ -74,3 +74,26 @@ jobs:
           echo "::error file=ci.log::ffmpeg_exe=$(python -c 'from autoclip.core.media import ffmpeg_exe; print(ffmpeg_exe())' 2>&1 | tail -1)" || true
           echo "::error file=ci.log::curl=$(which curl ffmpeg 2>&1 | tr '\n' ' ') ffmpeg-version=$(python -c 'import subprocess; from autoclip.core.media import ffmpeg_exe; r=subprocess.run([ffmpeg_exe(), "-version"], capture_output=True, text=True, timeout=60); print("exit", r.returncode, "out", r.stdout.splitlines()[0] if r.stdout else "", "err", r.stderr.splitlines()[-1] if r.stderr else "")' 2>&1 | tail -1)" || true
           echo "::error file=ci.log::witnesses=$(python -c 'import shutil, sys; print("python", sys.version.split("[")[0].strip(), "which-ffmpeg=", shutil.which("ffmpeg"))' 2>&1)" || true
+      - name: "Diagnose a real pipeline run (on failure)"
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          ffmpeg="$(python -c 'from autoclip.core.media import ffmpeg_exe; print(ffmpeg_exe())' 2>/dev/null | tail -1)"
+          "$ffmpeg" -y -v error -f lavfi -i testsrc2=s=320x180:r=15:d=5 -f lavfi -i sine=frequency=220:duration=5 -pix_fmt yuv420p -c:v libx264 -c:a aac -shortest diag-src.mp4
+          python - <<'PY2'
+          with open("diag.srt", "w", encoding="utf-8") as fh:
+              fh.write("1\n00:00:00,000 --> 00:00:02,000\none sentence is here.\n2\n00:00:02,000 --> 00:00:04,000\ntwo sentences are here.\n3\n00:00:04,000 --> 00:00:05,000\nthe end is here.\n")
+          PY2
+          python -m autoclip --init diag.json >/dev/null 2>&1
+          python - <<'PY'
+          import json
+          p = json.load(open("diag.json"))
+          p["input"] = ["diag-src.mp4"]
+          p.setdefault("clips", {})["ranges"] = ["0-4"]
+          p["clips"]["preset"] = "shorts"
+          p["clips"]["scenes"] = "best"
+          json.dump(p, open("diag.json", "w"))
+          PY
+          python -m autoclip --output-dir diag-out --quality lowest --skip caption,title,llm diag.json > diag-out.log 2>&1
+          echo "::error file=ci.log::diag exit=$? clips=$(ls diag-out/short/diag-src/*.mp4 2>/dev/null | wc -l) log-tail=$(tail -25 diag-out.log | tr '\n' '|')"

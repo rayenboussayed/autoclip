@@ -721,3 +721,14 @@ def test_render_all_retries_a_job_whose_pool_submit_fails(media: Media, tmp_path
     render_all(jobs, 100 << 20)  # must not raise, must render both clips in-process
     assert statuses(store) == ["done", "done"]
     store.close()
+
+
+def test_db_peak_rss_survives_a_corrupt_database(tmp_path: Path) -> None:
+    """A half-written foreign .db (unreadable) must not fail the batch's peak report; it reads as 0."""
+    from autoclip.core.batch import _db_peak_rss
+
+    work = tmp_path / ".work" / "corrupt"
+    work.mkdir(parents=True)
+    (work / "autoclip.db").write_bytes(b"not a sqlite database")
+    assert _db_peak_rss(tmp_path) == 0  # foreign or corrupt rows are skipped, never crash
+
