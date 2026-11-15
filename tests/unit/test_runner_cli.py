@@ -731,4 +731,3 @@ def test_db_peak_rss_survives_a_corrupt_database(tmp_path: Path) -> None:
     work.mkdir(parents=True)
     (work / "autoclip.db").write_bytes(b"not a sqlite database")
     assert _db_peak_rss(tmp_path) == 0  # foreign or corrupt rows are skipped, never crash
-
