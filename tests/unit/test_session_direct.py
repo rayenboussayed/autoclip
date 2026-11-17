@@ -21,7 +21,7 @@ def test_run_pipeline_success(media: Any, tmp_path: Path, monkeypatch: pytest.Mo
 
     path = tmp_path / "config.json"
     path.write_text(json.dumps(cfg), encoding="utf-8")
-    code = run_pipeline(path, cancel=CancelToken(), on_line=lines.append)
+    code = run_pipeline(path, cancel=CancelToken(), on_line=lines.append, output_dir=tmp_path / "out")
     assert code == 0
     assert any("finished:" in line for line in lines)
 
