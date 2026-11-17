@@ -28,6 +28,7 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[TestClie
     monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
     monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.setenv("MAX_CONCURRENT_JOBS", "2")
+    monkeypatch.setenv("AUTOCLIP_SERVER_INPROCESS", "1")  # in-process pipeline; no subprocess re-entry or model download
     server_config.get_settings.cache_clear()
     app = create_app()
     with TestClient(app) as c:

@@ -33,7 +33,7 @@ from ..auth import require_auth
 from ..config import get_settings
 from ..schemas import JobCreated, JobState, JobStatus, OutputFile
 from ..service import build_config, run_job, zip_outputs
-from ..state import registry
+from ..state import Job, registry
 from ..tickets import issue as issue_ticket
 from ..tickets import redeem as redeem_ticket
 
@@ -243,6 +243,21 @@ async def get_job(job_id: str, _user: str = Depends(require_auth)) -> JobStatus:
 _download_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
+async def _archive_zip(job: Job) -> Path:
+    """Return a fresh archive for ``job``; rebuild it under the per-job lock when stale.
+
+    Split out so arcs leaving the ``async with`` land on a traced line on every platform and
+    Python version (3.11's settrace misattributes branch arcs that exit an async-with body).
+    """
+    settings = get_settings()
+    zip_path = settings.cache_dir / f"{job.job_id}.zip"  # zip_outputs builds the same path; keep both in one place
+    async with _download_locks[job.job_id]:  # one rebuild per job: concurrent clicks share the archive
+        finished = job.finished_at if job.finished_at is not None else 0.0
+        if zip_path.is_file() and zip_path.stat().st_mtime >= finished:  # reuse archive built for this completion
+            return zip_path
+        return await asyncio.to_thread(zip_outputs, job)
+
+
 @router.get("/jobs/{job_id}/download")
 async def download_job(job_id: str, _user: str = Depends(require_auth)) -> FileResponse:
     job = registry.get(job_id)
@@ -250,12 +265,8 @@ async def download_job(job_id: str, _user: str = Depends(require_auth)) -> FileR
         raise HTTPException(status_code=404, detail="job not found")
     if job.state != JobState.completed:
         raise HTTPException(status_code=409, detail="job not completed")
-    settings = get_settings()
-    zip_path = settings.cache_dir / f"{job.job_id}.zip"
-    async with _download_locks[job_id]:  # one rebuild per job: concurrent clicks share the archive
-        finished = job.finished_at if job.finished_at is not None else 0.0
-        if not (zip_path.is_file() and zip_path.stat().st_mtime >= finished):  # reuse archive built for this completion
-            zip_path = await asyncio.to_thread(zip_outputs, job)
+    # registry.get returns a Job keyed by its own job_id, so the route parameter and job.job_id agree
+    zip_path = await _archive_zip(job)
     if not zip_path.is_file():
         raise HTTPException(status_code=500, detail="output archive missing")
     return FileResponse(zip_path, media_type="application/zip", filename=f"{job_id}.zip")

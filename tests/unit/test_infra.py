@@ -344,6 +344,18 @@ def test_a_failed_unlock_does_not_lose_the_record(tmp_path: Path, monkeypatch: p
     assert "written before the unlock" in log_file.read_text(encoding="utf-8")
 
 
+def test_a_record_is_written_unlocked_where_appends_are_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """POSIX appends are atomic enough: the record lands without the msvcrt lock."""
+    fake = FakeMsvcrt()
+    monkeypatch.setattr(log_module, "_appends_need_locking", lambda: False)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)  # would record a lock call if the write path took one
+    log_file = tmp_path / "posix.log"
+    setup_logging(log_file, "INFO", None)
+    LOG.info("unlocked record")
+    assert fake.calls == []
+    assert "unlocked record" in log_file.read_text(encoding="utf-8")
+
+
 def test_a_closed_shared_handler_drops_the_record_quietly(tmp_path: Path) -> None:
     handler = log_module._SharedFileHandler(tmp_path / "closed.log", encoding="utf-8")
     handler.close()

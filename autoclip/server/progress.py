@@ -33,10 +33,12 @@ class ProgressManager:
     async def unregister(self, job_id: str, ws: SocketLike) -> None:
         async with self._lock:
             sockets = self._sockets.get(job_id)
-            if sockets is not None:
-                sockets.discard(ws)
-                if not sockets:  # stop accumulating empty per-job sets; one watcher at most needs them
-                    del self._sockets[job_id]
+            if sockets is None:  # nothing registered for this job (already removed or never watched)
+                return
+            sockets.discard(ws)
+            if sockets:  # other watchers remain on this job; keep the set
+                return
+            del self._sockets[job_id]  # stop accumulating empty per-job sets; one watcher at most needs them
 
     async def broadcast(self, job_id: str, payload: dict[str, object]) -> None:
         async with self._lock:

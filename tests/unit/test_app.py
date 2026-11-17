@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import types
@@ -1130,9 +1131,30 @@ def test_stopping_a_pipeline_that_is_already_gone_terminates_it(monkeypatch: pyt
     def no_such_group(pid: int, _sig: int) -> None:
         raise ProcessLookupError(pid)
 
+    monkeypatch.setattr(os, "name", "posix")
     monkeypatch.setattr(os, "kill", no_such_group)
     stop_pipeline(Gone())  # type: ignore[arg-type]
     assert terminated
+
+
+def test_stopping_a_pipeline_signals_the_group_on_posix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The posix group-kill path (session-sourced children), exercised on every platform."""
+
+    sent: list[tuple[int, int]] = []
+
+    class Alive:
+        pid = 1234
+
+        def terminate(self) -> None:
+            """If the group kill was missed, sent stays empty and the assertion below exposes it."""
+
+    def fake_kill(pid: int, sig: int) -> None:
+        sent.append((pid, sig))
+
+    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(os, "kill", fake_kill)
+    stop_pipeline(Alive())  # type: ignore[arg-type]
+    assert sent == [(-1234, signal.SIGTERM)]
 
 
 def test_stopping_a_windows_pipeline_terminates_it_directly(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1162,6 +1184,7 @@ def test_stopping_a_pipeline_that_is_gone_does_not_raise(monkeypatch: pytest.Mon
     def no_such_group(pid: int, _sig: int) -> None:
         raise ProcessLookupError(pid)
 
+    monkeypatch.setattr(os, "name", "posix")
     monkeypatch.setattr(os, "kill", no_such_group)
     stop_pipeline(Vanished())  # type: ignore[arg-type]
 
