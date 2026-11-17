@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
 from collections.abc import Sequence
 from itertools import pairwise
 from pathlib import Path
@@ -77,8 +78,12 @@ def enhance_audio(src: Path, start: float, dur: float, threads: int, *, enhance:
     if use_nr and len(x) >= AUDIO_SR:  # clips under a second are too short to estimate noise from
         import noisereduce
 
+        # Windows has no fork: joblib/loky pickles SpectralGate's bound method for the worker and
+        # fails to un-serialize it there, killing every denoised clip. Serial is deterministic and
+        # the chunks are seconds long, so the pool buys nothing on a CI runner anyway.
+        n_jobs = 1 if os.name == "nt" else threads
         pieces = [
-            noisereduce.reduce_noise(y=x[a:b], sr=AUDIO_SR, stationary=False, n_jobs=threads, prop_decrease=DENOISE_STRENGTH)
+            noisereduce.reduce_noise(y=x[a:b], sr=AUDIO_SR, stationary=False, n_jobs=n_jobs, prop_decrease=DENOISE_STRENGTH)
             for a, b in piece_bounds(len(x), DENOISE_CHUNK_SECONDS * AUDIO_SR, AUDIO_SR)
         ]
         x = np.concatenate(pieces).astype(np.float32)

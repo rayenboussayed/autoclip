@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import sys
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -143,7 +144,7 @@ def _noisereduce_denoise() -> Callable[[F32], F32]:
     import noisereduce  # pragma: no cover
 
     def denoise(audio: F32) -> F32:  # pragma: no cover
-        n_jobs = denoiser_threads(getattr(RESOURCES, "mode", "balance"))  # pragma: no cover
+        n_jobs = 1 if os.name == "nt" else denoiser_threads(getattr(RESOURCES, "mode", "balance"))  # pragma: no cover
         result = noisereduce.reduce_noise(
             y=audio, sr=SR, stationary=False, n_jobs=n_jobs, prop_decrease=DENOISE_STRENGTH
         )  # pragma: no cover
