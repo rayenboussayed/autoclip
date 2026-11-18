@@ -416,6 +416,7 @@ def test_main_writes_a_log_file(media: Media, tmp_path: Path) -> None:
 
 
 def test_events_jsonl_emits_progress_json(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTOCLIP_OUTPUT_DIR", str(tmp_path / "out"))
     cfg = write_config(tmp_path, media, inputs=[str(media.video)], clips={"preset": "shorts"})
     captured: list[str] = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: captured.append(" ".join(map(str, a))))
