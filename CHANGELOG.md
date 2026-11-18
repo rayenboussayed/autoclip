@@ -4,7 +4,13 @@ All notable changes to autoclip, oldest to newest. Release timestamps come from
 Git tags (and commit metadata for untagged but version-stamped commits). Each
 release mentions the source tag/commit for traceability.
 
-## [Unreleased]
+## [4.0.1] — 2026-11-18 05:33:02 UTC (tag `v4.0.1`)
+
+- fix: audio denoise runs serially on Windows (noisereduce's spectral gate spawns joblib/loky workers whose bound method cannot un-serialize on spawn-only platforms; every clip carrying audio failed with BrokenProcessPool); POSIX keeps threaded n_jobs
+- fix: the coverage gate flagged arcs that exit an `async with` body on the 3.11 legs (coverage's settrace misattributes those exits); ProgressManager.unregister and the download handler's fresh-archive decision now return through traced lines, and the two POSIX-only branches (posix process-group signal, atomic-append unlocked write) now have platform-independent tests
+- fix: the FastAPI integration suite runs its pipeline in-process; the subprocess path re-executed autoclip without the stub and tried to download a real faster-whisper model, where anonymous Hugging Face requests get rate-limited on hosted runners
+- test: the events-jsonl CLI and session-direct success tests are pinned to tmp_path so they no longer share `.work/talk/autoclip.db` with whatever ran before them; Store's fresh=True unlink crashed Windows with PermissionError (WinError 32)
+- ci: all nine matrix legs green (3 operating systems x 3 pythons) on this commit; the build only starts after the whole matrix and the Linux memory benchmarks pass
 
 - ci: the binary smoke test builds one short clip via the 4.0 file schema; the old 3.x JSON silently degraded to defaults, produced zero clips, and every build target failed at "Check the binary" before any release was cut
 - ci: dev tools (pytest, pytest-cov, mypy, ruff) are pinned to the versions this release was verified with; CI installs them fresh and cannot drift underneath it again

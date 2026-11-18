@@ -514,7 +514,7 @@ command. Metadata files (`.info.json`, thumbnail, description) are written next 
 
 ## Changelog
 
-See [`CHANGELOG.md`](CHANGELOG.md) for release-by-release notes. The current code is version `4.0.0`.
+See [`CHANGELOG.md`](CHANGELOG.md) for release-by-release notes. The current code is version `4.0.1`.
 
 ## Development
 

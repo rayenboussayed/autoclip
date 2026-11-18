@@ -1,6 +1,6 @@
 # Upgrading from 3.x to 4.0
 
-> Current documentation target: 4.0.0. See `../CHANGELOG.md` for the full release history.
+> Current documentation target: 4.0.1. See `../CHANGELOG.md` for the full release history.
 > `UPGRADING-3.0.md` covers the 2.x → 3.0 changes and is kept as history.
 
 4.0 is a **breaking configuration-schema release**. The config file shrinks from dozens of nested keys to **nine**:
@@ -135,6 +135,6 @@ backend is logged and skipped, never fatal.
 - `--init` and `--init-full` both write the complete nine-key file now (they are identical).
 - The desktop app has four config tabs now: *Videos*, *Clips*, *Download*, *AI* (plus a runtime output-folder control that is
   never written to the config file).
-- Version string: 4.0.0 (`pyproject.toml`, `autoclip/__init__.py`, `snapcraft.yaml`).
+- Version string: 4.0.1 (`pyproject.toml`, `autoclip/__init__.py`, `snapcraft.yaml`).
 
 See also: `docs/options-reference.md` for the generated reference of the nine keys.
