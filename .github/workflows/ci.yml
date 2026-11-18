@@ -3,7 +3,7 @@ name: ci
 permissions:
   contents: read
 
-on: [push, pull_request]
+on: [push, workflow_call]
 jobs:
   test:
     strategy:
@@ -12,6 +12,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     steps:
       # No step is ever skipped: everything runs even after a failure so nothing fails silently.
       - uses: actions/checkout@v4
@@ -66,7 +67,10 @@ jobs:
         if: failure()
         shell: bash
         run: |
+          # pytest-cov combines the parallel data before the suite ends; show the table or the absence of it
+          python -m coverage report --show-missing || true
           python -m coverage report --show-missing | awk '$6 ~ /%/ && $6 != "100.00%" { print "::error file=" $1 "::coverage gap: " $0 }' || true
+          [ -f .coverage ] || echo "::error file=coverage.json::no .coverage data file - pytest died before pytest-cov could combine; nothing was measured"
       - name: Diagnose the pipeline environment (on failure)
         if: failure()
         shell: bash

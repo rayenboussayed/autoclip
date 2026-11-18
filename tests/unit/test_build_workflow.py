@@ -75,17 +75,30 @@ def test_the_release_asset_names_match_the_installers() -> None:
     assert '$asset = "autoclip-windows-x64.zip"' in (ROOT / "install.ps1").read_text(encoding="utf-8")
 
 
+def _job_in(workflow: str, name: str) -> str:
+    """The text of one top-level job in ``workflow`` (job keys are indented by two spaces)."""
+    match = re.search(rf"^  {name}:\n(.*?)(?=^  [\w-]+:\n|\Z)", workflow, re.MULTILINE | re.DOTALL)
+    assert match, f"the workflow has no {name!r} job"
+    return match.group(1)
+
+
 def test_the_release_gate_runs_the_whole_pipeline_on_a_matrix() -> None:
     """The release must not be reachable unless every OS x Python leg is green (lint, types, tests)."""
     ci = _job("ci")
+    assert "needs: check" in ci
+    assert "if: needs.check.outputs.build == 'true'" in ci
+    assert "uses: ./.github/workflows/ci.yml" in ci  # one definition of the matrix, invoked here
+    callee = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "workflow_call" in callee
+    legs = _job_in(callee, "test")
     for os_name in ("ubuntu-latest", "macos-latest", "windows-latest"):
-        assert os_name in ci
+        assert os_name in legs
     for py in ("3.11", "3.12", "3.13"):
-        assert py in ci
+        assert py in legs
     for cmd in ("ruff check .", "ruff format --check .", "mypy autoclip tests tools", "vulture", "deptry .", "pytest"):
-        assert cmd in ci
-    assert "xvfb-run -a pytest" in ci  # the desktop app tests need a display on Linux
-    assert "fail-fast: false" in ci  # one leg must not cancel the others
+        assert cmd in legs
+    assert "xvfb-run -a pytest" in legs  # the desktop app tests need a display on Linux
+    assert "fail-fast: false" in legs  # one leg must not cancel the others
 
 
 def test_the_build_needs_the_gate_jobs() -> None:
@@ -103,7 +116,24 @@ def test_the_release_gate_includes_the_memory_benchmarks() -> None:
     assert "if: needs.check.outputs.build == 'true'" in memory
 
 
+def test_the_appimagetool_download_is_pinned() -> None:
+    """A moving continuous tag is not an installer tool; pin the release and verify its sha."""
+    build = _job("build")
+    assert "appimagetool/releases/download/1.9.1/" in build
+    assert "continuous/" not in build
+    assert "sha256sum -c" in build
+
+
+def test_the_snap_is_required_for_the_linux_targets() -> None:
+    """Both snaps ship, or the release does not publish; a snap failure is not a warning."""
+    build = _job("build")
+    assert "::error file=snapcraft.yaml::" in build
+    assert "continuing without snap" not in build
+    assert "continuing without .snap" not in build
+
+
 def test_the_release_and_installers_need_check_and_build() -> None:
-    """The release is two hops away from the gate and nothing else."""
-    assert "needs: [check, build]" in _job("release")
+    """The release is three hops away from the gate, and it waits for the installer smoke."""
+    assert "needs: [check, build, installers]" in _job("release")
+    assert "if: needs.check.outputs.release == 'true' && needs.installers.result == 'success'" in _job("release")
     assert "needs: [check, build]" in _job("installers")
