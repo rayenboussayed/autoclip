@@ -252,6 +252,7 @@ def test_denoise_runs_serially_on_windows_and_parallel_elsewhere(monkeypatch: py
     """Windows spawns (not forks) joblib/loky workers; the SpectralGate bound method must not cross the spawn."""
     calls = _capture_reduce_noise(monkeypatch)
     mono = np.zeros(16000, dtype=np.float32)
+    monkeypatch.setattr("os.cpu_count", lambda: 8)  # balance -> 2 threads; macOS CI runners report 3
 
     monkeypatch.setattr("os.name", "nt")
     denoise._noisereduce_denoise()(mono)
@@ -259,7 +260,7 @@ def test_denoise_runs_serially_on_windows_and_parallel_elsewhere(monkeypatch: py
 
     monkeypatch.setattr("os.name", "posix")
     denoise._noisereduce_denoise()(mono)
-    assert calls[-1]["n_jobs"] != 1
+    assert calls[-1]["n_jobs"] == 2
 
 
 def test_audio_enhance_uses_serial_denoise_on_windows(media: Media, monkeypatch: pytest.MonkeyPatch) -> None:
