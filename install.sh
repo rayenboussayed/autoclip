@@ -1,6 +1,8 @@
 #!/bin/sh
 # Install autoclip: no Python, no venv, no ffmpeg needed.
 #   curl -fsSL https://github.com/rayenboussayed/autoclip/releases/latest/download/install.sh | sh
+# macOS: the quarantine attribute is kept by default (Gatekeeper will ask on first launch; right-click Open).
+# Set AUTOCLIP_REMOVE_QUARANTINE=1 to strip it (you know what you are doing).
 set -eu
 
 REPO="rayenboussayed/autoclip"

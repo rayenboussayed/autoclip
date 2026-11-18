@@ -6,17 +6,20 @@ release mentions the source tag/commit for traceability.
 
 ## [Unreleased]
 
-- ci: the tag-exists check fails closed — exit 0 means the release tag exists, exit 2 means absent, and any other ls-remote error (or network failure) aborts the release instead of publishing without a verified tag state
-- ci: the `release` job now `needs: installers` in addition to `check` and `build`, and publishes only when both installer smoke tests passed against these exact archives
-- ci: the snap is required — both Linux targets fail when snapcraft fails (a release no longer silently omits the snaps); `appimagetool` is pinned to 1.9.1 with a sha256 check, never the moving `continuous` tag
-- ci: `ci.yml` is reusable (`workflow_call`) and is what `build.yml` runs for the release path (the inline duplicate is deleted); pull requests are gated by pr-gate.yml; check names show as `ci / test (...)`
-- ci: `Print the coverage gaps` prints the table and calls out the total-data-loss case (pytest died before pytest-cov could combine) instead of being silent
+- ci: the tag-exists check fails closed — exit 0 means the release tag exists, exit 2 means absent, and any other ls-remote error (or network failure) aborts the release instead of publishing on unchecked state
+- ci: the `release` job now `needs: installers` as well as `check` and `build`; it publishes only when both installer smoke tests passed. The smoke covers linux-x64 (install.sh) and windows-x64 (install.ps1) and re-packs the same build output — the published archives are not byte-identical, and macOS/arm64 and the snaps are built but never installed or run
+- ci: a snap must land in the release folder — exactly two `.snap` files (linux amd64 + arm64) are asserted before the attestation step, so a missing snap can no longer ship on the strength of the AppImage satisfying the upload check
+- ci: the snap is required — both Linux targets fail when snapcraft fails; `appimagetool` is pinned to 1.9.1 with a sha256 check, never the moving `continuous` tag
+- ci: `ci.yml` is reusable (`workflow_call`) and is what `build.yml` runs for the release path (the inline duplicate is deleted); pull requests are gated by pr-gate.yml and build.yml now triggers on PRs that touch `ci.yml`/`pr-gate.yml`; check names show as `ci / test (...)`; ci.yml runs the 9-leg matrix once per push or PR
+- ci: `Print the coverage gaps` prints the table and calls out total data loss (pytest died before pytest-cov could combine); one `coverage report` pass prints and annotates
+- ci: `ci.yml` gained `timeout-minutes: 40`
 - test: an autouse fixture pins every test's output root to tmp_path, so no rendering test can touch the platform default root again
 - test: the subprocess NDJSON re-entry path is exercised end to end (real child, `--events jsonl`, PYTHONPATH-shadowed whisper stub)
-- test: both noisereduce call sites are pinned to serial n_jobs on Windows (joblib/loky spawn pickling) by tests that force os.name
+- test: both noisereduce call sites are pinned to serial n_jobs on Windows (joblib/loky spawn pickling) by tests that force os.name; the `# pragma: no cover` markers were removed for these lines now that they are covered
+- test: the unit gate test for the release wiring now checks the caller (ci build job) and the callee (ci.yml), and a new test pins pr-gate.yml's matrix to ci.yml's commands so the two copies can not drift silently
 - fix: `job_zip_path` is the single home for the cache-zip path (writer, download route, both deleters, test doubles)
-- install.sh: SHA256SUMS is verified before extraction and the checksum must be 64 hex; the macOS quarantine strip is opt-in via `AUTOCLIP_REMOVE_QUARANTINE=1` (Gatekeeper kept by default)
-- chore: `requirements-dev.txt` installs `-e .[dev]` (single source); `Makefile install` matches; the Dockerfile creates the server state directory as the `app` user
+- install.sh: SHA256SUMS is verified before extraction and the checksum must be 64 hex; the macOS quarantine strip is now an opt-in via `AUTOCLIP_REMOVE_QUARANTINE=1` — **behavior change: the default now keeps the quarantine**, Gatekeeper asks on first launch (right-click Open, or opt in)
+- chore: `requirements-dev.txt` installs `-e .[dev]` (single source); `Makefile install` matches (the `install-dev` alias was folded in); `requirements.txt`'s stale Python floor is corrected to 3.11; the Dockerfile creates the server state directory as root then chowns it to `app`
 
 ## [4.0.1] — 2026-11-18 05:42:50 UTC (tag `v4.0.1`, commit `19bf137`)
 

@@ -9,9 +9,9 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = (ROOT / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8")
 
 
-def _job(name: str) -> str:
-    """The text of one top-level job (job keys are indented by two spaces)."""
-    match = re.search(rf"^  {name}:\n(.*?)(?=^  [\w-]+:\n|\Z)", WORKFLOW, re.MULTILINE | re.DOTALL)
+def _job(name: str, workflow: str = WORKFLOW) -> str:
+    """The text of one top-level job in ``workflow`` (job keys are indented by two spaces)."""
+    match = re.search(rf"^  {name}:\n(.*?)(?=^  [\w-]+:\n|\Z)", workflow, re.MULTILINE | re.DOTALL)
     assert match, f"the workflow has no {name!r} job"
     return match.group(1)
 
@@ -75,13 +75,6 @@ def test_the_release_asset_names_match_the_installers() -> None:
     assert '$asset = "autoclip-windows-x64.zip"' in (ROOT / "install.ps1").read_text(encoding="utf-8")
 
 
-def _job_in(workflow: str, name: str) -> str:
-    """The text of one top-level job in ``workflow`` (job keys are indented by two spaces)."""
-    match = re.search(rf"^  {name}:\n(.*?)(?=^  [\w-]+:\n|\Z)", workflow, re.MULTILINE | re.DOTALL)
-    assert match, f"the workflow has no {name!r} job"
-    return match.group(1)
-
-
 def test_the_release_gate_runs_the_whole_pipeline_on_a_matrix() -> None:
     """The release must not be reachable unless every OS x Python leg is green (lint, types, tests)."""
     ci = _job("ci")
@@ -90,7 +83,7 @@ def test_the_release_gate_runs_the_whole_pipeline_on_a_matrix() -> None:
     assert "uses: ./.github/workflows/ci.yml" in ci  # one definition of the matrix, invoked here
     callee = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "workflow_call" in callee
-    legs = _job_in(callee, "test")
+    legs = _job("test", callee)
     for os_name in ("ubuntu-latest", "macos-latest", "windows-latest"):
         assert os_name in legs
     for py in ("3.11", "3.12", "3.13"):
@@ -130,6 +123,31 @@ def test_the_snap_is_required_for_the_linux_targets() -> None:
     assert "::error file=snapcraft.yaml::" in build
     assert "continuing without snap" not in build
     assert "continuing without .snap" not in build
+
+
+def test_the_pr_gate_runs_the_same_legs_as_ci_yml() -> None:
+    """pr-gate.yml carries a near-copy of the ci matrix; keep the two honest or they drift silently."""
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    pr = (ROOT / ".github" / "workflows" / "pr-gate.yml").read_text(encoding="utf-8")
+    legs = _job("verify", pr)
+    ci_job = _job("test", ci)
+    for cmd in (
+        "ruff check .",
+        "ruff format --check .",
+        "mypy autoclip tests tools",
+        "vulture",
+        "deptry .",
+        "xvfb-run -a pytest",
+        "fail-fast: false",
+    ):
+        assert cmd in legs, f"pr-gate's verify leg drifted from ci.yml: {cmd}"
+        assert cmd in ci_job, f"ci.yml is missing the leg pr-gate uses: {cmd}"
+    for os_name in ("ubuntu-latest", "macos-latest", "windows-latest"):
+        assert os_name in legs
+        assert os_name in ci_job
+    for py in ("3.11", "3.12", "3.13"):
+        assert py in legs
+        assert py in ci_job
 
 
 def test_the_release_and_installers_need_check_and_build() -> None:

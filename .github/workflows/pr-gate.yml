@@ -89,9 +89,8 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          # pytest-cov combines the parallel data before the suite ends; show the table or the absence of it
-          python -m coverage report --show-missing || true
-          python -m coverage report --show-missing | awk '$6 ~ /%/ && $6 != "100.00%" { print "::error file=" $1 "::coverage gap: " $0 }' || true
+          # one pass: the table shows in the log and the awk emits ::error lines for non-100% rows
+          python -m coverage report --show-missing | awk '{ print } $6 ~ /%/ && $6 != "100.00%" { print "::error file=" $1 "::coverage gap: " $0 }' || true
           [ -f .coverage ] || echo "::error file=coverage.json::no .coverage data file - pytest died before pytest-cov could combine; nothing was measured"
       - name: Diagnose the pipeline environment (on failure)
         if: failure()

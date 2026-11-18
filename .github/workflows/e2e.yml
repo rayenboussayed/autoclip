@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       level:
-        description: "Download ladder level (each step is six minutes of source video, up to the full clip length)"
+        description: "Download ladder level (levels only label the ledger; since 4.0 every run downloads the full videos - expect hours)"
         type: number
         default: 1
 

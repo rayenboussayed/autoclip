@@ -141,16 +141,14 @@ def _sherpa_denoise(model_dir: Path) -> Callable[[F32], F32]:
 
 def _noisereduce_denoise() -> Callable[[F32], F32]:
     """A denoiser that removes stationary noise with spectral gating."""
-    import noisereduce  # pragma: no cover
+    import noisereduce
 
-    def denoise(audio: F32) -> F32:  # pragma: no cover
-        n_jobs = 1 if os.name == "nt" else denoiser_threads(getattr(RESOURCES, "mode", "balance"))  # pragma: no cover
-        result = noisereduce.reduce_noise(
-            y=audio, sr=SR, stationary=False, n_jobs=n_jobs, prop_decrease=DENOISE_STRENGTH
-        )  # pragma: no cover
-        return np.asarray(result, dtype=np.float32)  # pragma: no cover
+    def denoise(audio: F32) -> F32:
+        n_jobs = 1 if os.name == "nt" else denoiser_threads(getattr(RESOURCES, "mode", "balance"))
+        result = noisereduce.reduce_noise(y=audio, sr=SR, stationary=False, n_jobs=n_jobs, prop_decrease=DENOISE_STRENGTH)
+        return np.asarray(result, dtype=np.float32)
 
-    return denoise  # pragma: no cover
+    return denoise
 
 
 class SpeechEnhancer:

@@ -425,7 +425,7 @@ Python 3.11/3.12/3.13 matrix, plus the Linux memory-regression benchmarks - and 
 therefore the release) only starts when every one of those jobs passes on this commit; if any leg is
 red, no build runs and no release is created; if an installer smoke test fails, the release still does
 not publish. It then builds all five targets and creates the tag
-and the release - one zip per target, plus the AppImage and the snap of the two Linux targets. A push
+and the release - a `.tar.gz` per Linux and macOS target, `.zip` for Windows, plus the AppImage and the snap of the two Linux targets. On success the release is proven only on linux-x64 and windows-x64 (the installer smoke tests); the other archives are built and checksummed but never installed or run on their own platforms. A push
 to `main` that does not change the version skips the build (and the release); a pull request that
 touches the build still builds, without releasing. There is no human approval gate on the release
 job: it is only green because the checks are, and every release is cut at a commit whose whole ci
@@ -561,12 +561,10 @@ inspected without opening the nested case folders. The folder is ignored by git.
 `AUTOCLIP_E2E_TESTS=1` also enables the `network` tests; `AUTOCLIP_NETWORK_TESTS=1` alone does not
 run the e2e cases.
 
-The manifest cases walk a **download ladder**: each level keeps the first six minutes of every video,
-and every extra level adds six minutes (`AUTOCLIP_E2E_LEVEL`, default `1`; the last level is the full
-video). Originals live in `tests/.cache/e2e/` (or `AUTOCLIP_E2E_CACHE`), so a deeper level reuses what
-an earlier one downloaded instead of starting over, and `levels.json` compares the clips of a level
-with the previous one so a quality regression is visible in the results. Use `AUTOCLIP_E2E_LEVEL=3`
-for eighteen-minute sources, or a high level to reach the full videos.
+The manifest cases walk a **download ladder**: since 4.0 removed `download.time_range`, a level **downloads the full
+videos**; `AUTOCLIP_E2E_LEVEL` only labels the `levels.json` ledger, it never shortens the sources, so a full run means
+hours of real network. Originals live in `tests/.cache/e2e/` (or `AUTOCLIP_E2E_CACHE`), `levels.json` compares the
+clips of a level with the previous one, and the e2e workflow runs only on manual dispatch.
 
 `tests/e2e/test_server_e2e.py` starts the real server (`python -m autoclip.server`) on a free port,
 uploads the generated fixture video, follows the WebSocket, downloads the ZIP, probes the rendered

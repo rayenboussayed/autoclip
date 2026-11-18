@@ -22,6 +22,8 @@ on:
       - "assets/**"
       - "autoclip.spec"
       - "snapcraft.yaml"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/pr-gate.yml"
       - ".github/workflows/build.yml"
       - "pyproject.toml"
       - "install.sh"
@@ -295,8 +297,8 @@ jobs:
 
   release:
     name: release
-    # the release needs the installer smoke to have passed against these exact archives; it runs in
-    # parallel with the build, so it must be in needs, not merely hoped for downstream
+    # the installer smoke (linux-x64 + windows-x64) re-packages the same build output and proves the
+    # install path before publish; it is NOT byte-identical to the published archives. Runs after build.
     needs: [check, build, installers]
     if: needs.check.outputs.release == 'true' && needs.installers.result == 'success'
     runs-on: ubuntu-latest
@@ -335,6 +337,15 @@ jobs:
           cp install.sh install.ps1 "$here"/
           (cd "$here" && for f in *.tar.gz *.zip *.AppImage *.snap install.sh install.ps1; do [ -e "$f" ] && sha256sum "$f"; done > SHA256SUMS)
           ls -la release
+      - name: Assert both snaps made it into the release folder
+        run: |
+          set -euo pipefail
+          # the AppImage always satisfies the upload step's existence check; the snaps would not
+          count=$(find release -maxdepth 1 -name '*.snap' | wc -l)
+          if [ "${count:-0}" -ne 2 ]; then
+            echo "::error file=snapcraft.yaml::expected exactly 2 .snap files (linux amd64 + arm64) in the release folder, found ${count:-0}"
+            exit 1
+          fi
       - name: Attest the release assets
         uses: actions/attest-build-provenance@v2
         with:

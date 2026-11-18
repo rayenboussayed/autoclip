@@ -1,7 +1,7 @@
 PYTHON ?= python
 CONFIG ?= config.json
 
-.PHONY: help install install-dev install-server upgrade-pillow setup-precommit \
+.PHONY: help install install-server upgrade-pillow setup-precommit \
 	init init-full run gui formats platforms download-only server \
 	build appimage snap \
 	lint format format-check mypy vulture deptry \
@@ -12,7 +12,6 @@ CONFIG ?= config.json
 install:
 	pip install -e ".[dev]"
 
-install-dev: install
 
 install-server:
 	pip install -e ".[server]"

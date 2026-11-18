@@ -1588,9 +1588,8 @@ def test_download_reuses_a_cached_archive(client: TestClient, tmp_path: Path, mo
 
 
 def test_delete_job_removes_the_cached_archive(client: TestClient, tmp_path: Path) -> None:
-    from autoclip.server import config as cfg_module
     from autoclip.server.schemas import JobState
-    from autoclip.server.state import Job, registry
+    from autoclip.server.state import Job, job_zip_path, registry
 
     job = Job(job_id="delete-zip", filename="x.mp4", input_path=tmp_path / "x.mp4", output_dir=tmp_path / "delout", config={})
     (tmp_path / "x.mp4").write_text("x", encoding="utf-8")
@@ -1598,8 +1597,7 @@ def test_delete_job_removes_the_cached_archive(client: TestClient, tmp_path: Pat
     job.state = JobState.completed
     with registry._lock:
         registry._jobs[job.job_id] = job
-    settings = cfg_module.get_settings()
-    zip_path = Path(settings.cache_dir) / "delete-zip.zip"
+    zip_path = job_zip_path("delete-zip")
     zip_path.write_bytes(b"archive")
     try:
         assert client.delete("/api/jobs/delete-zip").status_code == 200
@@ -1623,13 +1621,12 @@ def test_issue_sweeps_expired_tickets(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_eviction_deletes_the_cached_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from autoclip.server import config as cfg_module
     from autoclip.server.schemas import JobState
-    from autoclip.server.state import Job, registry
+    from autoclip.server.state import Job, job_zip_path, registry
 
     monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
     monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
     cfg_module.get_settings.cache_clear()
-    settings = cfg_module.get_settings()
-    zip_path = Path(settings.cache_dir) / "evict-me.zip"
+    zip_path = job_zip_path("evict-me")
     zip_path.write_bytes(b"archive")
 
     job = Job(job_id="evict-me", filename="x.mp4", input_path=tmp_path / "x.mp4", output_dir=tmp_path / "evictout", config={})
