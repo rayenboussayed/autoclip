@@ -33,7 +33,7 @@ from ..auth import require_auth
 from ..config import get_settings
 from ..schemas import JobCreated, JobState, JobStatus, OutputFile
 from ..service import build_config, run_job, zip_outputs
-from ..state import Job, registry
+from ..state import Job, job_zip_path, registry
 from ..tickets import issue as issue_ticket
 from ..tickets import redeem as redeem_ticket
 
@@ -249,8 +249,7 @@ async def _archive_zip(job: Job) -> Path:
     Split out so arcs leaving the ``async with`` land on a traced line on every platform and
     Python version (3.11's settrace misattributes branch arcs that exit an async-with body).
     """
-    settings = get_settings()
-    zip_path = settings.cache_dir / f"{job.job_id}.zip"  # zip_outputs builds the same path; keep both in one place
+    zip_path = job_zip_path(job.job_id)
     async with _download_locks[job.job_id]:  # one rebuild per job: concurrent clicks share the archive
         finished = job.finished_at if job.finished_at is not None else 0.0
         if zip_path.is_file() and zip_path.stat().st_mtime >= finished:  # reuse archive built for this completion
@@ -343,7 +342,7 @@ async def delete_job(job_id: str, _user: str = Depends(require_auth)) -> JSONRes
     if job.input_path.exists():
         job.input_path.unlink(missing_ok=True)
     # the cached ZIP must not outlive the job it packages (eviction does the same)
-    zip_path = get_settings().cache_dir / f"{job_id}.zip"
+    zip_path = job_zip_path(job_id)
     zip_path.unlink(missing_ok=True)
     registry.remove(job_id)
     return JSONResponse({"deleted": job_id})

@@ -269,6 +269,7 @@ unless the config asks for something else.
 | `CORS_ALLOW_ORIGINS` | `""` | comma-separated browser origins; empty = same-origin only; `*` allowed but without credentials |
 | `OUTPUT_DIR` / `CACHE_DIR` | `.server/outputs` / `.server/cache` | jobs, work folders and ZIPs |
 | `JOB_TTL_SECONDS` | `3600` | expired jobs are evicted in the background |
+| `AUTOCLIP_SERVER_INPROCESS` | unset | test-only: the pipeline runs in the server process instead of re-entering `python -m autoclip`; never set this in production |
 | `AUTH_USERNAME` / `AUTH_PASSWORD` | empty | HTTP Basic auth **only when both are set**; otherwise the API is public |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | export OpenTelemetry spans to a collector (none are exported when unset) |
 
@@ -422,10 +423,26 @@ must match) and push to `main`: the workflow first runs the whole ci pipeline - 
 vulture, deptry and pytest with the 100% branch-coverage gate on an Ubuntu/macOS/Windows x
 Python 3.11/3.12/3.13 matrix, plus the Linux memory-regression benchmarks - and the build (and
 therefore the release) only starts when every one of those jobs passes on this commit; if any leg is
-red, no build runs and no release is created. It then builds all five targets and creates the tag
+red, no build runs and no release is created; if an installer smoke test fails, the release still does
+not publish. It then builds all five targets and creates the tag
 and the release - one zip per target, plus the AppImage and the snap of the two Linux targets. A push
 to `main` that does not change the version skips the build (and the release); a pull request that
-touches the build still builds, without releasing.
+touches the build still builds, without releasing. There is no human approval gate on the release
+job: it is only green because the checks are, and every release is cut at a commit whose whole ci
+matrix passed.
+
+### Install script
+
+Releases also ship `install.sh` / `install.ps1`:
+
+```bash
+curl -fsSL https://github.com/rayenboussayed/autoclip/releases/latest/download/install.sh | sh
+```
+
+The script verifies the downloaded archive against `SHA256SUMS` (integrity of the transfer, not proof of who
+built it; releases also carry a build-provenance attestation) before extracting anything. On macOS the
+quarantine attribute is kept by default and Gatekeeper will ask on first launch; an explicit opt-in strips
+it: `curl -fsSL …/install.sh | AUTOCLIP_REMOVE_QUARANTINE=1 sh`. `install.ps1` has no quarantine concept.
 
 To build it yourself (for the machine you are on):
 
@@ -519,7 +536,7 @@ See [`CHANGELOG.md`](CHANGELOG.md) for release-by-release notes. The current cod
 ## Development
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -e ".[dev]"
 ruff check . && ruff format --check . && mypy autoclip tests tools
 pytest            # fails below 100% branch coverage (currently 100%); real ffmpeg, real worker processes
 pre-commit install   # the same checks on every commit (ruff, mypy and the test suite)

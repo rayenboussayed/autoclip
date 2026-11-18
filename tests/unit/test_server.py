@@ -1556,7 +1556,6 @@ def test_websocket_accepts_a_valid_ticket_and_rejects_a_replay(monkeypatch: pyte
 
 
 def test_download_reuses_a_cached_archive(client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from autoclip.server import config as cfg_module
     from autoclip.server.routers import api
     from autoclip.server.schemas import JobState
     from autoclip.server.state import Job, registry
@@ -1570,9 +1569,11 @@ def test_download_reuses_a_cached_archive(client: TestClient, tmp_path: Path, mo
 
     calls = {"n": 0}
 
+    from autoclip.server import state as state_module
+
     def fake_zip(j: Any) -> Path:
         calls["n"] += 1
-        target = Path(cfg_module.get_settings().cache_dir) / f"{j.job_id}.zip"
+        target = state_module.job_zip_path(j.job_id)
         target.write_bytes(b"archive")
         return target
 

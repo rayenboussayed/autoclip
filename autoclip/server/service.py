@@ -14,7 +14,7 @@ from ..core.process import pipeline_command
 from .config import get_settings
 from .progress import progress_manager
 from .schemas import JobState
-from .state import Job
+from .state import Job, job_zip_path
 
 log = logging.getLogger("autoclip.server")
 
@@ -243,8 +243,7 @@ def zip_outputs(job: Job) -> Path:
     does not need. Keeping the relative paths avoids two ``clips.json`` files (one per kind) colliding
     when the same source produced both a short and a long clip.
     """
-    settings = get_settings()
-    zip_path = settings.cache_dir / f"{job.job_id}.zip"
+    zip_path = job_zip_path(job.job_id)
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(job.output_dir.rglob("*")):
             relative = path.relative_to(job.output_dir)

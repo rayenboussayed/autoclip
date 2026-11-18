@@ -14,6 +14,11 @@ from .config import get_settings
 from .schemas import JobState
 
 
+def job_zip_path(job_id: str) -> Path:
+    """The cache zip for a job. One home for the writer (service.zip_outputs), the download route, both deleters and the test doubles."""
+    return get_settings().cache_dir / f"{job_id}.zip"
+
+
 @dataclass
 class Job:
     job_id: str
@@ -112,7 +117,7 @@ class JobRegistry:
             shutil.rmtree(j.output_dir, ignore_errors=True)
         if j.input_path.exists():
             j.input_path.unlink(missing_ok=True)
-        zip_path = get_settings().cache_dir / f"{j.job_id}.zip"
+        zip_path = job_zip_path(j.job_id)
         if zip_path.is_file():
             zip_path.unlink()
 

@@ -22,10 +22,10 @@ render (enhance audio, cut pauses/fillers, layout, burn captions, encode on GPU 
 ## 2. Commands
 
 ```bash
-pip install -r requirements-dev.txt            # runtime + dev tools (pytest, pytest-cov, mypy, ruff)
+pip install -e ".[dev]"                      # runtime + dev tools (pytest, pytest-cov, mypy, ruff)
 pip install -U "Pillow>=12.3"                  # security fixes; MoviePy's "<12" pin is conservative (CI runs both)
 pip install -e .                               # optional: gives the `autoclip` console command
-pip install -e ".[server]"                     # optional: the FastAPI server (tests get it through requirements-dev.txt)
+pip install -e ".[server]"                     # optional: the FastAPI server (tests get it through the dev extra)
 
 python -m autoclip --init config.json          # tiny starter config      (--init-full: every option + default)
 python -m autoclip [config.json]               # run (no config: ./config.json if present, else ./input.mp4 + defaults; exit 0/1/2)
@@ -70,11 +70,14 @@ real worker processes).
 `tests/unit/test_version.py` checks it), **add a new section to `CHANGELOG.md` with the release number and its git
 timestamp** (run `git log -1 --format=\"%ci|%H|%s\" HEAD` for the timestamp, and include the changes that went in), and
 **update `README.md`, `AGENTS.md` and `docs/` when behaviour or operating instructions changed**, and push to `main`.
-The build workflow first runs the whole ci pipeline (ruff, format, mypy, vulture, deptry and pytest with the 100%
-branch-coverage gate on an Ubuntu/macOS/Windows x Python 3.11/3.12/3.13 matrix) plus the Linux memory-regression
-benchmarks inline as its own jobs, and the build (and therefore the release) only starts when every one of them passes
-on this commit; a failed leg skips `build`/`installers`/`release`. A push that does not change the version skips the
-build; a pull request builds without releasing.
+The build workflow (`.github/workflows/build.yml`) calls `.github/workflows/ci.yml` as a reusable workflow for the
+whole ci pipeline (ruff, format, mypy, vulture, deptry and pytest with the 100% branch-coverage gate on an
+Ubuntu/macOS/Windows x Python 3.11/3.12/3.13 matrix), then the Linux memory-regression benchmarks; the build (and
+therefore the release) only starts when every one of those jobs passes on this commit; a failed leg skips
+`build`/`installers`/`release`. A snap that cannot be built fails the Linux targets. The `release` job is **not**
+behind a protected GitHub environment: the gate is the checks, not an approval; only ever cut a release at a commit
+whose whole ci matrix passed. A push that does not change the version skips the
+build; pull requests go through pr-gate.yml, which also builds the Docker image and all five OS targets.
 A release that forgets to touch `CHANGELOG.md`, `README.md`, `AGENTS.md` or `docs/` is incomplete - all four are part
 of the release commit, next to the version bump.
 
@@ -156,7 +159,7 @@ docs/             stt-comparison.md - the measured comparison of transcription m
                  memory-regression.md - the memory suite: budgets, recalibration rules, known limits
 AGENTS.md        this file (guidance for coding agents)
 pyproject.toml    deps, ruff, mypy(strict), pytest(+coverage gate, `network` marker), coverage(multiprocessing)
-.github/workflows/ci.yml       ubuntu/macos/windows x py3.11/3.12/3.13, then re-run with Pillow>=12.3
+.github/workflows/ci.yml       ubuntu/macos/windows x py3.11/3.12/3.13 (reusable: push, and workflow_call for build.yml), then re-run with Pillow>=12.3
 .github/workflows/pr-gate.yml  pull-request gate: ci checks, all OS builds, and Docker smoke build
 .github/workflows/network.yml  weekly (and manual) real-platform downloader tests
 .github/workflows/e2e.yml      manual command-line end-to-end runs (results uploaded as an artifact)
@@ -519,22 +522,27 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     folder is the source of truth for a run, not a tee'd stdout file**: a second session writing the same
     log path (shared `/tmp` folders are shared between OpenCode sessions) clobbers it mid-run. Never mark a
     fake-based test `e2e`.
-  * E2E ladder: every manifest case downloads the first `AUTOCLIP_E2E_LEVEL * 360` seconds of its video (default
-    level 1 = six minutes; the last level is the full video) into `tests/.cache/e2e/<id>/level_<n>` (or
-    `AUTOCLIP_E2E_CACHE`), renders one short and one long clip, and writes `levels.json` so the run can compare the
-    clips with the previous level. Deeper levels reuse the cached originals. `tests/e2e/test_server_e2e.py` starts a
+  * E2E ladder: `AUTOCLIP_E2E_LEVEL` only labels the `levels.json` ledger; the pipeline downloads the **full** videos
+    from `tests/assets/youtube.json` and renders one short and one long clip per entry (since 4.0 removed
+    `download.time_range`, there is no six-minute slice). Expect hours and real-network access; `.github/workflows/
+    e2e.yml` is a manual dispatch, not a gate. `tests/e2e/test_server_e2e.py` starts a
     real `python -m autoclip.server` on a free port, uploads the fixture video, follows the WebSocket, downloads the
     ZIP, probes the clip and deletes the job (localhost only).
   * Server: `tests/unit/test_server.py` uses FastAPI's `TestClient` (the `fastapi` import is skipped only when the
     optional extra is genuinely absent); `tests/e2e/test_server_e2e.py` is the real-process check. The module-level
     `KEEPALIVE_SECONDS`/`EVICT_SECONDS` are patched instead of `asyncio.sleep`, `get_settings.cache_clear()` runs
-    between tests, and the auth env vars are reset so one test cannot make another public or private.
+    between tests, and the auth env vars are reset so one test cannot make another public or private. The subprocess
+    re-entry path (`AUTOCLIP_SERVER_INPROCESS` unset) is covered end to end by
+    `tests/integration/test_server_subprocess.py` (real child, `--events jsonl`, PYTHONPATH-shadowed whisper stub);
+    `AUTOCLIP_SERVER_INPROCESS=1` is test-only (see the README server table).
   * Memory: `tests/memory/` is the opt-in memory-regression suite (Linux only, `AUTOCLIP_MEMORY_TESTS=1`,
     `make test-memory`). Budgets in `tests/memory/budgets.py` are measured values with headroom - recalibrate only
     with a fresh measurement, note the date, and never tighten one below the measurement. Subprocess isolation is
     deliberate: in-process budgets measured 21-22 samples and ±10 % noise, so every case polls the parent-plus-children
     RSS tree of a child process instead. A meter that records fewer than `MIN_SAMPLES` fails the case. The release gate
     and the PR gate run it on Linux. See `docs/memory-regression.md`.
+  * Default output root: an autouse fixture in `tests/conftest.py` sets `AUTOCLIP_OUTPUT_DIR` to a per-test
+    `tmp_path`, so rendering tests never touch the platform default root; `--output-dir` always wins.
   * OS-specific logic (font folders, GPU priority per OS, cgroups) is tested by **passing the platform/paths in**
     (`font_dirs(system, env, home)`, `pick_encoder(cfg, system)`, `cgroup_*(root)`), never by running on that OS.
   * Hardware: `hardware.works` is `functools.cache`d - the test module clears it (`_fresh_probe_cache`). A software
@@ -705,11 +713,13 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 37. **The three recurring Windows causes** (all seen on the 2026-11-15 push; all healed by the v4.0.1 patch set): **(a)** An integration test that lets the server job re-enter `python -m autoclip` as a fresh subprocess loses the stub and tries to download a real faster-whisper model; anonymous HF requests get rate-limited and every "completed" assertion dies. Fix: every pipeline integration test sets `AUTOCLIP_SERVER_INPROCESS=1` (as `test_parity.py` and `test_cancel.py` already did). **(b)** `noisereduce` spawns joblib/loky workers that must un-serialize SpectralGate's bound method; Windows is spawn-only, the unpickle fails, every clip fails with `BrokenProcessPool: A task has failed to un-serialize.` POSIX is fork-tolerant. Fix: `n_jobs=1` on `os.name == "nt"`. **(c)** Tests that render into the default output root (`~\Videos\clips`) share `.work\talk\autoclip.db` with whatever ran earlier in the suite; `Store(fresh=True)` unlinking it raises `PermissionError: [WinError 32]` on Windows. Fix: pipeline tests pass `output_dir=...` or set `AUTOCLIP_OUTPUT_DIR` (never weaken the test or the `assert`).
 38. **Never let a test that renders touch the platform default output root.** `download.time_range`-aware checks aside, several tests were relying on the default `~\Videos\clips` being empty, and every new render invalidated that. Every full-pipeline test pins a `tmp_path` root, and the same for the shared `.work` folder; POSIX tolerated the shared file (unlink works), Windows did not (WinError 32).
 39. **macOS arm64 hosted runners can refuse jobs indefinitely** ("The job was not acquired by Runner of type hosted even after multiple attempts"). Cancellation is not success but it is not failure either, and it makes `ci` non-success, which skips `build` and `release` by `needs`. There is no repo-side fix: re-run the failed/cancelled jobs until a runner acquires one.
-40. **Local coverage is not CI coverage for ~4 branch arcs.** The 100% branch gate failed for cgroup-conditional arcs on the local host while the matrix legs on the CI fleet were green; always trust the legs before retraining the gate, the code or the test suite. Conversely, `Print the coverage gaps` runs `coverage report` even though `[tool.coverage.run]` sets `parallel=true`, so "no annotations" is not evidence of 100% on a leg that passed by some other path.
+40. **Local coverage is not CI coverage for ~4 branch arcs.** The 100% branch gate failed for cgroup-conditional arcs on the local host while the matrix legs on the CI fleet were green; always trust the legs before retraining the gate, the code or the test suite. Conversely, `Print the coverage gaps` prints the table unpiped; on any ordinary red job the awk emits `::error` lines for the missing arcs, and the only silent case (pytest died before pytest-cov could combine, leaving no `.coverage`) is called out by a final `[ -f .coverage ]` check — before that check existed, "no annotations" was not evidence of 100%.
 41. **`make check` includes the real-YouTube ladder.** It runs `test-all` (`AUTOCLIP_NETWORK_TESTS=1 AUTOCLIP_E2E_TESTS=1 AUTOCLIP_E2E_LEVEL=3 pytest` against live YouTube). For an offline check, run the individual commands directly (`ruff check . && ruff format --check . && mypy autoclip tests tools && vulture && deptry . && pytest` with `pytest --no-cov` for focused runs), not `make check`, unless you have budget for a 20-minute real-network download.
-42. **A push with an unchanged version re-runs ci but never builds or releases** (the `check` job sees the `v$VERSION` tag exists and skips the gate). The release path is exactly: push a commit with a bumped version and no matching tag. The tag-exists check uses `git ls-remote --exit-code --tags origin refs/tags/v$VERSION` and treats **any** `ls-remote` error as "tag absent"; a transient remote/rate-limit error turns a push into a full release attempt. Confirm the tag is truly absent with `git ls-remote --tags origin refs/tags/v<new>` before pushing a version bump.
+42. **A push with an unchanged version re-runs ci but never builds or releases** (the `check` job sees the `v$VERSION` tag exists and skips the gate). The release path is exactly: push a commit with a bumped version and no matching tag. The tag-exists check uses `git ls-remote --exit-code --tags origin refs/tags/v$VERSION` and treats **any** `ls-remote` error as "tag absent"; a transient remote/rate-limit error turns a push into a full release attempt. Confirm the tag is truly absent with `git ls-remote --tags origin refs/tags/v<new>` before pushing a version bump. The check now fails closed: exit 0 means the tag exists, exit 2 means absent, and **anything else aborts the release** (no `BUILD=true`, no tag, no publish).
 43. **Do not edit the tree while a gate is measuring it.** `coverage.py` maps recorded line numbers onto the current source file; edit `tests/` or `autoclip/` mid-run and the arcs migrate out of view, producing phantom "missing" lines for the wrong files. Let the run finish; apply edits and re-run after.
-44. **Green on the parent of a release commit does not green-light the release.** `build.yml` computes `BUILD`/`RELEASE` per push, not per commit content, so the commit that bumps the version is itself checked by the full `ci` matrix + memory benchmarks; only when every leg is green does `build` start, and only then `release`. Report the run that ships the tag as done, not the predecessor.
+44. **Green on the parent of a release commit does not green-light the release.** `build.yml` computes `BUILD`/`RELEASE` per push, not per commit content, so the commit that bumps the version is itself checked by the full `ci` matrix + memory benchmarks; only when every leg is green does `build` start, and only then `release`, and only after both installer smokes reported success. Report the run that ships the tag as done, not the predecessor.
+45. **There is one definition of the ci matrix.** `.github/workflows/ci.yml` is reusable (`workflow_call`) and is what `build.yml` runs for the release path, so the gate the release meets is the same one a push gets; PRs are gated by `pr-gate.yml` instead (the 9-leg matrix would run twice per PR otherwise). Check-run names show as the callee's (`ci / test (<os>, <py>)`), so any branch protection keyed to `ci (ubuntu-latest, 3.11)` must be updated in repo settings.
+46. **A snap is part of the release, not an extra.** `appimagetool` is pinned to `1.9.1` with a sha256 check (never the moving `continuous` tag), and a snapcraft failure fails the Linux targets — a v4.0.x release that ships without one of the two snaps every release promises does not publish. The `release` job is not behind a protected GitHub environment: the gate is the checks, and every release is cut at a commit whose matrix passed.
 
 
 ## 10. Recipes

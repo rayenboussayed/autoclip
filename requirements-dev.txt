@@ -1,21 +1,3 @@
--r requirements.txt
-pytest>=9,<10
-pytest-cov>=7,<8
-mypy>=2.4.0,<2.4.1
-ruff>=0.17.3,<0.18
-ollama>=0.4           # the AI client the unit suite exercises against a local fake server
-vulture>=2.14
-deptry>=0.20
-# the server extra is optional at runtime, but its tests are part of the suite (and coverage)
-fastapi>=0.115
-uvicorn[standard]>=0.30
-websockets>=12             # the e2e server case needs websockets.sync (uvicorn only asks for >=10.4)
-jinja2>=3.1
-python-multipart>=0.0.9
-pydantic-settings>=2.4
-opentelemetry-api>=1.26
-opentelemetry-sdk>=1.26
-opentelemetry-instrumentation-fastapi>=0.47b0
-opentelemetry-exporter-otlp>=1.26
-aiofiles>=23
-httpx>=0.27            # TestClient (Starlette >= 1 also accepts httpx2, but httpx runs on py3.10)
+# Dev tools come from the dev extra in pyproject.toml; this one-liner exists so
+# `pip install -r requirements-dev.txt` installs the same tree CI uses.
+-e .[dev]

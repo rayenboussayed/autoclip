@@ -38,8 +38,11 @@ say "Downloading $asset ..."
 curl -fsSL --retry 3 -o "$tmp/$asset" "$base/$asset" || die "download failed: $base/$asset"
 curl -fsSL --retry 3 -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || die "could not download SHA256SUMS"
 
+# SHA256SUMS proves the archive arrived intact, not who built it; releases also carry a
+# build-provenance attestation (see README, "Standalone binaries").
 expected="$(awk -v f="$asset" '$2==f || $2=="*"f {print $1}' "$tmp/SHA256SUMS")"
 [ -n "$expected" ] || die "no checksum listed for $asset"
+printf '%s' "$expected" | awk 'length($0) == 64 && $0 ~ /^[0-9a-fA-F]+$/ { ok = 1 } END { exit(ok ? 0 : 1) }' || die "malformed checksum for $asset"
 if command -v sha256sum >/dev/null 2>&1; then actual="$(sha256sum "$tmp/$asset" | awk '{print $1}')"
 elif command -v shasum >/dev/null 2>&1; then actual="$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')"
 else die "need sha256sum or shasum to verify the download"; fi
@@ -52,7 +55,14 @@ rm -rf "$HOME_DIR/app" && mv "$HOME_DIR/app.new/autoclip" "$HOME_DIR/app" && rmd
 # archives do not always keep the executable bit
 chmod +x "$HOME_DIR/app/autoclip"
 ln -sf "$HOME_DIR/app/autoclip" "$BIN_DIR/autoclip"
-if [ "$(uname -s)" = Darwin ]; then xattr -dr com.apple.quarantine "$HOME_DIR/app" 2>/dev/null || true; fi
+if [ "$(uname -s)" = Darwin ]; then
+  if [ "${AUTOCLIP_REMOVE_QUARANTINE:-0}" = 1 ]; then
+    xattr -dr com.apple.quarantine "$HOME_DIR/app" || die "xattr strip failed"
+    say "note: macOS quarantine stripped by request (AUTOCLIP_REMOVE_QUARANTINE=1)"
+  else
+    say "note: macOS Gatekeeper may block the unsigned binary on first launch (right-click Open, or re-run with AUTOCLIP_REMOVE_QUARANTINE=1)"
+  fi
+fi
 
 say "Installed: $BIN_DIR/autoclip"
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) say "Add to PATH:  export PATH=\"$BIN_DIR:\$PATH\"" ;; esac

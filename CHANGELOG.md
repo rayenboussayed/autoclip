@@ -4,6 +4,20 @@ All notable changes to autoclip, newest first. Release timestamps come from
 Git tags (and commit metadata for untagged but version-stamped commits). Each
 release mentions the source tag/commit for traceability.
 
+## [Unreleased]
+
+- ci: the tag-exists check fails closed — exit 0 means the release tag exists, exit 2 means absent, and any other ls-remote error (or network failure) aborts the release instead of publishing without a verified tag state
+- ci: the `release` job now `needs: installers` in addition to `check` and `build`, and publishes only when both installer smoke tests passed against these exact archives
+- ci: the snap is required — both Linux targets fail when snapcraft fails (a release no longer silently omits the snaps); `appimagetool` is pinned to 1.9.1 with a sha256 check, never the moving `continuous` tag
+- ci: `ci.yml` is reusable (`workflow_call`) and is what `build.yml` runs for the release path (the inline duplicate is deleted); pull requests are gated by pr-gate.yml; check names show as `ci / test (...)`
+- ci: `Print the coverage gaps` prints the table and calls out the total-data-loss case (pytest died before pytest-cov could combine) instead of being silent
+- test: an autouse fixture pins every test's output root to tmp_path, so no rendering test can touch the platform default root again
+- test: the subprocess NDJSON re-entry path is exercised end to end (real child, `--events jsonl`, PYTHONPATH-shadowed whisper stub)
+- test: both noisereduce call sites are pinned to serial n_jobs on Windows (joblib/loky spawn pickling) by tests that force os.name
+- fix: `job_zip_path` is the single home for the cache-zip path (writer, download route, both deleters, test doubles)
+- install.sh: SHA256SUMS is verified before extraction and the checksum must be 64 hex; the macOS quarantine strip is opt-in via `AUTOCLIP_REMOVE_QUARANTINE=1` (Gatekeeper kept by default)
+- chore: `requirements-dev.txt` installs `-e .[dev]` (single source); `Makefile install` matches; the Dockerfile creates the server state directory as the `app` user
+
 ## [4.0.1] — 2026-11-18 05:42:50 UTC (tag `v4.0.1`, commit `19bf137`)
 
 - ci: coverage gaps print as `::error` annotations on failing legs (awk reads the Cover column), and a real pipeline run is diagnosed on failure

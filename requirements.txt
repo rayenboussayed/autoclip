@@ -1,5 +1,5 @@
 # autoclip - install with:  pip install -r requirements.txt
-# Python >= 3.10.  ffmpeg is NOT required: the binary bundled with imageio-ffmpeg is used when none is on PATH.
+# Python >= 3.11.  ffmpeg is NOT required: the binary bundled with imageio-ffmpeg is used when none is on PATH.
 numpy>=1.26
 psutil>=5.9            # CPU / RAM monitoring for the adaptive resource balancing
 pydantic>=2.14,<3      # validates the config file (schema, types, ranges)

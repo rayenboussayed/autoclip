@@ -10,10 +10,9 @@ CONFIG ?= config.json
 	check
 
 install:
-	pip install -r requirements-dev.txt
+	pip install -e ".[dev]"
 
 install-dev: install
-	pip install -e .
 
 install-server:
 	pip install -e ".[server]"

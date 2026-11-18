@@ -7,13 +7,14 @@ unexercised. This test forces the real subprocess and proves a job reaches ``com
 nothing but a hermetic faster-whisper stub on the child's import path.
 """
 
-from pathlib import Path
 import dataclasses
+from pathlib import Path
 
 import pytest
 
+from autoclip.server.schemas import JobState
 from autoclip.server.service import run_job
-from autoclip.server.state import Job, JobState
+from autoclip.server.state import Job
 from tests.support import Media, bare_media, make_cfg
 
 
@@ -38,10 +39,8 @@ def _stub_packages(stubs: Path, marker: Path) -> None:
         "        return iter([seg]), info\n",
         encoding="utf-8",
     )
-    (fw / "utils.py").write_text(
-        "def download_model(*a, **kw):\n    return None\n", encoding="utf-8")
-    (stubs / "ctranslate2.py").write_text(
-        "def get_cuda_device_count():\n    return 0\n", encoding="utf-8")
+    (fw / "utils.py").write_text("def download_model(*a, **kw):\n    return None\n", encoding="utf-8")
+    (stubs / "ctranslate2.py").write_text("def get_cuda_device_count():\n    return 0\n", encoding="utf-8")
 
 
 def test_run_job_over_the_subprocess_reentry(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -55,8 +54,8 @@ def test_run_job_over_the_subprocess_reentry(media: Media, tmp_path: Path, monke
     out = tmp_path / "out"
     out.mkdir()
     custom = dataclasses.asdict(
-        make_cfg(media, out, source=video,
-                 clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}}))
+        make_cfg(media, out, source=video, clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
+    )
     custom.pop("input", None)
     custom.pop("output_dir", None)
     job = Job(
@@ -74,4 +73,4 @@ def test_run_job_over_the_subprocess_reentry(media: Media, tmp_path: Path, monke
     assert marker.exists(), "the child never imported the stub: it might have used the real model"
     clips = [p for p in out.rglob("*.mp4") if ".work" not in p.relative_to(out).parts]
     assert clips, "no rendered clip was collected from the subprocess run"
-    assert any("clips.json" == p.name for p in out.rglob("clips.json"))
+    assert any(p.name == "clips.json" for p in out.rglob("clips.json"))
