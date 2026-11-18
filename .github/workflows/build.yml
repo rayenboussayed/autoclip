@@ -1,15 +1,12 @@
 name: build
 
-# A push to main builds and releases only when the package version has no matching v* tag yet, so a
-# release is a version bump and nothing else. Pull requests build without releasing; a manual dispatch
-# builds without releasing unless it runs on a tag. A v* tag pushed by hand still builds and releases.
-# Everything that ships goes through the gate: a build (and therefore a release) is only attempted
-# after the whole ci pipeline (ruff, format, mypy, vulture, deptry and pytest with the 100%
-# branch-coverage gate on a 3-OS x 3-Python matrix, defined once in .github/workflows/ci.yml and
-# invoked from this workflow) AND the Linux memory-regression benchmarks pass on this commit. Any
-# failed leg, benchmark, installer smoke or snap build skips the build and the release entirely.
-# The release job publishes only after both installers ran for real against the packaged archives.
-# When the version did not change the whole gate is skipped (nothing ships) and this push relies on ci.yml.
+# A push to main builds the whole thing every time - the full ci matrix, benchmarks, all five OS
+# builds and the two installer smokes. The build and the benchmarks are what gate the release: a
+# failed leg skips `build`/`installers`/`release`. The release itself is only cut when the version
+# in pyproject.toml/autoclip/__init__.py/snapcraft.yaml was bumped and no matching v* tag exists
+# yet, so a version bump is the only way to publish; every other commit on main just builds and is
+# checked. Pull requests go through pr-gate.yml; a manual dispatch builds without releasing unless it
+# runs on a tag; a v* tag pushed by hand still releases.
 on:
   workflow_dispatch:
   push:
@@ -100,12 +97,13 @@ jobs:
               if [ "${{ github.ref_type }}" = "tag" ]; then RELEASE=true; else RELEASE=false; fi
               ;;
             push)
+              # every commit gets the full ci matrix, benchmarks, all OS builds and the installer smokes;
+              # only the release is version-gated
+              BUILD=true
               if [ "${{ github.ref_type }}" = "tag" ]; then
-                BUILD=true
                 RELEASE=true
               else
-                if [ "$EXISTS" = true ]; then BUILD=false; else BUILD=true; fi
-                RELEASE="$BUILD"
+                if [ "$EXISTS" = true ]; then RELEASE=false; else RELEASE=true; fi
               fi
               ;;
             *)
@@ -120,10 +118,10 @@ jobs:
             echo "build=$BUILD"
             echo "release=$RELEASE"
           } >> "$GITHUB_OUTPUT"
-      - name: Note the skipped gate
-        if: steps.version.outputs.build != 'true'
+      - name: Note the release is version-gated
+        if: steps.version.outputs.release != 'true'
         shell: bash
-        run: echo "::notice::version unchanged on ${{ github.ref }}; the full ci gate is left to ci.yml (no release will be attempted)"
+        run: echo "::notice::the version did not change; the release is skipped (ci matrix, benchmarks, builds and installer smokes all still ran)"
 
   # The release path is gated on the WHOLE ci pipeline: every OS x Python leg must be green
   # (lint, types, dead code/deps, pytest with the 100% branch-coverage gate) before any

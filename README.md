@@ -425,8 +425,9 @@ Python 3.11/3.12/3.13 matrix, plus the Linux memory-regression benchmarks - and 
 therefore the release) only starts when every one of those jobs passes on this commit; if any leg is
 red, no build runs and no release is created; if an installer smoke test fails, the release still does
 not publish. It then builds all five targets and creates the tag
-and the release - a `.tar.gz` per Linux and macOS target, `.zip` for Windows, plus the AppImage and the snap of the two Linux targets. On success the release is proven only on linux-x64 and windows-x64 (the installer smoke tests); the other archives are built and checksummed but never installed or run on their own platforms. A push
-to `main` that does not change the version skips the build (and the release); a pull request that
+and the release - a `.tar.gz` per Linux and macOS target, `.zip` for Windows, plus the AppImage and the snap of the two Linux targets. On success the release is proven only on linux-x64 and windows-x64 (the installer smoke tests); the other archives are built and checksummed but never installed or run on their own platforms. Every push to `main` runs
+the whole pipeline - ci matrix, benchmarks, the five OS builds and the installer smokes -
+but publishes nothing; only a version bump publishes. A pull request that
 touches the build still builds, without releasing. There is no human approval gate on the release
 job: it is only green because the checks are, and every release is cut at a commit whose whole ci
 matrix passed.

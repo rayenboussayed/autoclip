@@ -3,7 +3,11 @@ name: ci
 permissions:
   contents: read
 
-on: [push, workflow_call]
+on:
+  # non-main branches get the matrix; main gets it through build.yml (which also builds and gates the release)
+  push:
+    branches-ignore: [main]
+  workflow_call:
 jobs:
   test:
     strategy:

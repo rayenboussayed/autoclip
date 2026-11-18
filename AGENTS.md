@@ -70,14 +70,16 @@ real worker processes).
 `tests/unit/test_version.py` checks it), **add a new section to `CHANGELOG.md` with the release number and its git
 timestamp** (run `git log -1 --format=\"%ci|%H|%s\" HEAD` for the timestamp, and include the changes that went in), and
 **update `README.md`, `AGENTS.md` and `docs/` when behaviour or operating instructions changed**, and push to `main`.
-The build workflow (`.github/workflows/build.yml`) calls `.github/workflows/ci.yml` as a reusable workflow for the
-whole ci pipeline (ruff, format, mypy, vulture, deptry and pytest with the 100% branch-coverage gate on an
-Ubuntu/macOS/Windows x Python 3.11/3.12/3.13 matrix), then the Linux memory-regression benchmarks; the build (and
-therefore the release) only starts when every one of those jobs passes on this commit; a failed leg skips
-`build`/`installers`/`release`. A snap that cannot be built fails the Linux targets. The `release` job is **not**
-behind a protected GitHub environment: the gate is the checks, not an approval; only ever cut a release at a commit
-whose whole ci matrix passed. A push that does not change the version skips the
-build; pull requests go through pr-gate.yml, which also builds the Docker image and all five OS targets.
+The build workflow (`.github/workflows/build.yml`) calls `.github/workflows/ci.yml` as a reusable workflow for
+the whole ci pipeline (ruff, format, mypy, vulture, deptry and pytest with the 100% branch-coverage gate on
+an Ubuntu/macOS/Windows x Python 3.11/3.12/3.13 matrix), then the Linux memory-regression benchmarks. Every
+push to `main` runs the whole pipeline - matrix, benchmarks, the five OS builds and the two installer smokes;
+nothing is released unless the version in pyproject.toml/autoclip/__init__.py/snapcraft.yaml was bumped and
+no matching `v*` tag exists. A failed leg skips `build`/`installers`/`release`; a snap that cannot be built
+fails the Linux targets. The `release` job is **not** behind a protected GitHub environment: the gate is the
+checks, not an approval; only ever cut a release at a commit whose whole ci matrix passed (the full pipeline
+runs for every commit, so a bump cannot sneak past a red one). Pull requests go through pr-gate.yml, which
+also builds the Docker image and all five OS targets.
 A release that forgets to touch `CHANGELOG.md`, `README.md`, `AGENTS.md` or `docs/` is incomplete - all four are part
 of the release commit, next to the version bump.
 
@@ -159,7 +161,7 @@ docs/             stt-comparison.md - the measured comparison of transcription m
                  memory-regression.md - the memory suite: budgets, recalibration rules, known limits
 AGENTS.md        this file (guidance for coding agents)
 pyproject.toml    deps, ruff, mypy(strict), pytest(+coverage gate, `network` marker), coverage(multiprocessing)
-.github/workflows/ci.yml       ubuntu/macos/windows x py3.11/3.12/3.13 (reusable: push, and workflow_call for build.yml), then re-run with Pillow>=12.3
+.github/workflows/ci.yml       ubuntu/macos/windows x py3.11/3.12/3.13 (reusable for build.yml on main; standalone for other branches), then re-run with Pillow>=12.3
 .github/workflows/pr-gate.yml  pull-request gate: ci checks, all OS builds, and Docker smoke build
 .github/workflows/network.yml  weekly (and manual) real-platform downloader tests
 .github/workflows/e2e.yml      manual command-line end-to-end runs (results uploaded as an artifact)
@@ -714,10 +716,10 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 39. **macOS arm64 hosted runners can refuse jobs indefinitely** ("The job was not acquired by Runner of type hosted even after multiple attempts"). Cancellation is not success but it is not failure either, and it makes `ci` non-success, which skips `build` and `release` by `needs`. There is no repo-side fix: re-run the failed/cancelled jobs until a runner acquires one.
 40. **Local coverage is not CI coverage for ~4 branch arcs.** The 100% branch gate failed for cgroup-conditional arcs on the local host while the matrix legs on the CI fleet were green; always trust the legs before retraining the gate, the code or the test suite. Conversely, `Print the coverage gaps` prints the table unpiped; on any ordinary red job the awk emits `::error` lines for the missing arcs. An empty or corrupt `.coverage` (file exists, no data) is the remaining silent case — the `[ -f .coverage ]` sentinel catches the died-before-combine case, not it; grep the log for a `.coverage` warning if you suspect one.
 41. **`make check` includes the real-YouTube ladder.** It runs `test-all` (`AUTOCLIP_NETWORK_TESTS=1 AUTOCLIP_E2E_TESTS=1 AUTOCLIP_E2E_LEVEL=3 pytest` against live YouTube). For an offline check, run the individual commands directly (`ruff check . && ruff format --check . && mypy autoclip tests tools && vulture && deptry . && pytest` with `pytest --no-cov` for focused runs), not `make check`, unless you have budget for a real-network run that downloads full videos (hours, not minutes).
-42. **A push with an unchanged version re-runs ci but never builds or releases** (the `check` job sees the `v$VERSION` tag exists and skips the gate). The release path is exactly: push a commit with a bumped version and no matching tag. The tag-exists check uses `git ls-remote --exit-code --tags origin refs/tags/v$VERSION`. Confirm the tag is truly absent with `git ls-remote --tags origin refs/tags/v<new>` before pushing a version bump. The check fails closed: exit 0 means the tag exists, exit 2 means absent, and **anything else aborts the release** (no `BUILD=true`, no tag, no publish).
+42. **A push with an unchanged version runs the whole pipeline but never publishes.** Every commit on `main` now gets the ci matrix, benchmarks, all five OS builds and the installer smokes; only the release is version-gated. The release path is exactly: push a commit with a bumped version and no matching tag. The tag-exists check uses `git ls-remote --exit-code --tags origin refs/tags/v$VERSION`. Confirm the tag is truly absent with `git ls-remote --tags origin refs/tags/v<new>` before pushing a version bump. The check fails closed: exit 0 means the tag exists, exit 2 means absent, and **anything else aborts the release** (no `BUILD=true`, no tag, no publish).
 43. **Do not edit the tree while a gate is measuring it.** `coverage.py` maps recorded line numbers onto the current source file; edit `tests/` or `autoclip/` mid-run and the arcs migrate out of view, producing phantom "missing" lines for the wrong files. Let the run finish; apply edits and re-run after.
 44. **Green on the parent of a release commit does not green-light the release.** `build.yml` computes `BUILD`/`RELEASE` per push, not per commit content, so the commit that bumps the version is itself checked by the full `ci` matrix + memory benchmarks; only when every leg is green does `build` start, then `installers`, and only then `release`. Both installer smokes cover linux-x64 (install.sh) and windows-x64 (install.ps1) only — macOS/arm64 archives, the AppImage and the snaps are built but never installed or run — so what they prove is the install path, not the published bytes. Report the run that ships the tag as done, not the predecessor.
-45. **There is one definition of the ci matrix.** `.github/workflows/ci.yml` is reusable (`workflow_call`) and is what `build.yml` runs for the release path, so the gate the release meets is the same one a push gets; PRs are gated by `pr-gate.yml` instead (the 9-leg matrix would run twice per PR otherwise), and its single required status is `gate` — not `test (...)` or `ci / test (...)`. Check-run names show as the callee's (`ci / test (<os>, <py>)`), and `build.yml` triggers on PRs that touch `ci.yml`/`pr-gate.yml` (so a PR editing only the reusable gate still rebuilds), so any branch protection keyed to `ci (ubuntu-latest, 3.11)` must be updated in repo settings.
+45. **There is one definition of the ci matrix.** `.github/workflows/ci.yml` is reusable (`workflow_call`) and is what `build.yml` runs for every commit on `main`; it is also standalone for non-main branches. On `main` the matrix is only reached through `build.yml` (ci.yml never fires on main pushes), so there is exactly one run per commit. PRs are gated by `pr-gate.yml` instead (the 9-leg matrix would run twice per PR otherwise), and its single required status is `gate` — not `test (...)` or `ci / test (...)`. Check-run names show as the callee's (`ci / test (<os>, <py>)`), and `build.yml` triggers on PRs that touch `ci.yml`/`pr-gate.yml` (so a PR editing only the reusable gate still rebuilds), so any branch protection keyed to `ci (ubuntu-latest, 3.11)` must be updated in repo settings.
 46. **A snap is part of the release, not an extra.** `appimagetool` is pinned to `1.9.1` with a sha256 check (never the moving `continuous` tag), and a snapcraft failure fails the Linux targets — a v4.0.x release that ships without one of the two snaps every release promises does not publish. The `release` job is not behind a protected GitHub environment: the gate is the checks, and every release is cut at a commit whose matrix passed.
 
 

@@ -109,6 +109,15 @@ def test_the_release_gate_includes_the_memory_benchmarks() -> None:
     assert "if: needs.check.outputs.build == 'true'" in memory
 
 
+def test_every_commit_builds_the_gate() -> None:
+    """Every commit on main gets the full matrix + builds; only the release is version-gated."""
+    check = _job("check")
+    assert "BUILD=false" not in check
+    assert "EXISTS=false" in check  # the release-only decision still keys off the tag, not the build
+    release = _job("release")
+    assert "if: needs.check.outputs.release == 'true' && needs.installers.result == 'success'" in release
+
+
 def test_the_appimagetool_download_is_pinned() -> None:
     """A moving continuous tag is not an installer tool; pin the release and verify its sha."""
     build = _job("build")

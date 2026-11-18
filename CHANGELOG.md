@@ -6,6 +6,7 @@ release mentions the source tag/commit for traceability.
 
 ## [Unreleased]
 
+- ci: **every** push to `main` runs the full pipeline — ci matrix, benchmarks, all five OS builds and both installer smokes — but only the release is version-gated: a commit with an unchanged version builds and publishes nothing; the skip-and-build-nothing-earlier behavior is gone. `ci.yml` no longer fires on main pushes (it would have run the matrix twice; it stays standalone for non-main branches and reusable for build.yml)
 - ci: the tag-exists check fails closed — exit 0 means the release tag exists, exit 2 means absent, and any other ls-remote error (or network failure) aborts the release instead of publishing on unchecked state
 - ci: the `release` job now `needs: installers` as well as `check` and `build`; it publishes only when both installer smoke tests passed. The smoke covers linux-x64 (install.sh) and windows-x64 (install.ps1) and re-packs the same build output — the published archives are not byte-identical, and macOS/arm64 and the snaps are built but never installed or run
 - ci: a snap must land in the release folder — exactly two `.snap` files (linux amd64 + arm64) are asserted before the attestation step, so a missing snap can no longer ship on the strength of the AppImage satisfying the upload check
