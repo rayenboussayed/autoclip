@@ -14,6 +14,9 @@ WORKDIR /app
 COPY --chown=app:app pyproject.toml README.md ./
 COPY --chown=app:app autoclip ./autoclip
 RUN pip install --no-cache-dir ".[server]" && rm -rf /root/.cache
+# the server writes its state under BASE_DIR/.server (outputs and cache); the app user cannot
+# create that inside the root-owned workdir, so the state dir is created here, as root, once.
+RUN mkdir -p /app/.server/outputs /app/.server/cache && chown -R app:app /app/.server
 
 USER app
 EXPOSE 8000
