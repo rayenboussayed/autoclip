@@ -1,18 +1,21 @@
 # Changelog
 
-All notable changes to autoclip, oldest to newest. Release timestamps come from
+All notable changes to autoclip, newest first. Release timestamps come from
 Git tags (and commit metadata for untagged but version-stamped commits). Each
 release mentions the source tag/commit for traceability.
 
-## [4.0.1] — 2026-11-18 05:33:02 UTC (tag `v4.0.1`)
+## [4.0.1] — 2026-11-18 05:42:50 UTC (tag `v4.0.1`, commit `19bf137`)
 
+- ci: coverage gaps print as `::error` annotations on failing legs (awk reads the Cover column), and a real pipeline run is diagnosed on failure
+- ci: every failing leg diagnoses the ffmpeg and python environment (which ffmpeg, the bundled imageio-ffmpeg version, python build)
+- fix: the corrupt-database read branch in `_db_peak_rss` is covered by a test
+- ci: the `[dev]` extra installs the Ollama client the fake-server tests use
 - fix: audio denoise runs serially on Windows (noisereduce's spectral gate spawns joblib/loky workers whose bound method cannot un-serialize on spawn-only platforms; every clip carrying audio failed with BrokenProcessPool); POSIX keeps threaded n_jobs
 - fix: the coverage gate flagged arcs that exit an `async with` body on the 3.11 legs (coverage's settrace misattributes those exits); ProgressManager.unregister and the download handler's fresh-archive decision now return through traced lines, and the two POSIX-only branches (posix process-group signal, atomic-append unlocked write) now have platform-independent tests
 - fix: the FastAPI integration suite runs its pipeline in-process; the subprocess path re-executed autoclip without the stub and tried to download a real faster-whisper model, where anonymous Hugging Face requests get rate-limited on hosted runners
 - test: the events-jsonl CLI and session-direct success tests are pinned to tmp_path so they no longer share `.work/talk/autoclip.db` with whatever ran before them; Store's fresh=True unlink crashed Windows with PermissionError (WinError 32)
-- ci: all nine matrix legs green (3 operating systems x 3 pythons) on this commit; the build only starts after the whole matrix and the Linux memory benchmarks pass
+- ci: all nine matrix legs green on this commit (3 operating systems x 3 pythons); the full release gate (ci matrix + Linux memory benchmarks) passed on the release commit and the OS builds published
 
-- ci: the binary smoke test builds one short clip via the 4.0 file schema; the old 3.x JSON silently degraded to defaults, produced zero clips, and every build target failed at "Check the binary" before any release was cut
 - ci: dev tools (pytest, pytest-cov, mypy, ruff) are pinned to the versions this release was verified with; CI installs them fresh and cannot drift underneath it again
 - ci: nested if combined (ruff 0.17.5, SIM102)
 - ci: the optional Ollama import no longer relies on `type: ignore[assignment]`, which a fresh environment without the `ai` extra reported as unused under strict mypy
@@ -45,6 +48,7 @@ release mentions the source tag/commit for traceability.
 
 ## [4.0.0] — 2026-11-13 11:08:55 UTC (tag `v4.0.0`, commit `bf27517`)
 
+- ci: the binary smoke test builds one short clip via the 4.0 file schema; the old 3.x JSON silently degraded to defaults, produced zero clips, and every build target failed at "Check the binary" before any release was cut
 - feat: reduce the config file to nine keys (seven then two: `llm.system_prompt` and `image.prompt`); everything else is derived at run time or passed as a runtime override
 - feat: invalid config *values* now warn and fall back to the default instead of aborting the run
 - feat: remove the LLM api_key field (Ollama is local and needs no API key)

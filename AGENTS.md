@@ -742,7 +742,7 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
   transcription with a stub; per-OS logic through injected platforms; 100% branch coverage.
 * Downloader: the yt-dlp **Python API** was exercised here with the installed version against a small YouTube
   video (format listing/choice, extractor filtering, subtitle attachment, sidecars, imageio-ffmpeg merge, range
-  trimming and the originals cache) - see the release notes for the exact checks. Every other platform, real
+  trimming and the originals cache) - no in-repo record of a live platform run exists; the repo's guarantee is the unit suite against the installed yt-dlp, nothing more. Every other platform, real
   cookies, proxies and JS runtimes beyond the one installed here were **not** exercised end to end.
 * **Not verified on real systems:** Windows and macOS execution (CI matrix exists), real GPU encoders (NVENC/QSV/AMF/
   VideoToolbox arguments are unit-tested and probe-guarded but never ran on hardware), real Whisper inference.
