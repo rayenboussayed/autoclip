@@ -17,6 +17,7 @@ from numpy.typing import NDArray
 
 from autoclip.core import denoise
 from autoclip.core.denoise import SpeechEnhancer, fetch_model
+from tests.support import Media
 
 
 def tone(seconds: float = 0.5, sr: int = 16000) -> NDArray[np.float32]:
@@ -231,3 +232,40 @@ def test_fetch_model_retries_then_raises(tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
     with contextlib.suppress(Exception):
         fetch_model("gtcrn", tmp_path)
+
+
+def _capture_reduce_noise(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    import noisereduce
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_reduce_noise(**kwargs: Any) -> NDArray[np.float32]:
+        calls.append(kwargs)
+        y = kwargs["y"]
+        return np.ones(len(y), dtype=np.float32)
+
+    monkeypatch.setattr(noisereduce, "reduce_noise", fake_reduce_noise)
+    return calls
+
+
+def test_denoise_runs_serially_on_windows_and_parallel_elsewhere(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows spawns (not forks) joblib/loky workers; the SpectralGate bound method must not cross the spawn."""
+    calls = _capture_reduce_noise(monkeypatch)
+    mono = np.zeros(16000, dtype=np.float32)
+
+    monkeypatch.setattr("os.name", "nt")
+    denoise._noisereduce_denoise()(mono)
+    assert calls[-1]["n_jobs"] == 1
+
+    monkeypatch.setattr("os.name", "posix")
+    denoise._noisereduce_denoise()(mono)
+    assert calls[-1]["n_jobs"] != 1
+
+
+def test_audio_enhance_uses_serial_denoise_on_windows(media: Media, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core import audio as audio_mod
+
+    calls = _capture_reduce_noise(monkeypatch)
+    monkeypatch.setattr("os.name", "nt")
+    audio_mod.enhance_audio(media.video, 0.5, 5.0, 4, enhance=False, denoise=True)
+    assert calls and all(call["n_jobs"] == 1 for call in calls)

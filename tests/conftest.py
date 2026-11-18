@@ -22,6 +22,19 @@ from .support import SR, Media, _segments, _srt_time, make_cfg
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_output_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test that renders may touch the platform default output root.
+
+    The default root (``~/Videos/clips`` and friends) is shared between tests; on Windows the
+    per-test ``.work`` database cannot be unlinked while another test's Store still holds it
+    (``PermissionError: [WinError 32]``). Pin it under ``tmp_path`` for every test; an explicit
+    ``--output-dir`` or ``output_dir=`` always wins over the env, so tests that pin themselves are
+    unaffected.
+    """
+    monkeypatch.setenv("AUTOCLIP_OUTPUT_DIR", str(tmp_path / "out"))
+
+
+@pytest.fixture(autouse=True)
 def _restore_logger() -> Iterator[None]:
     """``setup_logging`` mutates the shared logger; give every test a clean one (and let caplog see it)."""
     yield
