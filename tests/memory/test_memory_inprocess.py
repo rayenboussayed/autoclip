@@ -39,7 +39,7 @@ out.mkdir(parents=True, exist_ok=True)
 setup_logging(out / "run.log", "INFO", None)
 file_cfg = parse(FileConfig, {"input": [str(src)], "clips": {"preset": "shorts", "scenes": "best", "ranges": ["00:00:02-00:00:12"]}})
 cfg = file_cfg.to_config(RuntimeOverrides(output_dir=str(out)))
-cfg.quality = "lowest"
+cfg.quality = "low"
 encoder = Encoder("libx264", False, "ultrafast", ())
 n, bad = process_video(src, cfg, out / "run.log", encoder, name="task.mp4")
 print("done:", n, "failed:", bad)
@@ -72,7 +72,7 @@ from autoclip.core.log import setup_logging
 src, out = Path(sys.argv[1]), Path(sys.argv[2])
 out.mkdir(parents=True, exist_ok=True)
 setup_logging(out / "run.log", "INFO", None)
-cfg = parse(Config, {"quality": "lowest"})
+cfg = parse(Config, {"quality": "low"})
 work = out / ".work"
 info = probe(src)
 prepared = prepare_source(src, cfg, info, work)

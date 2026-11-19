@@ -34,6 +34,7 @@ class Downloader:
 
 
 def _run(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, downloader: Downloader, **sections: Any) -> list[Segment]:
+    monkeypatch.setattr("autoclip.core.transcript.RESOURCES.usable_memory", lambda: 10 * 1024 * 1024 * 1024)
     install_stub_whisper(monkeypatch, media, {}, download_model=downloader)
     cfg = make_cfg(media, tmp_path / "out", **sections)
     info: MediaInfo = probe(media.video)
@@ -53,7 +54,7 @@ def test_an_uncached_model_downloads_on_first_use(media: Any, tmp_path: Path, mo
     segs = _run(media, tmp_path, monkeypatch, downloader)
     assert [s.text for s in segs] == SENTENCES
     assert [call["local_files_only"] for call in downloader.calls] == [True, False]
-    assert downloader.online[0]["model"] == "tiny"
+    assert downloader.online[0]["model"] == "small"
 
 
 def _utils(monkeypatch: pytest.MonkeyPatch, download_model: Any) -> None:

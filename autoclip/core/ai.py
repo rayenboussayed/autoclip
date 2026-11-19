@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 import urllib.error
 import urllib.request
@@ -20,7 +21,9 @@ from pydantic import BaseModel
 from pydantic.json_schema import JsonSchemaValue
 
 from .config import Config
+from .internal.auto import auto_ollama_model
 from .internal.automation import LLM_NUM_CTX, LLM_TIMEOUT
+from .internal.runtime import free_ram_mb
 from .models import Moment
 
 log = logging.getLogger("autoclip")
@@ -41,62 +44,116 @@ _AI_LOCK = threading.Lock()
 _RUN_TRIPPED = threading.Event()
 
 
-def _model_names(payload: object) -> set[str]:
-    """The model names from an ``/api/tags`` response (both the list and dict shapes)."""
+#: The local Ollama server is a trusted (but not necessarily well-formed) peer: never follow a redirect off it.
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, _req: Any, _fp: Any, _code: int, _msg: str, _headers: Any, _newurl: str) -> None:
+        return None
+
+
+_probe_opener = urllib.request.build_opener(_NoRedirect)
+
+#: A sane ceiling for the /api/tags body (the real answer is a few dozen model entries).
+_MAX_TAGS_BYTES = 4 * 1024 * 1024
+
+
+def _bytes(raw: object) -> int:
+    """Size in bytes, or 0 ("unknown") for anything that is not a finite number >= 0."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return 0
+    try:
+        value = float(raw)
+    except OverflowError:
+        return 0
+    if not math.isfinite(value) or value <= 0:
+        return 0
+    return int(value)
+
+
+def _model_sizes(payload: object) -> dict[str, int]:
+    """The installed models as name -> size in bytes on disk (0 when the server reports no usable size)."""
     models: object = payload
     if isinstance(payload, dict):
         models = payload.get("models") or []
-    names: set[str] = set()
+    sizes: dict[str, int] = {}
     if isinstance(models, list):
         for item in models:
-            name = item.get("name") or item.get("model") if isinstance(item, dict) else str(item)
-            if isinstance(name, str) and name:
-                names.add(name)
-    return names
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("model")
+                size = _bytes(item.get("size", 0))
+            else:
+                name, size = str(item), 0
+            if isinstance(name, str) and name and len(name) <= 200:
+                sizes[name] = size
+    return sizes
 
 
 @cache
-def _tags(base_url: str) -> set[str]:
-    """The model names the server at ``base_url`` has installed (empty when it cannot be asked)."""
+def _installed(base_url: str) -> dict[str, int]:
+    """The models the server at ``base_url`` has, name -> bytes on disk (empty when it cannot be asked)."""
     url = base_url.rstrip("/") + "/api/tags"
-    if ollama is not None:
-        try:
-            names = _model_names(ollama.Client(host=base_url).list())
-            if names:
-                return names
-        except Exception as e:
-            log.debug("the ollama python client could not list models (%s: %s); trying a plain HTTP probe", type(e).__name__, e)
     try:
-        with urllib.request.urlopen(url, timeout=2.0) as response:  # noqa: S310
-            data = json.loads(response.read().decode("utf-8"))
+        with _probe_opener.open(url, timeout=2.0) as response:
+            data = json.loads(response.read(_MAX_TAGS_BYTES + 1).decode("utf-8"))
+            return _model_sizes(data)
     except Exception:
-        return set()
-    return _model_names(data)
+        return {}
+
+
+@cache
+def _resolve_model(base_url: str, model: str) -> str | None:
+    """The resolved model name, or ``None`` when there is no usable one."""
+    sizes = _installed(base_url)
+    wanted = model.strip().lower()
+    if wanted:
+        for name in sizes:
+            lowered = name.lower()
+            if lowered == wanted or lowered.startswith(wanted + ":"):
+                return name
+        return None
+    try:
+        free = free_ram_mb()
+    except Exception:  # a broken meter must not kill the video; treat it as "no RAM to spare"
+        free = 0.0
+    return auto_ollama_model(sizes, free)
+
+
+def llm_model(base_url: str, model: str = "") -> str | None:
+    """The model this run will use, or ``None`` when the server or the model is unavailable.
+
+    With an empty ``model`` the engine picks the largest installed model that fits inside half of the
+    free RAM, falling back to the smallest known one; an explicit ``model`` must match an installed
+    one (exact, or an ``name:tag`` prefix such as ``llama3.2`` for ``llama3.2:latest``). The answer is
+    cached per (``base_url``, ``model``), so a whole run asks the server once; once any AI call has
+    failed in this run, the answer is ``None`` for the rest of the run (the backend is not retried per clip).
+    """
+    if _RUN_TRIPPED.is_set():
+        return None
+    return _resolve_model(base_url, model)
 
 
 def llm_available(base_url: str, model: str = "") -> bool:
-    """True when an Ollama server answers AND the requested model is installed.
+    """True when an Ollama server answers and a usable model exists (see :func:`llm_model`)."""
+    return llm_model(base_url, model) is not None
 
-    The answer is cached per (base_url, model), so a whole run asks once instead of per clip;
-    a local Ollama without the configured model reports ``False`` and the run keeps its
-    heuristic ranking instead of failing inside every clip. Once any AI call has failed in
-    this run, the answer is ``False`` for the rest of the run (the offending backend is not
-    retried per clip).
+
+def reset_run_breaker() -> None:
+    """Clear the per-run AI state: the failure breaker and the cached model list.
+
+    A CLI run is a fresh process, so neither ever needs clearing there. The HTTP server is one
+    long-lived process for many jobs; without a reset, one failed AI call (or one failed probe)
+    would disable the LLM helpers for every later job until restart. Called once per job by the
+    server; the next AI call re-probes the local server.
     """
-    if _RUN_TRIPPED.is_set():
-        return False
-    names = _tags(base_url)
-    if not model:
-        return bool(names)
-    wanted = model.strip().lower()
-    for name in names:
-        lowered = name.lower()
-        if lowered == wanted or lowered.startswith(wanted + ":") or lowered.split(":", 1)[0] == wanted:
-            return True
-    return False
+    _RUN_TRIPPED.clear()
+    for cached in (_installed, _resolve_model):  # monkeypatched stand-ins may lack cache_clear
+        cache_clear = getattr(cached, "cache_clear", None)
+        if callable(cache_clear):
+            cache_clear()
 
 
 def _chat(base_url: str, model: str, messages: list[dict[str, str]], *, fmt: JsonSchemaValue | None = None) -> str:
+    if ollama is None:  # the AI helpers need the `ai` extra; the pipeline keeps its heuristic result without it
+        raise RuntimeError("the 'ollama' package is not installed; install the AI extra (pip install autoclip[ai])")
     with _AI_LOCK:
         client = ollama.Client(host=base_url, timeout=LLM_TIMEOUT)
         response = client.chat(model=model, messages=messages, format=fmt, options={"num_ctx": LLM_NUM_CTX, "temperature": 0})
@@ -114,9 +171,12 @@ def llm_rerank(top: list[Moment], cfg: Config, scene: str) -> dict[int, tuple[fl
     """Ask Ollama for a 0-10 fit score and a title for each candidate."""
     from .styles import STYLE_HELP
 
-    if cfg.skip.llm or _RUN_TRIPPED.is_set():
+    if cfg.skip.llm:
         return {}
     lc = cfg.llm
+    model = llm_model(lc.base_url, lc.model)
+    if model is None:
+        return {}
     items = "\n".join(f"[{k}] ({m.end - m.start:.0f}s) {m.text[:700]}" for k, m in enumerate(top))
     prompt = (
         f"You pick moments from a long video for short-form clips. Target scene type -> {scene}: {STYLE_HELP[scene]}.\n"
@@ -131,7 +191,7 @@ def llm_rerank(top: list[Moment], cfg: Config, scene: str) -> dict[int, tuple[fl
         {"role": "user", "content": prompt},
     ]
     try:
-        content = _chat(lc.base_url, lc.model, messages, fmt=_RERANK_SCHEMA)
+        content = _chat(lc.base_url, model, messages, fmt=_RERANK_SCHEMA)
         parsed = _RerankReply.model_validate_json(content)  # pydantic raises on any deviation; the caller falls back
     except Exception as e:
         _disable_for_this_run(e)
@@ -145,12 +205,15 @@ def llm_rerank(top: list[Moment], cfg: Config, scene: str) -> dict[int, tuple[fl
 
 def generate_title(cfg: Config, text: str) -> str:
     """A punchy title for ``text`` (empty when Ollama is unavailable, offline or errors)."""
-    if cfg.skip.llm or not text or _RUN_TRIPPED.is_set() or not llm_available(cfg.llm.base_url, cfg.llm.model):
+    if cfg.skip.llm or not text:
+        return ""
+    model = llm_model(cfg.llm.base_url, cfg.llm.model)
+    if model is None:
         return ""
     prompt = "Write a punchy title (max 8 words) in the same language as the text. Return only the title.\n\n" + text[:500]
     messages = _messages(cfg, prompt)
     try:
-        return _chat(cfg.llm.base_url, cfg.llm.model, messages)[:80]
+        return _chat(cfg.llm.base_url, model, messages)[:80]
     except Exception as e:
         _disable_for_this_run(e)
         log.warning("AI title failed (%s: %s)", type(e).__name__, e)
@@ -159,12 +222,15 @@ def generate_title(cfg: Config, text: str) -> str:
 
 def generate_caption(cfg: Config, text: str) -> str:
     """A short social-media caption for ``text`` (empty when Ollama is unavailable, offline or errors)."""
-    if cfg.skip.llm or not text or _RUN_TRIPPED.is_set() or not llm_available(cfg.llm.base_url, cfg.llm.model):
+    if cfg.skip.llm or not text:
+        return ""
+    model = llm_model(cfg.llm.base_url, cfg.llm.model)
+    if model is None:
         return ""
     prompt = "Write a short social-media caption (max 2 sentences) for this clip transcript. Return only the caption.\n\n" + text[:500]
     messages = _messages(cfg, prompt)
     try:
-        return _chat(cfg.llm.base_url, cfg.llm.model, messages)
+        return _chat(cfg.llm.base_url, model, messages)
     except Exception as e:
         _disable_for_this_run(e)
         log.warning("AI caption failed (%s: %s)", type(e).__name__, e)

@@ -1131,13 +1131,21 @@ def test_delete_job_without_existing_input(tmp_path: Path, monkeypatch: pytest.M
         registry._jobs.pop(job.job_id, None)
 
 
-def test_default_max_concurrent_jobs_is_one() -> None:
-    import os
+def test_the_semaphore_limit_is_engine_derived(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The server no longer reads MAX_CONCURRENT_JOBS: the semaphore comes from the engine rule."""
+    import asyncio
 
-    os.environ.pop("MAX_CONCURRENT_JOBS", None)
-    server_config.get_settings.cache_clear()
-    assert server_config.get_settings().max_concurrent_jobs == 1
-    server_config.get_settings.cache_clear()
+    from autoclip.server.routers import api as routers_api
+
+    monkeypatch.setattr(routers_api, "_auto_job_limit", lambda: 3)
+    monkeypatch.setattr(routers_api, "_sem", None)
+    monkeypatch.setattr(routers_api, "_sem_loop", None)
+    monkeypatch.delenv("MAX_CONCURRENT_JOBS", raising=False)
+
+    async def semaphore_capacity() -> int:
+        return routers_api._get_semaphore()._value  # noqa: SLF001  (capacity is the contract under test)
+
+    assert asyncio.run(semaphore_capacity()) == 3
 
 
 def _preview_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
@@ -1642,3 +1650,76 @@ def test_eviction_deletes_the_cached_archive(monkeypatch: pytest.MonkeyPatch, tm
     finally:
         with registry._lock:
             registry._jobs.pop(job.job_id, None)
+
+
+def test_the_semaphore_derivation_failure_marks_the_job_failed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A broken machine probe must not strand a queued job forever: it fails the job explicitly."""
+    import asyncio
+
+    from autoclip.server.routers import api
+    from autoclip.server.state import Job, registry
+
+    job = Job(job_id="capacity-fail", filename="x.mp4", input_path=tmp_path / "x.mp4", output_dir=tmp_path / "capout", config={})
+    with registry._lock:
+        registry._jobs[job.job_id] = job
+    monkeypatch.setattr(api, "_get_semaphore", lambda: (_ for _ in ()).throw(RuntimeError("broken measurement")))
+    asyncio.run(api._run_job_task(job.job_id))
+    assert job.state.value == "failed"
+    assert "could not plan job capacity" in (job.error or "")
+    with registry._lock:
+        registry._jobs.pop(job.job_id, None)
+
+
+def test_auto_job_limit_falls_back_to_one_when_the_machine_cannot_be_measured(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from autoclip.server.routers import api
+
+    def broken(**kwargs: object) -> int:
+        raise RuntimeError("nope")
+
+    monkeypatch.setattr("autoclip.core.internal.auto.auto_max_concurrent_jobs", broken)
+    with caplog.at_level("DEBUG", logger="autoclip.server"):
+        assert api._auto_job_limit() == 1
+
+
+def test_the_semaphore_wiring_passes_the_measured_machine_to_the_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The capacity comes from the engine rule applied to the measured machine, not from a literal."""
+    import asyncio
+
+    from autoclip.server.routers import api
+
+    calls: dict[str, int] = {}
+
+    def rule(*, cpus: int, free_ram_mb: float) -> int:
+        calls.update(cpus=cpus, free_ram_mb=int(free_ram_mb))
+        return 2
+
+    monkeypatch.setattr("autoclip.core.internal.auto.auto_max_concurrent_jobs", rule)
+    monkeypatch.setattr("autoclip.core.internal.runtime.detect_cpu_count", lambda: 6)
+    monkeypatch.setattr("autoclip.core.internal.runtime.free_ram_mb", lambda: 8192.0)
+    monkeypatch.setattr(api, "_sem", None)
+    monkeypatch.setattr(api, "_sem_loop", None)
+
+    async def semaphore_capacity() -> int:
+        return api._get_semaphore()._value  # noqa: SLF001
+
+    assert asyncio.run(semaphore_capacity()) == 2
+    assert calls == {"cpus": 6, "free_ram_mb": 8192}
+
+
+def test_the_removed_concurrency_env_var_warns_instead_of_applying(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An operator with a stale MAX_CONCURRENT_JOBS in the environment hears that it is ignored."""
+    monkeypatch.setenv("MAX_CONCURRENT_JOBS", "1")
+    monkeypatch.setenv("MAX_FILE_SIZE", str(1024 * 1024 * 1024))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "warn-out"))
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "warn-cache"))
+    server_config.get_settings.cache_clear()
+    with caplog.at_level("WARNING", logger="autoclip.server"):
+        settings = server_config.get_settings()
+    assert "MAX_CONCURRENT_JOBS is no longer read" in caplog.text
+    assert not hasattr(settings, "max_concurrent_jobs")
+    monkeypatch.delenv("MAX_CONCURRENT_JOBS")
+    server_config.get_settings.cache_clear()

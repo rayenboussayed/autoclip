@@ -56,10 +56,6 @@ def _overrides(args: argparse.Namespace) -> RuntimeOverrides:
     for attr, name in (
         ("output_dir", "output_dir"),
         ("cookies", "cookies"),
-        ("llm_url", "llm_base_url"),
-        ("llm_model", "llm_model"),
-        ("mode", "mode"),
-        ("quality", "quality"),
     ):
         value = getattr(args, attr, None)
         if value:
@@ -177,12 +173,9 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
         "--skip",
         action="append",
         metavar="NAME",
-        help="skip a step: stt, denoise, audio_enhance, audio, pauses, caption, title, fade, thumbnail, llm, snap",
+        help="skip a step: stt, denoise, audio_enhance, audio, pauses, caption, title, fade, thumbnail, llm",
     )
-    ap.add_argument("--llm-model", metavar="MODEL", help="Ollama model used for ranking and social captions")
     ap.add_argument("--split", action="store_true", help="cut the sources into equal parts instead of highlights")
-    ap.add_argument("--mode", choices=["performance", "resources", "balance"], help="performance/resource/balance policy")
-    ap.add_argument("--quality", choices=["highest", "high", "medium", "low", "lowest"], help="encode resolution/fps/audio quality")
     args = ap.parse_args(argv)
     if args.gui:
         from ..app import launch

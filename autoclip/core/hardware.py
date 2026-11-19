@@ -60,11 +60,11 @@ AMF = ("h264_amf", "hevc_amf")
 
 #: Builders of the supported GPU encoders; the top-level ``quality`` selects their native quality level.
 def _nvenc_preset(quality: str) -> str:
-    return {"highest": "p5", "high": "p4", "medium": "p3", "low": "p2", "lowest": "p1"}[quality]
+    return {"high": "p4", "medium": "p3", "low": "p2"}[quality]
 
 
 def _amf_quality(quality: str) -> str:
-    return {"highest": "quality", "high": "balanced", "medium": "balanced", "low": "speed", "lowest": "speed"}[quality]
+    return {"high": "balanced", "medium": "balanced", "low": "speed"}[quality]
 
 
 HARDWARE: dict[str, Callable[[VideoCfg, str], Encoder]] = {

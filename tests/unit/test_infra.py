@@ -774,3 +774,23 @@ def test_kv_get_refreshes_a_stale_access_time(tmp_path: Path) -> None:
     row = s.conn.execute("SELECT atime FROM kv WHERE k = 'old'").fetchone()
     assert row is not None and float(row[0]) > 1.0  # the read refreshed the access time
     s.close()
+
+
+def test_cgroup_memory_v2_usage_unreadable_returns_the_limit(tmp_path: Path) -> None:
+    """A set limit must never vanish because the usage file went away (host-RAM would be worse)."""
+    assert cgroup_memory_available(tmp_path) is None  # no files at all
+    (tmp_path / "memory.max").write_text("4096")
+    assert cgroup_memory_available(tmp_path) == 4096  # usage unreadable: the limit is the ceiling
+    v1 = tmp_path / "v1" / "memory"
+    v1.mkdir(parents=True)
+    (v1 / "memory.limit_in_bytes").write_text("2048")
+    assert cgroup_memory_available(tmp_path / "v1") == 2048  # v1 limit, usage unreadable
+
+
+def test_cgroup_cpu_quota_absurd_v2_falls_through_to_v1(tmp_path: Path) -> None:
+    (tmp_path / "cpu.max").write_text("100000 0")  # a zero period is absurd, not fatal
+    assert cgroup_cpu_quota(tmp_path) is None  # falls through to the v1 files (absent) and reports "no limit"
+    (tmp_path / "cpu").mkdir(exist_ok=True)
+    (tmp_path / "cpu" / "cpu.cfs_quota_us").write_text("150000")
+    (tmp_path / "cpu" / "cpu.cfs_period_us").write_text("100000")
+    assert cgroup_cpu_quota(tmp_path) == 1.5

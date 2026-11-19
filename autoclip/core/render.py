@@ -285,21 +285,17 @@ def render_clip(vclip: MoviePyClip, job: RenderJob, store: Store, cache: Cache) 
         cc = cfg.captions
         art = render_text_image(moment.title, find_font(moment.title), int(min(size) / 13), cc, int(size[0] * 0.92))
         top = safe_top(Y_CENTER["top"], size[1], size[0], cc, art.shape[0])
-        overlays.append(
-            ImageClip(art)
-            .with_duration(title_display_seconds(moment.title, fg.duration, quality=cfg.quality))
-            .with_position(("center", top))
-        )
+        overlays.append(ImageClip(art).with_duration(title_display_seconds(moment.title, fg.duration)).with_position(("center", top)))
 
     comp = CompositeVideoClip(layout(fg, size, cfg.video, fg.duration) + overlays, size=size).with_duration(fg.duration)
     if not cfg.skip.fade:
-        video_fade = video_fade_seconds(fg.duration, quality=cfg.quality, kind=job.kind)
+        video_fade = video_fade_seconds(fg.duration, kind=job.kind)
         comp = comp.with_effects([vfx.FadeIn(video_fade), vfx.FadeOut(video_fade)])
     if audio is not None:
         mono = build_audio(audio, kept, fg.duration)
         sound = AudioArrayClip(np.stack([mono, mono], axis=1), fps=AUDIO_SR)
         if not cfg.skip.fade:
-            audio_fade = audio_fade_seconds(fg.duration, quality=cfg.quality)
+            audio_fade = audio_fade_seconds(fg.duration)
             sound = sound.with_effects([afx.AudioFadeIn(audio_fade), afx.AudioFadeOut(audio_fade)])
         comp = comp.with_audio(sound)
     fps = output_fps(vclip.fps, cfg.quality)
@@ -308,7 +304,7 @@ def render_clip(vclip: MoviePyClip, job: RenderJob, store: Store, cache: Cache) 
     comp = comp.without_mask()
     encode(comp, dst, float(fps), job.encoder, threads, cfg.video, cfg.quality)
     cover_t = min(
-        max(0.5, title_display_seconds(moment.title, fg.duration, quality=cfg.quality) / 2 if title_on else 1.0),
+        max(0.5, title_display_seconds(moment.title, fg.duration) / 2 if title_on else 1.0),
         max(0.0, fg.duration - 0.1),
     )
     comp.save_frame(str(dst.with_suffix(".jpg")), t=cover_t, with_mask=False)

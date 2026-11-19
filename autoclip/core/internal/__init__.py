@@ -1,40 +1,16 @@
-"""Derived runtime configuration and helpers."""
+"""Derived runtime configuration and helpers (import submodules directly; only the stable re-exports live here)."""
 
 from . import adaptive, modes
-from .decisions import decision_text, log_decisions
-from .quality import VALID_QUALITIES, QualityProfile, download_quality_for, output_fps, quality_profile, quality_short_side
-from .runtime import (
-    CACHE_DISK_MB,
-    CHUNK_MINUTES,
-    DEFAULT_CPU_PERCENT,
-    DEFAULT_ENCODING_THREADS,
-    DEFAULT_MEM_FRACTION,
-    DEFAULT_MEMORY_RESERVE_MB,
-    RuntimeDecision,
-    detect_cpu_count,
-    runtime_decisions,
-    transcript_model_for,
-)
+from .quality import output_fps, quality_profile, quality_short_side
+from .runtime import CACHE_DISK_MB, CHUNK_MINUTES, detect_cpu_count
 
 __all__ = [
     "CACHE_DISK_MB",
     "CHUNK_MINUTES",
-    "DEFAULT_CPU_PERCENT",
-    "DEFAULT_ENCODING_THREADS",
-    "DEFAULT_MEMORY_RESERVE_MB",
-    "DEFAULT_MEM_FRACTION",
-    "VALID_QUALITIES",
-    "QualityProfile",
-    "RuntimeDecision",
     "adaptive",
-    "decision_text",
     "detect_cpu_count",
-    "download_quality_for",
-    "log_decisions",
     "modes",
     "output_fps",
     "quality_profile",
     "quality_short_side",
-    "runtime_decisions",
-    "transcript_model_for",
 ]

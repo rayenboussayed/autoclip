@@ -47,11 +47,11 @@ def test_even_and_canvas_size() -> None:
 def test_quality_profile_scales_output_and_caps_fps() -> None:
     from autoclip.core.internal import output_fps, quality_short_side
 
-    assert [quality_short_side(q) for q in ("highest", "high", "medium", "low", "lowest")] == [1080, 864, 648, 432, 216]
-    assert output_fps(50.0, "highest") == 50.0  # no cap: the source frame rate is kept
+    assert [quality_short_side(q) for q in ("high", "medium", "low")] == [864, 648, 432]
+    assert output_fps(50.0, "high") == 50.0  # no cap: the source frame rate is kept
     assert output_fps(50.0, "medium") == 30.0
     assert output_fps(50.0, "low") == 24.0
-    assert output_fps(50.0, "lowest") == 15.0
+    assert output_fps(50.0, "low") == 24.0
     assert output_fps(24.0, "medium") == 24.0  # never raise the source frame rate
 
 
@@ -85,10 +85,10 @@ def test_encode_sets_the_audio_bitrate_and_mp4_only_flags(tmp_path: Path) -> Non
     assert mp4.kwargs["ffmpeg_params"] == ["-pix_fmt", "yuv420p", "-cq", "18", "-tag:v", "hvc1", "-movflags", "+faststart"]
     assert mp4.kwargs["path"].endswith("hevc.part.mp4"), "the temporary file keeps the muxer extension"
     mkv = Fake()
-    encode(cast(MoviePyClip, mkv), tmp_path / "hevc.mkv", 30, hevc, 2, VideoCfg(), "highest")
+    encode(cast(MoviePyClip, mkv), tmp_path / "hevc.mkv", 30, hevc, 2, VideoCfg(), "high")
     assert mkv.kwargs["ffmpeg_params"] == ["-pix_fmt", "yuv420p", "-cq", "18"]
     assert mkv.kwargs["path"].endswith("hevc.part.mkv")
-    assert mkv.kwargs["audio_bitrate"] == "256k"
+    assert mkv.kwargs["audio_bitrate"] == "192k"
     plain = Fake()
     encode(cast(MoviePyClip, plain), tmp_path / "h264.mp4", 30, h264, 2, VideoCfg(), "high")
     assert "hvc1" not in plain.kwargs["ffmpeg_params"] and plain.kwargs["ffmpeg_params"][-2:] == ["-movflags", "+faststart"]
@@ -181,22 +181,22 @@ def test_render_full_featured_clip(media: Media, tmp_path: Path) -> None:
     m = moment()
     dst, size, lines = render(media, tmp_path, m)
     info = probe(dst)
-    assert (info.width, info.height) == size == (216, 384) and info.has_audio
+    assert (info.width, info.height) == size == (320, 568) and info.has_audio
     assert info.duration == pytest.approx(m.trimmed, abs=0.4) and m.trimmed < (m.end - m.start) - 1  # pauses were cut
     assert dst.with_suffix(".jpg").stat().st_size > 500
     assert lines and all(ln.end <= m.trimmed + 0.1 for ln in lines)
     cover = np.array(Image.open(dst.with_suffix(".jpg")))
-    assert cover.shape[:2] == (384, 216)
+    assert cover.shape[:2] == (568, 320)
 
 
 def test_render_without_fades(media: Media, tmp_path: Path) -> None:
     dst, size, lines = render(media, tmp_path, moment(), skip={"fade": True})
-    assert dst.is_file() and size == (216, 384) and probe(dst).has_audio
+    assert dst.is_file() and size == (320, 568) and probe(dst).has_audio
 
 
 def test_render_without_audio_track_and_without_captions(media: Media, tmp_path: Path) -> None:
     dst, size, lines = render(media, tmp_path, moment(2, 9), src=media.silent, captions={"enabled": False})
-    assert not probe(dst).has_audio and lines == [] and size == (216, 384)
+    assert not probe(dst).has_audio and lines == [] and size == (320, 568)
 
 
 def test_a_rendered_clip_keeps_the_requested_minimum_length(media: Media, tmp_path: Path) -> None:
@@ -223,7 +223,7 @@ def test_render_original_aspect_needs_no_letterbox_and_colour_background(media: 
     _, size, _ = render(media, tmp_path, moment(0, 5), aspect="original")
     assert size == (320, 180)
     dst, size2, _ = render(media, tmp_path / "c", moment(0, 5), video={"background": "#202020"})
-    assert size2 == (216, 384) and dst.exists()
+    assert size2 == (320, 568) and dst.exists()
 
 
 def test_render_with_noise_reduction(media: Media, tmp_path: Path) -> None:
@@ -248,7 +248,7 @@ def test_render_with_a_gpu_style_encoder_definition(media: Media, tmp_path: Path
     """GPU encoders override MoviePy's placeholder preset in their arguments; software libx264 stands in for the hardware."""
     stand_in = Encoder("libx264", True, "no-such-preset", ("-preset", "ultrafast", "-crf", "40", "-maxrate", "1M", "-bufsize", "2M"))
     low, _, _ = render(media, tmp_path / "a", moment(0, 5), encoder=stand_in)
-    cpu, _, _ = render(media, tmp_path / "b", moment(0, 5), encoder=cpu_encoder(VideoCfg(), "highest"))
+    cpu, _, _ = render(media, tmp_path / "b", moment(0, 5), encoder=cpu_encoder(VideoCfg(), "high"))
     assert probe(low).duration == pytest.approx(probe(cpu).duration, abs=0.3)
     assert low.stat().st_size < cpu.stat().st_size  # the placeholder preset was overridden and the custom arguments reached ffmpeg
 
@@ -259,7 +259,7 @@ def test_render_hevc_with_captions_writes_yuv420p(media: Media, tmp_path: Path) 
 
     encoder = cpu_encoder(VideoCfg(codec="h265"), "low")
     dst, size, lines = render(media, tmp_path, moment(0, 5), encoder=encoder)
-    assert lines and probe(dst).duration > 0 and size == (216, 384)
+    assert lines and probe(dst).duration > 0 and size == (320, 568)
     with av.open(str(dst)) as container:
         stream = container.streams.video[0]
         pixel_format = stream.codec_context.format

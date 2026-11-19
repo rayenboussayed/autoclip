@@ -25,7 +25,7 @@ def test_parity_process_video_vs_server_job(media: Media, tmp_path: Path, monkey
 
     def fast_to_config(self: FileConfig, overrides: RuntimeOverrides | None = None) -> Config:
         cfg = original(self, overrides)
-        cfg.quality = "lowest"
+        cfg.quality = "low"
         cfg.clips.short.count = 1
         return cfg
 

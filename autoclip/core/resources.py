@@ -7,6 +7,7 @@ after every traced operation - so it follows the machine's *current* state, not 
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import logging
 import time
@@ -51,26 +52,32 @@ def _cgroup_memory_limit(root: Path) -> int | None:
 
 
 def cgroup_memory_available(root: Path = CGROUP_ROOT) -> int | None:
-    """Bytes still available under a container memory limit (cgroup v2, then v1); ``None`` if unlimited."""
+    """Bytes still available under a container memory limit (cgroup v2, then v1); ``None`` if unlimited.
+
+    A visible limit is never ignored: when the usage file cannot be read, the limit itself is
+    returned (never more than the container may hold).
+    """
     for limit_file, used_file in (
         ("memory.max", "memory.current"),
         ("memory/memory.limit_in_bytes", "memory/memory.usage_in_bytes"),
     ):
         limit, used = _read_int(root / limit_file), _read_int(root / used_file)
-        if limit is not None and used is not None and limit < 1 << 60:  # v1 reports ~2**63 when unlimited
-            return max(0, limit - used)
+        if limit is not None and limit < 1 << 60:  # v1 reports ~2**63 when unlimited
+            if used is not None:
+                return max(0, limit - used)
+            return limit
     return None
 
 
 def cgroup_cpu_quota(root: Path = CGROUP_ROOT) -> float | None:
     """CPU quota in cores imposed by a container runtime (cgroup v2, then v1); ``None`` if unlimited."""
-    try:
+    with contextlib.suppress(Exception):  # unreadable or absurd file: fall through to the v1 files
         quota, period = (root / "cpu.max").read_text().split()
-        return int(quota) / int(period)
-    except (OSError, ValueError):
-        pass
+        q, p = int(quota), int(period)
+        if p > 0 and q >= 0:
+            return q / p
     quota_v1, period_v1 = _read_int(root / "cpu/cpu.cfs_quota_us"), _read_int(root / "cpu/cpu.cfs_period_us")
-    return quota_v1 / period_v1 if quota_v1 and period_v1 else None
+    return quota_v1 / period_v1 if quota_v1 and period_v1 and quota_v1 > 0 else None
 
 
 @dataclass(frozen=True)
@@ -190,7 +197,7 @@ class ResourceMonitor:
         """
         cores = self.cpu_budget()
         fits = max(1, self.usable_memory() // max(per_job_bytes, 1))
-        if not getattr(self.profile, "parallel", True):
+        if not self.profile.parallel:
             workers = 1 if not (jobs <= 4 and per_job_bytes <= 8 * 1024 * 1024) else max(1, min(jobs, cores, fits, limit, 2))
         else:
             workers = max(1, min(jobs, cores, fits, limit))
@@ -331,9 +338,6 @@ class ResourceMonitor:
             log.debug("adapt failed: %s", e)  # pragma: no cover
         if self.snapshot().pressure != "low":
             log.debug("rebalance after %s: gc freed %d objects", op, gc.collect())
-
-
-CACHE_DISK_MB = 2048
 
 
 #: The process-wide monitor; ``main`` and every worker call ``RESOURCES.configure(cfg)`` once.

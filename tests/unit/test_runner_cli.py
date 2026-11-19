@@ -48,7 +48,7 @@ def make_jobs(
     **sections: dict[str, Any],
 ) -> tuple[list[RenderJob], Store, Config]:
     cfg = make_cfg(media, tmp_path, None, **sections)
-    # quality=lowest renders at a 216 px short side on a 9:16 canvas
+    # quality=low renders at a 432 px short side on a 9:16 canvas
     store = Store(tmp_path / "jobs.db", fresh=True)
     store.put_segments(load_transcript_file(media.transcript))
     jobs = []
@@ -88,7 +88,7 @@ def test_render_job_success_writes_outputs_and_database(media: Media, tmp_path: 
     (job,), store, _ = make_jobs(media, tmp_path, n=1)
     assert render_job(job) is True
     row = store.clips()[0]
-    assert row["status"] == "done" and row["file"] == "c1.mp4" and (row["width"], row["height"]) == (216, 384) and row["trimmed"] > 3
+    assert row["status"] == "done" and row["file"] == "c1.mp4" and (row["width"], row["height"]) == (320, 568) and row["trimmed"] > 3
     assert (tmp_path / "c1.mp4").exists() and (tmp_path / "c1.srt").read_text(encoding="utf-8").startswith("1\n00:00:")
     store.close()
 
@@ -261,7 +261,7 @@ def test_main_processes_several_videos_into_the_short_long_video_structure(
     for stem in ("talk", "silent"):
         summary = clips_json(tmp_path, "short", stem)
         assert len(summary) == 1 and (out / "short" / stem / summary[0]["file"]).exists()
-        assert summary[0]["file"].startswith(f"{stem}_best_01_") and summary[0]["scene"] == "best" and summary[0]["width"] == 216
+        assert summary[0]["file"].startswith(f"{stem}_best_01_") and summary[0]["scene"] == "best" and summary[0]["width"] == 320
         assert isinstance(summary[0]["start"], float) and set(summary[0]) >= {"title", "score", "trimmed"}
         assert (out / ".work" / stem / "autoclip.db").exists()  # shared work files stay out of the short/long folders
     (log_file,) = (out / "logs").glob("autoclip_*.log")
@@ -276,7 +276,7 @@ def test_main_short_and_long_clips_for_several_scene_types(media: Media, tmp_pat
     assert (out / "short" / "talk").is_dir()
     rows = clips_json(tmp_path, "short", "talk")
     assert len(rows) >= 1
-    assert all((r["width"], r["height"]) == (216, 384) for r in rows)
+    assert all((r["width"], r["height"]) == (320, 568) for r in rows)
     for r in rows:
         assert re.fullmatch(r"talk_(funny|sad)_\d\d_\d+s\.mp4", r["file"]) and (out / "short" / "talk" / r["file"]).exists()
 

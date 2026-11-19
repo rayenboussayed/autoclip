@@ -102,5 +102,5 @@ jobs:
           p["clips"]["scenes"] = "best"
           json.dump(p, open("diag.json", "w"))
           PY
-          python -m autoclip --output-dir diag-out --quality lowest --skip caption,title,llm diag.json > diag-out.log 2>&1
+          python -m autoclip --output-dir diag-out --skip caption,title,llm diag.json > diag-out.log 2>&1
           echo "::error file=ci.log::diag exit=$? clips=$(ls diag-out/short/diag-src/*.mp4 2>/dev/null | wc -l) log-tail=$(tail -25 diag-out.log | tr '\n' '|')"

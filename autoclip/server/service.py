@@ -110,6 +110,9 @@ def _run_job_inprocess(job: Job, cfg: Config) -> None:
 
 
 def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def]
+    from ..core import ai
+
+    ai.reset_run_breaker()  # the server is one process for many jobs; the breaker is per job, not forever
     try:
         job.output_dir.mkdir(parents=True, exist_ok=True)
         job.work_dir = job.output_dir / ".work" / (job.input_path.stem)

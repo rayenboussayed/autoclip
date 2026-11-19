@@ -27,7 +27,6 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[TestClie
     monkeypatch.setenv("MAX_FILE_SIZE", str(1024 * 1024 * 1024))
     monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
     monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
-    monkeypatch.setenv("MAX_CONCURRENT_JOBS", "2")
     monkeypatch.setenv("AUTOCLIP_SERVER_INPROCESS", "1")  # in-process pipeline; no subprocess re-entry or model download
     server_config.get_settings.cache_clear()
     app = create_app()
@@ -59,6 +58,10 @@ def test_create_job_uploads_and_renders_a_video(client: TestClient, media: Any, 
     custom.pop("input", None)
     custom.pop("output_dir", None)
 
+    reset_calls: list[int] = []
+    from autoclip.core import ai as core_ai
+
+    monkeypatch.setattr(core_ai, "reset_run_breaker", lambda: reset_calls.append(1))
     response = client.post(
         "/api/jobs",
         files={"file": (media.video.name, video_bytes, "video/mp4")},
@@ -72,6 +75,7 @@ def test_create_job_uploads_and_renders_a_video(client: TestClient, media: Any, 
     assert status["state"] == "completed", status
     assert status["outputs"], status
     assert status["percent"] == 100.0
+    assert reset_calls == [1]  # a server job resets the per-run AI state exactly once
 
     download = client.get(job["download_url"])
     assert download.status_code == 200

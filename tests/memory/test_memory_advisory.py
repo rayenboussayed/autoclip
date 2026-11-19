@@ -27,7 +27,7 @@ def test_cli_fixture_wall_budget(media, tmp_path: Path, memory_results: Path) ->
     )
     begin = time.perf_counter()
     subprocess.run(
-        [sys.executable, "-m", "autoclip", "--output-dir", str(out), "--quality", "lowest", "--skip", "caption,title,llm", str(cfg)],
+        [sys.executable, "-m", "autoclip", "--output-dir", str(out), "--skip", "caption,title,llm", str(cfg)],
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

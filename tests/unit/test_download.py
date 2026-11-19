@@ -1627,7 +1627,7 @@ def test_valid_srt_checks_the_content(tmp_path: Path) -> None:
 
 def test_a_stalled_media_format_falls_back_to_the_next_best(media: Media, dl_factory: Any) -> None:
     """A network failure on the preferred format costs the video nothing: the next-best format is tried."""
-    dl = dl_factory(download={}, quality="highest")
+    dl = dl_factory(download={}, quality="high")
     audio = {"format_id": "140", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "abr": 130}
     full = info(
         video_format("137", 1920, 1080, tbr=1700, protocol="https"),
@@ -1640,14 +1640,14 @@ def test_a_stalled_media_format_falls_back_to_the_next_best(media: Media, dl_fac
     fake = flow_fake(media, full, media_errors=(DownloadError("Read timed out"),))
     dl._YoutubeDL = fake
     item = dl.download(URL)[0]
-    assert item.path.name.startswith("Stable [v1] [248+140]")
-    assert [call.params["format"] for call in fake.media_calls] == ["137+140", "248+140"]
-    assert (dl.root / "Stable [v1] [248+140].info.json").exists()  # the sidecars follow the candidate that downloaded
+    assert item.path.name.startswith("Stable [v1] [137+140]")
+    assert [call.params["format"] for call in fake.media_calls] == ["136+140", "137+140"]
+    assert (dl.root / "Stable [v1] [137+140].info.json").exists()  # the sidecars follow the candidate that downloaded
 
 
 def test_a_non_downloaderror_exception_does_not_stop_the_alternates(media: Media, dl_factory: Any) -> None:
     """A crash inside a candidate (e.g. a missing ffmpeg) is converted and the next candidate is tried."""
-    dl = dl_factory(download={}, quality="highest")
+    dl = dl_factory(download={}, quality="high")
     audio = {"format_id": "140", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "abr": 130}
     full = info(
         video_format("137", 1920, 1080, tbr=1700, protocol="https"),
@@ -1660,13 +1660,13 @@ def test_a_non_downloaderror_exception_does_not_stop_the_alternates(media: Media
     fake = flow_fake(media, full, media_errors=(FileNotFoundError("ffmpeg is gone"),))
     dl._YoutubeDL = fake
     item = dl.download(URL)[0]
-    assert item.path.name.startswith("Crash [c1] [248+140]")
+    assert item.path.name.startswith("Crash [c1] [137+140]")
 
 
 def test_a_rate_limited_sidecar_pass_is_not_swallowed(media: Media, dl_factory: Any) -> None:
     from autoclip.core.errors import RateLimitError  # noqa: PLC0415
 
-    dl = dl_factory(download={}, quality="highest")
+    dl = dl_factory(download={}, quality="high")
     audio = {"format_id": "140", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "abr": 130}
     full = info(
         video_format("137", 1920, 1080, tbr=1700, protocol="https"),
@@ -1681,7 +1681,7 @@ def test_a_rate_limited_sidecar_pass_is_not_swallowed(media: Media, dl_factory: 
 
 
 def test_two_alternates_are_tried_and_all_failures_are_reported(media: Media, dl_factory: Any) -> None:
-    dl = dl_factory(download={}, quality="highest")
+    dl = dl_factory(download={}, quality="high")
     audio = {"format_id": "140", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "abr": 130}
     full = info(
         video_format("137", 1920, 1080, tbr=1700, protocol="https"),
@@ -1701,11 +1701,11 @@ def test_two_alternates_are_tried_and_all_failures_are_reported(media: Media, dl
         dl.download(URL)
     assert "137+140" in str(error.value) and "248+140" in str(error.value) and "136+140" in str(error.value)
     assert "gone1" in str(error.value) and "gone2" in str(error.value)  # every attempt names its reason
-    assert [call.params["format"] for call in fake.media_calls] == ["137+140", "248+140", "136+140"]
+    assert [call.params["format"] for call in fake.media_calls] == ["136+140", "137+140", "248+140"]
 
 
 def test_the_fallback_logs_which_formats_were_tried(media: Media, dl_factory: Any, caplog: pytest.LogCaptureFixture) -> None:
-    dl = dl_factory(download={}, quality="highest")
+    dl = dl_factory(download={}, quality="high")
     audio = {"format_id": "140", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "abr": 130}
     full = info(
         video_format("137", 1920, 1080, tbr=1700, protocol="https"),
@@ -1723,7 +1723,7 @@ def test_the_fallback_logs_which_formats_were_tried(media: Media, dl_factory: An
 
 
 def test_a_cached_alternate_is_reused_without_calling_yt_dlp(media: Media, dl_factory: Any) -> None:
-    dl = dl_factory(download={}, quality="highest")
+    dl = dl_factory(download={}, quality="high")
     audio = {"format_id": "140", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "abr": 130}
     full = info(
         video_format("137", 1920, 1080, tbr=1700, protocol="https"),
@@ -1783,7 +1783,7 @@ def test_a_rate_limited_response_aborts_without_trying_alternates(media: Media, 
     """RateLimitError (the platform speaking) is never swallowed by the alternates fallback."""
     from autoclip.core.errors import RateLimitError  # noqa: PLC0415
 
-    dl = dl_factory(download={}, quality="highest")
+    dl = dl_factory(download={}, quality="high")
     audio = {"format_id": "140", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "abr": 130}
     full = info(
         video_format("137", 1920, 1080, tbr=1700, protocol="https"),
@@ -1804,7 +1804,7 @@ def test_a_rate_limited_range_response_aborts_without_the_whole_video_fallback(
 ) -> None:
     from autoclip.core.errors import RateLimitError  # noqa: PLC0415
 
-    dl = dl_factory(download={"time_range": "00:10-00:20"}, quality="highest")
+    dl = dl_factory(download={"time_range": "00:10-00:20"}, quality="high")
     dl._range_supported = True
     full = info(
         video_format("137", 1920, 1080, tbr=1700, protocol="https"),
@@ -1824,7 +1824,7 @@ def test_a_failed_range_attempt_skips_the_same_format_id_for_the_whole_video(
     media: Media, dl_factory: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
     """With a second candidate available, the range-failed format id is not retried."""
-    dl = dl_factory(download={"time_range": "00:10-00:20"}, quality="highest")
+    dl = dl_factory(download={"time_range": "00:10-00:20"}, quality="high")
     dl._range_supported = True
     audio = {"format_id": "140", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "abr": 130}
     full = info(
@@ -1843,7 +1843,7 @@ def test_a_failed_range_attempt_skips_the_same_format_id_for_the_whole_video(
 
 def test_an_invalid_cached_alternate_under_a_range_prefix_is_refetched(media: Media, dl_factory: Any) -> None:
     """A cached alternate whose length does not match the requested range is deleted, not reused."""
-    dl = dl_factory(download={"time_range": "00:10-00:20"}, quality="highest")
+    dl = dl_factory(download={"time_range": "00:10-00:20"}, quality="high")
     dl._range_supported = False  # the local-cut path: every whole-video download is trimmed to 10 s
     audio = {"format_id": "140", "vcodec": "none", "acodec": "mp4a", "ext": "m4a", "abr": 130}
     full = info(
@@ -1867,7 +1867,7 @@ def test_an_unreadable_cache_entry_is_a_miss_not_a_crash(media: Media, dl_factor
     """probe() raising something unexpected (not AutoclipError) is treated as a cache miss."""
     from autoclip.core import download as download_module  # noqa: PLC0415
 
-    dl = dl_factory(download={"time_range": "00:10-00:20"}, quality="highest")
+    dl = dl_factory(download={"time_range": "00:10-00:20"}, quality="high")
     dl.root.mkdir(parents=True, exist_ok=True)
     cached = dl.root / "Entry [u8] [137+140] [10-20s].mp4"
     cached.write_bytes(b"not a video")

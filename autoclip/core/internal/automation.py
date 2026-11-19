@@ -17,7 +17,6 @@ __all__ = [
     "CLIP_PAD_START",
     "COOKIE_BROWSERS",
     "DEFAULT_FILLERS",
-    "DEFAULT_TRANSCRIPT_MODELS",
     "DENOISE_STRENGTH",
     "DOWNLOAD_FORMAT_CANDIDATES",
     "DOWNLOAD_PAUSE_MAX_SECONDS",
@@ -62,9 +61,9 @@ CAPTION_SAFE_BOTTOM = 0.20
 """Fraction of a vertical frame kept free at the bottom for captions."""
 
 
-def transcription_beam_size(quality: str) -> int:
-    """Accuracy/detail level for Whisper: 5 when quality matters, 1 when it should be fast."""
-    return {"highest": 5, "high": 5, "medium": 4, "low": 3, "lowest": 1}.get(quality, 5)
+def transcription_beam_size(device: str = "cpu") -> int:
+    """Accuracy/detail level for Whisper: 5 on CUDA (the model there is large), 3 on the CPU (it is not)."""
+    return 5 if device == "cuda" else 3
 
 
 def denoiser_threads(mode: str = "balance") -> int:
@@ -160,15 +159,6 @@ ENHANCE_SNR_THRESHOLD_DB = 20.0
 ENHANCE_ATTENUATION_DB = 12.0
 """Denoiser attenuation limit for the models that support it."""
 
-DEFAULT_TRANSCRIPT_MODELS = {
-    "highest": "large-v3",
-    "high": "large-v3",
-    "medium": "small",
-    "low": "base",
-    "lowest": "tiny",
-}
-"""Whisper model per quality tier (``high`` drops to ``small`` without a GPU)."""
-
 LLM_TOP_K = 12
 """How many candidates the local LLM is asked to choose from."""
 
@@ -206,26 +196,19 @@ SCENE_SNAP_RADIUS_SECONDS = 2.0
 """How far a selected clip edge may move to land on a visible shot boundary."""
 
 
-def audio_fade_seconds(duration: float, *, quality: str = "high") -> float:
-    """Audio edge fade: follow the configured fade, but never dominate a short clip."""
-    base = AUDIO_FADE_SECONDS
-    scale = {"highest": 1.0, "high": 1.0, "medium": 0.95, "low": 0.85, "lowest": 0.75}.get(quality, 1.0)
-    fade = min(base * scale, max(0.0, duration / 6.0))
-    return round(fade, 3)
+def audio_fade_seconds(duration: float) -> float:
+    """Audio edge fade: the built-in fade, but never more than a sixth of the clip so a short clip keeps its middle."""
+    return round(min(AUDIO_FADE_SECONDS, max(0.0, duration / 6.0)), 3)
 
 
-def video_fade_seconds(duration: float, *, quality: str = "high", kind: str = "short") -> float:
-    """Video edge fade: downscale for very short clips and low-quality targets."""
-    base = VIDEO_FADE_SECONDS
-    scale = {"highest": 1.0, "high": 1.0, "medium": 0.95, "low": 0.85, "lowest": 0.75}.get(quality, 1.0)
+def video_fade_seconds(duration: float, *, kind: str = "short") -> float:
+    """Video edge fade: downscaled for short clips, capped so it never dominates a short clip."""
     kind_scale = 0.85 if kind == "short" else 1.0
-    fade = min(base * scale * kind_scale, max(0.0, duration / 6.0))
-    return round(fade, 3)
+    return round(min(VIDEO_FADE_SECONDS * kind_scale, max(0.0, duration / 6.0)), 3)
 
 
-def title_display_seconds(text: str, duration: float, *, quality: str = "high") -> float:
+def title_display_seconds(text: str, duration: float) -> float:
     """Show an overlay long enough to read, but never longer than the clip itself."""
     # roughly 10-15 characters per second for a single-line overlay title
     estimated = min(3.0, max(1.0, len(text) / 12.0))
-    scale = {"highest": 1.0, "high": 1.0, "medium": 0.95, "low": 0.9, "lowest": 0.85}.get(quality, 1.0)
-    return round(min(duration, estimated * scale), 3)
+    return round(min(duration, estimated), 3)

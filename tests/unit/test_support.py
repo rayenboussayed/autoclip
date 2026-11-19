@@ -56,7 +56,7 @@ def test_make_cfg_uses_fast_defaults_and_merges_nested_sections(media: Media, tm
     assert cfg.output_dir == str(tmp_path / "out")
     assert cfg.clips.kinds == ["short"]
     assert (cfg.clips.short.count, cfg.clips.short.min_seconds, cfg.clips.short.max_seconds) == (3, 6, 12)
-    assert (cfg.quality, cfg.video.codec, cfg.video.layout) == ("lowest", "h264", "fit")
+    assert (cfg.quality, cfg.video.codec, cfg.video.layout) == ("low", "h264", "fit")
 
 
 def test_make_cfg_accepts_another_source(media: Media, tmp_path: Path) -> None:
@@ -86,10 +86,13 @@ def test_run_args_carries_the_run_time_overrides(tmp_path: Path) -> None:
         str(config),
         "--output-dir",
         str(tmp_path / "out"),
-        "--quality",
-        "lowest",
     ]
-    assert run_args(config, extra=["--split"])[-3:] == ["--quality", "lowest", "--split"]
+    assert run_args(config, extra=["--split"]) == [
+        str(config),
+        "--output-dir",
+        str(tmp_path / "out"),
+        "--split",
+    ]
 
 
 def test_segments_cover_the_fixture_with_word_timings() -> None:

@@ -200,6 +200,8 @@ def make_title(text: str, fillers: frozenset[str] | set[str] | None = None) -> s
 
 def _rerank(top: list[Moment], count: int, cfg: Config, scene: str) -> list[Moment]:
     """Blend the heuristic score with the LLM score; on any failure keep the heuristic order."""
+    from . import ai
+
     try:
         ratings = llm_rerank(top, cfg, scene)
     except Exception as e:
@@ -209,7 +211,7 @@ def _rerank(top: list[Moment], count: int, cfg: Config, scene: str) -> list[Mome
     for k, m in enumerate(top):
         m.llm_score, m.title = ratings.get(k, (5.0, ""))
         m.score = float(0.4 * z[k] + 0.6 * (m.llm_score - 5.0) / 2.0)
-    log.info("  LLM re-ranked %d '%s' candidates with '%s'", len(top), scene, cfg.llm.model)
+    log.info("  LLM re-ranked %d '%s' candidates with '%s'", len(top), scene, ai.llm_model(cfg.llm.base_url, cfg.llm.model) or "?")
     return sorted(top, key=lambda m: m.score or 0.0, reverse=True)[:count]
 
 

@@ -105,8 +105,8 @@ def test_unknown_values_fall_back_with_a_warning(caplog: pytest.LogCaptureFixtur
     ("old", "hint"),
     [
         ({"output_dir": "out"}, "AUTOCLIP_OUTPUT_DIR"),
-        ({"mode": "performance"}, "pass --mode"),
-        ({"quality": "high"}, "pass --quality"),
+        ({"mode": "performance"}, "the engine balances"),
+        ({"quality": "high"}, "the engine chooses"),
         ({"video": {"codec": "h265"}}, "video"),
         ({"clips": {"kinds": ["short"]}}, "use clips.preset"),
         ({"clips": {"short": {"count": 2}}}, "the short profile is built in"),
@@ -171,7 +171,11 @@ def test_split_and_ranges_are_mutually_exclusive() -> None:
     assert FileConfig().to_config(RuntimeOverrides(split=True)).clips.mode == "split"
 
 
-def test_file_config_derives_the_runtime_defaults() -> None:
+def test_file_config_derives_the_runtime_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core import config as config_module
+
+    monkeypatch.setattr(config_module, "detect_cpu_count", lambda: 4)
+    monkeypatch.setattr(config_module, "free_ram_mb", lambda: 4096.0)
     cfg = FileConfig().to_config()
     assert cfg.mode == "balance" and cfg.quality == "high"
     assert cfg.llm.system_prompt == "" and cfg.image.prompt == "cinematic thumbnail, high quality, sharp focus"
@@ -186,39 +190,35 @@ def test_overrides_replace_one_field_at_a_time() -> None:
             output_dir="/tmp/out",
             cookies="firefox",
             skip=["caption", "title"],
-            llm_base_url="http://box:11434",
-            llm_model="qwen2.5",
-            mode="performance",
-            quality="lowest",
         )
     )
     assert cfg.output_dir == "/tmp/out"
     assert cfg.download.cookies == "firefox"
     assert cfg.captions.enabled is False
     assert cfg.skip.caption and cfg.skip.title
-    assert (cfg.llm.base_url, cfg.llm.model, cfg.llm.system_prompt) == ("http://box:11434", "qwen2.5", "")
-    assert (cfg.mode, cfg.quality) == ("performance", "lowest")
+    assert (cfg.llm.base_url, cfg.llm.model, cfg.llm.system_prompt) == ("http://localhost:11434", "", "")
+    assert cfg.mode in ("performance", "resources", "balance")
+    assert cfg.quality in ("high", "medium", "low")
 
 
 def test_environment_overrides_are_field_by_field(monkeypatch: pytest.MonkeyPatch) -> None:
     env = {
         "AUTOCLIP_OUTPUT_DIR": "/env/out",
-        "AUTOCLIP_QUALITY": "low",
+        "AUTOCLIP_COOKIES": "firefox",
         "AUTOCLIP_SKIP": "caption, llm",
-        "AUTOCLIP_LLM_MODEL": "env-model",
     }
-    explicit = RuntimeOverrides(quality="highest")
+    explicit = RuntimeOverrides(output_dir="/explicit/out")
     merged = RuntimeOverrides.combined(explicit, env)
-    assert merged.output_dir == "/env/out"
-    assert merged.quality == "highest"  # the explicit value wins
-    assert merged.skip == ["caption", "llm"] and merged.llm_model == "env-model"
+    assert merged.output_dir == "/explicit/out"  # the explicit value wins
+    assert merged.cookies == "firefox"
+    assert merged.skip == ["caption", "llm"]
 
 
 def test_an_invalid_environment_override_is_ignored(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level("WARNING", logger="autoclip"):
-        overrides = RuntimeOverrides.from_env({"AUTOCLIP_QUALITY": "nope", "AUTOCLIP_MODE": "nope", "AUTOCLIP_OUTPUT_DIR": "/env/out"})
-    assert overrides.quality is None and overrides.mode is None and overrides.output_dir == "/env/out"
-    assert "invalid value for quality" in caplog.text
+        overrides = RuntimeOverrides.from_env({"AUTOCLIP_SKIP": "snap", "AUTOCLIP_OUTPUT_DIR": "/env/out"})
+    assert overrides.skip is None and overrides.output_dir == "/env/out"
+    assert "invalid value for skip" in caplog.text
 
 
 def test_expand_inputs_globs_dedupes_and_sorts(tmp_path: Path) -> None:
@@ -263,7 +263,11 @@ def test_single_string_input(tmp_path: Path) -> None:
     assert len(cfg.input) == 1 and cfg.input[0].endswith("one.mp4")
 
 
-def test_offline_and_device_come_from_the_environment(tmp_path: Path) -> None:
+def test_environment_overrides_flow_into_the_runtime_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core import config as config_module
+
+    monkeypatch.setattr(config_module, "detect_cpu_count", lambda: 4)
+    monkeypatch.setattr(config_module, "free_ram_mb", lambda: 4096.0)
     touch(tmp_path, "one.mp4")
     cfg = load_config(write(tmp_path, {"input": "one.mp4"}), RuntimeOverrides.from_env({}))
     assert cfg.mode == "balance"
@@ -370,21 +374,23 @@ def test_runtime_config_validation_errors() -> None:
         parse(Config, {"download": {"time_range": "00:30-00:10"}})
     with pytest.raises(ConfigError):
         parse(Config, {"download": {"time_range": "1::2-2:00"}})
-    # mode normalisation
+    # a garbage value falls back to the field default (soft value fallback for engine-settable internals)
     cfg = parse(Config, {"mode": "garbage"})
     assert cfg.mode == "balance"
 
 
-def test_default_transcript_model_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_whisper_model_for_cuda_and_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
     import sys
     import types
 
     fake = types.ModuleType("ctranslate2")
     fake.get_cuda_device_count = lambda: 2  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "ctranslate2", fake)
-    from autoclip.core.internal.runtime import transcript_model_for
+    from autoclip.core.internal.runtime import detect_device, whisper_model_for
 
-    assert transcript_model_for("highest") == "large-v3"
+    assert detect_device() == "cuda"
+    assert whisper_model_for("cuda") == "large-v3"
+    assert whisper_model_for("cpu") == "small"
 
 
 def test_the_download_allow_deny_keys_are_read_directly(tmp_path: Path) -> None:
@@ -425,5 +431,45 @@ def test_the_llm_endpoint_keys_stay_removed_but_warn(caplog: pytest.LogCaptureFi
     with caplog.at_level("WARNING", logger="autoclip"):
         cfg = parse(FileConfig, {"llm": {"base_url": "http://box:11434", "model": "qwen2.5", "api_key": "secret"}})
     assert cfg.llm == FileLlmCfg()
-    for hint in ("--llm-url", "--llm-model", "no API key"):
+    for hint in ("a local Ollama", "largest installed model", "no API key"):
         assert hint in caplog.text
+
+
+def test_to_config_derives_quality_and_mode_from_the_machine(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core import config as config_module
+
+    monkeypatch.setattr(config_module, "detect_cpu_count", lambda: 16)
+    monkeypatch.setattr(config_module, "free_ram_mb", lambda: 16384.0)
+    cfg = FileConfig().to_config()
+    assert (cfg.quality, cfg.mode) == ("high", "performance")
+
+    monkeypatch.setattr(config_module, "detect_cpu_count", lambda: 4)
+    monkeypatch.setattr(config_module, "free_ram_mb", lambda: 4096.0)
+    cfg = FileConfig().to_config()
+    assert (cfg.quality, cfg.mode) == ("high", "balance")
+
+    monkeypatch.setattr(config_module, "detect_cpu_count", lambda: 2)
+    monkeypatch.setattr(config_module, "free_ram_mb", lambda: 1024.0)
+    cfg = FileConfig().to_config()
+    assert (cfg.quality, cfg.mode) == ("low", "resources")
+
+    monkeypatch.setattr(config_module, "detect_cpu_count", lambda: 3)
+    monkeypatch.setattr(config_module, "free_ram_mb", lambda: 2500.0)
+    cfg = FileConfig().to_config()
+    assert (cfg.quality, cfg.mode) == ("medium", "balance")
+
+
+def test_to_config_degrades_to_conservative_defaults_when_the_machine_is_unreadable(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core import config as config_module
+
+    monkeypatch.setattr(config_module, "detect_cpu_count", lambda: (_ for _ in ()).throw(OSError("no affinity")))
+    cfg = FileConfig().to_config()
+    assert (cfg.quality, cfg.mode) == ("low", "resources")
+
+
+def test_chat_raises_a_legible_error_when_the_ollama_package_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core import ai
+
+    monkeypatch.setattr(ai, "ollama", None)
+    with pytest.raises(RuntimeError, match="ollama.*not installed"):
+        ai._chat("http://whatever.local", "m", [{"role": "user", "content": "hi"}])

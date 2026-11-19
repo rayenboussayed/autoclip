@@ -33,7 +33,7 @@ def _run_cli(video: Path, workdir: Path, out_dir: Path) -> tuple[int, list[int]]
     _sidecar_for(video)
     _write_config(cfg, video)
     return run_command(
-        [sys.executable, "-m", "autoclip", "--output-dir", str(out_dir), "--quality", "lowest", "--skip", "caption,title,llm", str(cfg)],
+        [sys.executable, "-m", "autoclip", "--output-dir", str(out_dir), "--skip", "caption,title,llm", str(cfg)],
         out_dir=out_dir,
     )
 

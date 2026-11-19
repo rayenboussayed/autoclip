@@ -92,7 +92,7 @@ def make_cfg(media: Media, out: Path, source: Path | None = None, **sections: An
             "short": {"count": 2, "min_seconds": 6, "max_seconds": 12},
             "long": {"min_seconds": 12, "max_seconds": 30},
         },
-        "quality": "lowest",
+        "quality": "low",
     }
     cfg = parse(Config, merge(data, sections))
     cfg.input = [str(source or media.video)]
@@ -243,7 +243,6 @@ def run_args(
     config: Path,
     *,
     output: Path | None = None,
-    quality: str = "lowest",
     extra: list[str] | None = None,
 ) -> list[str]:
     """The argv that runs ``config`` (the nine-key file carries no run-time overrides, so only these remain)."""
@@ -251,7 +250,5 @@ def run_args(
         str(config),
         "--output-dir",
         str(output or Path(config).parent / "out"),
-        "--quality",
-        quality,
     ]
     return argv + (extra or [])

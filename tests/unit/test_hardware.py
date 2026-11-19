@@ -23,7 +23,7 @@ def test_cpu_encoder_arguments() -> None:
     enc = cpu_encoder(VideoCfg(), "medium")
     assert (enc.name, enc.hardware, enc.preset) == ("libx264", False, "medium")
     assert enc.params == ("-crf", "24", "-profile:v", "high")
-    assert cpu_encoder(VideoCfg(), "highest").params == ("-crf", "16", "-profile:v", "high")
+    assert cpu_encoder(VideoCfg(), "high").params == ("-crf", "20", "-profile:v", "high")
     hevc = cpu_encoder(VideoCfg(codec="h265"), "high")
     assert (hevc.name, hevc.preset) == ("libx265", "slow")
     assert hevc.params == ("-crf", "20", "-profile:v", "main")
@@ -53,12 +53,12 @@ def test_every_gpu_encoder_has_an_hevc_variant(name: str, codec: str) -> None:
 
 def test_videotoolbox_quality_is_mapped() -> None:
     assert HARDWARE["videotoolbox"](VideoCfg(), "medium").params == ("-q:v", "65", "-profile:v", "high")
-    assert HARDWARE["videotoolbox"](VideoCfg(), "highest").params[1] == "100"
-    assert HARDWARE["videotoolbox"](VideoCfg(), "lowest").params[1] == "25"
+    assert HARDWARE["videotoolbox"](VideoCfg(), "high").params[1] == "85"
+    assert HARDWARE["videotoolbox"](VideoCfg(), "low").params[1] == "45"
 
 
 def test_probe_tells_working_from_broken_encoders_with_real_ffmpeg() -> None:
-    assert works(cpu_encoder(VideoCfg(), "lowest"))
+    assert works(cpu_encoder(VideoCfg(), "low"))
     assert not works(Encoder("h264_does_not_exist", True, "medium", ()))
     assert not works(Encoder("libx264", False, "no-such-preset", ()))
     # MoviePy always passes a preset first; a later "-preset" in the arguments wins, so this placeholder is harmless
@@ -78,7 +78,7 @@ def test_probe_uses_the_ffmpeg_moviepy_encodes_with(monkeypatch: pytest.MonkeyPa
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(subprocess, "run", record)
-    assert works(cpu_encoder(VideoCfg(), "lowest")) and seen == [ffmpeg_writer.FFMPEG_BINARY]
+    assert works(cpu_encoder(VideoCfg(), "low")) and seen == [ffmpeg_writer.FFMPEG_BINARY]
 
 
 def test_probe_survives_hangs_and_missing_binaries(monkeypatch: pytest.MonkeyPatch) -> None:

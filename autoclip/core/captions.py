@@ -20,7 +20,7 @@ from PIL import Image, ImageColor, ImageDraw, ImageFont, features
 from .audio import Timeline, is_filler
 from .config import CaptionsCfg, Config
 from .fonts import dominant_script, find_font, has_rtl
-from .internal.automation import CAPTION_MAX_SECONDS, DEFAULT_FILLERS
+from .internal.automation import CAPTION_MAX_SECONDS, CAPTION_SAFE_BOTTOM, CAPTION_SAFE_TOP, DEFAULT_FILLERS
 from .log import traced
 from .media import F32
 from .models import Span, Word
@@ -288,8 +288,8 @@ class CaptionTrack:
 def safe_top(centre: float, H: int, W: int, cfg: CaptionsCfg, band_h: int) -> int:
     """Top pixel of a ``band_h`` band centred at ``centre`` (fraction of H), kept inside the app-UI safe zone."""
     vertical = H > 1.2 * W
-    low = (0.10 if vertical else 0.03) * H
-    high = (1 - (0.20 if vertical else 0.03)) * H - band_h
+    low = (CAPTION_SAFE_TOP if vertical else 0.03) * H
+    high = (1 - (CAPTION_SAFE_BOTTOM if vertical else 0.03)) * H - band_h
     return int(min(max(centre * H - band_h / 2, low), max(low, high)))
 
 

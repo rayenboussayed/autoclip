@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-VALID_MODES = ("performance", "resources", "balance")
-
 
 @dataclass(frozen=True)
 class ModeProfile:
@@ -21,7 +19,6 @@ class ModeProfile:
     target_cpu_high: float
     step_up: float
     step_down: float
-    min_workers_for_parallel: bool
 
 
 PROFILES: dict[str, ModeProfile] = {
@@ -38,7 +35,6 @@ PROFILES: dict[str, ModeProfile] = {
         target_cpu_high=95.0,
         step_up=5.0,
         step_down=3.0,
-        min_workers_for_parallel=True,
     ),
     "resources": ModeProfile(
         name="resources",
@@ -53,7 +49,6 @@ PROFILES: dict[str, ModeProfile] = {
         target_cpu_high=35.0,
         step_up=2.0,
         step_down=5.0,
-        min_workers_for_parallel=False,
     ),
     "balance": ModeProfile(
         name="balance",
@@ -68,7 +63,6 @@ PROFILES: dict[str, ModeProfile] = {
         target_cpu_high=75.0,
         step_up=4.0,
         step_down=4.0,
-        min_workers_for_parallel=True,
     ),
 }
 
@@ -80,4 +74,4 @@ def profile_for(mode: str) -> ModeProfile:
     return PROFILES[mode]
 
 
-__all__ = ["PROFILES", "VALID_MODES", "ModeProfile", "profile_for"]
+__all__ = ["PROFILES", "ModeProfile", "profile_for"]

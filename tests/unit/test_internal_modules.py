@@ -64,9 +64,9 @@ def test_content_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_quality_helpers() -> None:
-    assert quality.quality_profile("high").name == "high"
-    assert quality.quality_short_side("lowest") >= 2
-    assert quality.output_fps(24.0, "lowest") >= 1.0
+    assert tuple(quality.QUALITY_PROFILES) == ("high", "medium", "low")
+    assert quality.quality_short_side("low") >= 2
+    assert quality.output_fps(24.0, "low") >= 1.0
     assert quality.download_quality_for("high") == 720
     with contextlib.suppress(ValueError):
         quality.quality_profile("nope")
@@ -83,9 +83,9 @@ def test_runtime_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = types.ModuleType("ctranslate2")
     fake.get_cuda_device_count = lambda: 0  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "ctranslate2", fake)
-    assert runtime.transcript_model_for("high", "cpu") == "small"
-    assert runtime.transcript_model_for("highest", "cpu") == "large-v3"
-    assert runtime.default_transcript_model() in ("small", "large-v3")
+    assert runtime.whisper_model_for("cpu") == "small"
+    assert runtime.whisper_model_for("cuda") == "large-v3"
+    assert runtime.detect_device() in ("cpu", "cuda")
     # detect_cpu_count must survive a broken probe (falls back to the raw affinity/cpu count)
     monkeypatch.setattr("autoclip.core.resources.cgroup_cpu_quota", lambda: None)
     assert runtime.detect_cpu_count() >= 1
@@ -112,12 +112,19 @@ def test_adaptive_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 def test_modes_helpers() -> None:
     assert modes.profile_for("nope").name == "balance"
     assert modes.profile_for("performance").name == "performance"
-    assert "balance" in modes.VALID_MODES
+    assert tuple(modes.PROFILES) == ("performance", "resources", "balance")
     from autoclip.core.internal.automation import denoiser_threads
 
     assert denoiser_threads("resources") == 1
     assert denoiser_threads("performance") >= 1
     assert denoiser_threads("balance") >= 1
+
+
+def _clear_ai_caches() -> None:
+    for cached in (ai._installed, ai._resolve_model):
+        cache_clear = getattr(cached, "cache_clear", None)
+        if callable(cache_clear):
+            cache_clear()
 
 
 def test_llm_available_falls_back_to_a_plain_http_probe() -> None:
@@ -138,7 +145,7 @@ def test_llm_available_falls_back_to_a_plain_http_probe() -> None:
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        ai._tags.cache_clear()
+        _clear_ai_caches()
         # "not a model list" is not a usable Ollama: the preflight must say the model is not there
         assert ai.llm_available(f"http://127.0.0.1:{server.server_port}") is False
     finally:
@@ -190,10 +197,11 @@ def test_config_coercion_edge_cases() -> None:
 
 
 def test_decisions_helpers() -> None:
-    from autoclip.core.internal.runtime import RuntimeDecision
+    from autoclip.core.internal.runtime import runtime_decisions
 
-    d = RuntimeDecision(name="x", value=1, source="test")
-    assert "x" in decisions.decision_text([d])
+    decisions_list = runtime_decisions()
+    assert any(d.name == "quality" for d in decisions_list)
+    assert any(d.name == "mode" for d in decisions_list)
     # log_decisions runs without error
     decisions.log_decisions()
 
@@ -216,7 +224,7 @@ def test_ai_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ai.generate_caption(cfg, "hello") == ""
     # skip.llm is a hard stop: no probe, no chat, no re-rank
     skip_llm = parse(Config, {"skip": {"llm": True}})
-    monkeypatch.setattr(ai, "llm_available", lambda *a, **k: pytest.fail("a skip.llm run must not probe the LLM"))
+    monkeypatch.setattr(ai, "llm_model", lambda *a, **k: pytest.fail("a skip.llm run must not probe the LLM"))
     monkeypatch.setattr(ai, "_chat", lambda *a, **k: pytest.fail("a skip.llm run must not chat"))
     assert ai.generate_title(skip_llm, "hello") == ""
     assert ai.generate_caption(skip_llm, "hello") == ""
@@ -226,7 +234,7 @@ def test_ai_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_llm_calls_include_the_configured_system_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     from autoclip.core.models import Moment
 
-    monkeypatch.setattr(ai, "llm_available", lambda *a, **k: True)
+    monkeypatch.setattr(ai, "llm_model", lambda *a, **k: "test-model")
     captured: dict[str, Any] = {}
 
     def fake_chat(base_url: str, model: str, messages: list[dict[str, str]], *, fmt: object = None) -> str:
@@ -251,7 +259,7 @@ def test_llm_calls_include_the_configured_system_prompt(monkeypatch: pytest.Monk
 def test_llm_rerank_falls_back_to_the_editor_prompt_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     from autoclip.core.models import Moment
 
-    monkeypatch.setattr(ai, "llm_available", lambda *a, **k: True)
+    monkeypatch.setattr(ai, "llm_model", lambda *a, **k: "test-model")
     captured: dict[str, Any] = {}
 
     def fake_chat(base_url: str, model: str, messages: list[dict[str, str]], *, fmt: str = "") -> str:
@@ -265,7 +273,7 @@ def test_llm_rerank_falls_back_to_the_editor_prompt_when_unset(monkeypatch: pyte
 
 
 def _stub_ollama(model_names: list[str]) -> dict[str, Any]:
-    """A local HTTP server answering /api/tags like Ollama (the port is fresh, so the ``_tags`` cache is)."""
+    """A local HTTP server answering /api/tags like Ollama (the port is fresh, so both caches are)."""
     import http.server
     import threading
 
@@ -288,8 +296,61 @@ def _stub_ollama(model_names: list[str]) -> dict[str, Any]:
 
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    ai._tags.cache_clear()
+    _clear_ai_caches()
     return {"url": f"http://127.0.0.1:{server.server_port}", "calls": calls, "server": server}
+
+
+def _stub_ollama_models(models: list[dict[str, object]]) -> dict[str, Any]:
+    """A local HTTP server answering /api/tags with explicit sizes (fresh port; both caches are cleared)."""
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            body = json.dumps({"models": models}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    _clear_ai_caches()
+    return {"url": f"http://127.0.0.1:{server.server_port}", "server": server}
+
+
+def test_llm_model_picks_the_largest_installed_model_that_fits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ai, "free_ram_mb", lambda: 8192.0)  # 4 GiB budget
+    models = [
+        {"name": "tiny:1b", "size": 500 * 1024**2},
+        {"name": "mid:7b", "size": 3 * 1024**3},
+        {"name": "huge:70b", "size": 40 * 1024**3},
+    ]
+    state = _stub_ollama_models(models)
+    try:
+        assert ai.llm_model(state["url"]) == "mid:7b"
+    finally:
+        state["server"].shutdown()
+        state["server"].server_close()
+    _clear_ai_caches()
+
+
+def test_llm_model_falls_back_to_the_smallest_installed_model_when_none_fits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ai, "free_ram_mb", lambda: 2048.0)  # 1 GiB budget
+    models = [
+        {"name": "mid:7b", "size": 3 * 1024**3},
+        {"name": "huge:70b", "size": 40 * 1024**3},
+    ]
+    state = _stub_ollama_models(models)
+    try:
+        assert ai.llm_model(state["url"]) == "mid:7b"
+    finally:
+        state["server"].shutdown()
+        state["server"].server_close()
+    _clear_ai_caches()
 
 
 def test_llm_available_requires_the_configured_model_to_be_installed() -> None:
@@ -303,7 +364,7 @@ def test_llm_available_requires_the_configured_model_to_be_installed() -> None:
     finally:
         state["server"].shutdown()
         state["server"].server_close()
-    ai._tags.cache_clear()
+    _clear_ai_caches()
 
 
 def test_llm_available_is_false_when_no_server_answers() -> None:
@@ -317,6 +378,9 @@ class _FakeClient:
         self.host = host
         self.timeout = timeout
         self.last: dict[str, Any] = {}
+
+    def list(self) -> dict[str, Any]:
+        return {"models": [{"name": "fake-model", "size": 6 * 1024**3}]}
 
     def chat(self, **kwargs: Any) -> dict[str, Any]:
         self.last = kwargs
@@ -342,6 +406,8 @@ def _ollama_module(client_cls: type) -> Any:
 def test_rerank_clamps_scores_and_ignores_unknown_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     from autoclip.core.models import Moment  # noqa: PLC0415
 
+    _clear_ai_caches()
+    monkeypatch.setattr(ai, "_installed", lambda url: {"fake-model:latest": 6 * 1024**3})
     monkeypatch.setattr(ai, "ollama", _ollama_module(_FakeClient))
     top = [Moment(0, 10, "one", score=1.0), Moment(0, 10, "two", score=1.0)]
     out = ai.llm_rerank(top, parse(Config, {}), "funny")
@@ -351,10 +417,13 @@ def test_rerank_clamps_scores_and_ignores_unknown_ids(monkeypatch: pytest.Monkey
 def test_rerank_rejects_an_off_schema_reply(monkeypatch: pytest.MonkeyPatch) -> None:
     from autoclip.core.models import Moment  # noqa: PLC0415
 
+    _clear_ai_caches()
+
     class _OffSchema(_FakeClient):
         def chat(self, **kwargs: Any) -> dict[str, Any]:
             return {"message": {"role": "assistant", "content": "not json at all"}}
 
+    monkeypatch.setattr(ai, "_installed", lambda url: {"fake-model:latest": 6 * 1024**3})
     monkeypatch.setattr(ai, "ollama", _ollama_module(_OffSchema))
     from pydantic import ValidationError
 
@@ -380,31 +449,37 @@ def test_chat_passes_the_configured_timeout_and_context_window(monkeypatch: pyte
     assert recorded["options"] == {"num_ctx": 8192, "temperature": 0}
 
 
-def test_model_names_handles_odd_shapes() -> None:
-    assert ai._model_names({"models": [{"name": ""}, {"model": "picked:latest"}, "bare"]}) == {"picked:latest", "bare"}
-    assert ai._model_names({"models": None}) == set()
-    assert ai._model_names("nonsense") == set()
+def test_model_sizes_handles_odd_shapes() -> None:
+    assert ai._model_sizes({"models": [{"name": ""}, {"model": "picked:latest", "size": 7 * 1024**3}, "bare"]}) == {
+        "picked:latest": 7 * 1024**3,
+        "bare": 0,
+    }
+    assert ai._model_sizes({"models": [{"name": "unknown-size", "size": "lots"}]}) == {"unknown-size": 0}
+    assert ai._model_sizes({"models": None}) == {}
+    assert ai._model_sizes("nonsense") == {}
+    assert ai._model_sizes(
+        {"models": [{"name": "a", "size": float("nan")}, {"name": "b", "size": float("inf")}, {"name": "c", "size": 1e400}]}
+    ) == {
+        "a": 0,
+        "b": 0,
+        "c": 0,
+    }
+    assert ai._model_sizes({"models": [{"name": "x", "size": True}]}) == {"x": 0}
 
 
-def test_tags_uses_the_python_client_when_it_works(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Client:
-        def __init__(self, host: str, *, timeout: float = 2.0) -> None:
-            pass
-
-        def list(self) -> dict[str, Any]:
-            return {"models": [{"name": "bonsai-2:2b"}]}
-
-    class _Ollama:
-        Client = _Client
-
-    monkeypatch.setattr(ai, "ollama", _Ollama())
-    ai._tags.cache_clear()
-    assert ai.llm_available("http://whatever.local", "bonsai-2:2b") is True
-    ai._tags.cache_clear()
+def test_llm_available_is_true_when_the_plain_http_probe_answers(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_ai_caches()
+    state = _stub_ollama(["bonsai-2:2b"])
+    try:
+        assert ai.llm_available(state["url"], "bonsai-2:2b") is True
+    finally:
+        state["server"].shutdown()
+        state["server"].server_close()
+    _clear_ai_caches()
 
 
 def test_generate_title_swallows_a_failing_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ai, "llm_available", lambda *a, **k: True)
+    monkeypatch.setattr(ai, "llm_model", lambda *a, **k: "test-model")
 
     def boom(*args: Any, **kwargs: Any) -> str:
         raise RuntimeError("the server died mid-request")
@@ -424,7 +499,8 @@ def test_generate_title_flips_the_breaker_once_and_later_calls_never_reach_the_b
         calls.append(1)
         raise RuntimeError("server died")
 
-    monkeypatch.setattr(ai, "_tags", lambda url: {"bonsai-2:2b"})
+    _clear_ai_caches()
+    monkeypatch.setattr(ai, "_installed", lambda url: {"bonsai-2:2b": 6 * 1024**3})
     monkeypatch.setattr(ai, "_chat", boom)
     first = ai.generate_title(parse(Config, {}), "some text")
     second = ai.generate_title(parse(Config, {}), "other text")
@@ -441,7 +517,8 @@ def test_rerank_flips_the_breaker_when_the_backend_fails(monkeypatch: pytest.Mon
     def boom(*args: Any, **kwargs: Any) -> str:
         raise RuntimeError("server died")
 
-    monkeypatch.setattr(ai, "_tags", lambda url: {"bonsai-2:2b"})
+    _clear_ai_caches()
+    monkeypatch.setattr(ai, "_installed", lambda url: {"bonsai-2:2b": 6 * 1024**3})
     monkeypatch.setattr(ai, "_chat", boom)
     with pytest.raises(RuntimeError):
         ai.llm_rerank([Moment(0, 10, "one", score=1.0)], parse(Config, {}), "funny")
@@ -455,7 +532,8 @@ def test_generate_caption_flips_the_breaker_on_backend_failure(monkeypatch: pyte
     def boom(*args: Any, **kwargs: Any) -> str:
         raise RuntimeError("server died")
 
-    monkeypatch.setattr(ai, "_tags", lambda url: {"bonsai-2:2b"})
+    _clear_ai_caches()
+    monkeypatch.setattr(ai, "_installed", lambda url: {"bonsai-2:2b": 6 * 1024**3})
     monkeypatch.setattr(ai, "_chat", boom)
     assert ai.generate_caption(parse(Config, {}), "some text") == ""
     assert _ai._RUN_TRIPPED.is_set()
@@ -630,3 +708,111 @@ def test_sd_worker_kills_a_wedged_process(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.setattr("multiprocessing.get_context", lambda name: SimpleNamespace(Process=lambda **kwargs: Wedged()))
     assert ai.generate_sd_thumbnail(frame, out, "prompt") is False
     assert "killed" in actions and "join900.0" in actions and "join5.0" in actions
+
+
+def test_rerank_returns_empty_when_no_model_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core.models import Moment  # noqa: PLC0415
+
+    monkeypatch.setattr(ai, "llm_model", lambda base_url, model="": None)
+    assert ai.llm_rerank([Moment(0, 10, "one", score=1.0)], parse(Config, {}), "funny") == {}
+
+
+def test_free_ram_mb_honours_the_container_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    import types
+
+    from autoclip.core.internal import runtime
+
+    monkeypatch.setattr("psutil.virtual_memory", lambda: types.SimpleNamespace(available=1024 * (1 << 20)))
+    monkeypatch.setattr("autoclip.core.resources.cgroup_memory_available", lambda: 512 * (1 << 20))
+    assert runtime.free_ram_mb() == pytest.approx(512)
+    monkeypatch.setattr("autoclip.core.resources.cgroup_memory_available", lambda: None)
+    assert runtime.free_ram_mb() == pytest.approx(1024)
+
+
+def test_reset_run_breaker_rearms_the_ai_helpers() -> None:
+    """One failing job must not poison the AI helpers for the rest of a server's lifetime."""
+    from autoclip.core import ai as _ai
+
+    _ai._RUN_TRIPPED.set()
+    assert ai.llm_available("http://whatever.local") is False
+    ai.reset_run_breaker()
+    assert not _ai._RUN_TRIPPED.is_set()
+    _clear_ai_caches()
+
+
+def test_llm_rerank_sends_the_engine_picked_model_over_the_wire(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core.models import Moment  # noqa: PLC0415
+
+    monkeypatch.setattr(ai, "_installed", lambda url: {"fake-model:latest": 6 * 1024**3})
+    monkeypatch.setattr(ai, "free_ram_mb", lambda: 8192.0)
+    _clear_ai_caches()
+    captured: dict[str, Any] = {}
+
+    class _CaptureClient:
+        def __init__(self, host: str, *, timeout: float = 2.0) -> None:
+            pass
+
+        def chat(self, **kwargs: Any) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {"message": {"role": "assistant", "content": json.dumps({"scores": [{"id": 0, "score": 5, "title": "t"}]})}}
+
+    monkeypatch.setattr(ai, "ollama", _ollama_module(_CaptureClient))
+    ai.llm_rerank([Moment(0, 10, "one", score=1.0)], parse(Config, {}), "funny")
+    assert captured["model"] == "fake-model:latest"
+    _clear_ai_caches()
+
+
+def test_the_probe_never_follows_a_redirect() -> None:
+    """A hostile 302 must not turn the local probe into a blind SSRF."""
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:1/never-fetched")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        _clear_ai_caches()
+        assert ai._installed(f"http://127.0.0.1:{server.server_port}") == {}
+    finally:
+        server.shutdown()
+        server.server_close()
+    _clear_ai_caches()
+
+
+def test_model_sizes_handles_absurd_sizes() -> None:
+    """Bignum and non-finite sizes degrade to "unknown" instead of crashing the highlights pass."""
+    payload = {
+        "models": [
+            {"name": "bignum", "size": 10**400},
+            {"name": "float-overflow", "size": 1e400},
+            {"name": "nan", "size": float("nan")},
+            {"name": "negative", "size": -5},
+        ]
+    }
+    assert ai._model_sizes(payload) == {"bignum": 0, "float-overflow": 0, "nan": 0, "negative": 0}
+
+
+def test_quality_tiers_stay_in_sync_with_the_profile_table() -> None:
+    from autoclip.core.internal import quality
+
+    assert tuple(quality.QUALITY_PROFILES) == quality.VALID_QUALITIES
+
+
+def test_llm_model_survives_a_broken_free_ram_meter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A broken memory meter must degrade the AI pick to the smallest known model, never raise."""
+    monkeypatch.setattr(ai, "_installed", lambda url: {"small": 6 * 1024**3})
+    monkeypatch.setattr(ai, "free_ram_mb", lambda: (_ for _ in ()).throw(RuntimeError("no meter")))
+    _clear_ai_caches()
+    try:
+        assert ai.llm_model("http://whatever.local") == "small"
+    finally:
+        _clear_ai_caches()

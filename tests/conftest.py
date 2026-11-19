@@ -44,18 +44,18 @@ def _restore_logger() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _reset_llm_trip() -> Iterator[None]:
-    """Clear the AI circuit breaker between tests (a failure in one test must not disable AI for the others)."""
+    """Clear the AI circuit breaker and the cached model list between tests (failures/probes must not leak)."""
     try:
         from autoclip.core import ai
 
-        ai._RUN_TRIPPED.clear()
+        ai.reset_run_breaker()
     except Exception:  # pragma: no cover - the package is importable in every suite; guard for stripped installs
         pass
     yield
     try:
         from autoclip.core import ai
 
-        ai._RUN_TRIPPED.clear()
+        ai.reset_run_breaker()
     except Exception:  # pragma: no cover
         pass
 

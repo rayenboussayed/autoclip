@@ -205,7 +205,12 @@ async def _run_job_task(job_id: str) -> None:
     job = registry.get(job_id)
     if job is None:
         return
-    sem = _get_semaphore()
+    try:
+        sem = _get_semaphore()
+    except Exception as e:  # deriving the ceiling must never strand a queued job forever
+        log.exception("could not derive the job ceiling for job %s: %s", job_id, e)
+        job.update(state=JobState.failed, error=f"the server could not plan job capacity ({type(e).__name__})")
+        return
     async with sem:
         if job.cancel_requested:
             job.update(state=JobState.cancelled, error="cancelled")
@@ -352,13 +357,29 @@ _sem: asyncio.Semaphore | None = None
 _sem_loop: asyncio.AbstractEventLoop | None = None
 
 
+def _auto_job_limit() -> int:
+    """The engine-derived ceiling of concurrent jobs, from this machine's cores and free RAM (measured at semaphore creation).
+
+    Falls back to 1 (the historical default) if the machine cannot be measured.
+    """
+    try:
+        from autoclip.core.internal.auto import auto_max_concurrent_jobs
+        from autoclip.core.internal.runtime import detect_cpu_count, free_ram_mb
+
+        limit = auto_max_concurrent_jobs(cpus=detect_cpu_count(), free_ram_mb=free_ram_mb())
+    except Exception as e:  # best effort: the floor is always safe
+        log.debug("deriving the job ceiling failed: %s", e)
+        return 1
+    log.info("automation max_concurrent_jobs=%d | source=derived-from-cpus-and-free-ram", limit)
+    return limit
+
+
 def _get_semaphore() -> asyncio.Semaphore:
     # A Semaphore belongs to the loop that first waits on it. Tests (and a restarted loop) would
     # otherwise reuse one bound to a closed loop, so recreate it whenever the running loop changes.
     global _sem, _sem_loop  # noqa: PLW0603
     loop = asyncio.get_running_loop()
     if _sem is None or _sem_loop is not loop:
-        settings = get_settings()
-        _sem = asyncio.Semaphore(settings.max_concurrent_jobs)
+        _sem = asyncio.Semaphore(_auto_job_limit())
         _sem_loop = loop
     return _sem

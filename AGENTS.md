@@ -11,8 +11,9 @@ Pipeline: download the http(s) URLs of `input` with yt-dlp (only when there are 
 a downloaded subtitle or .srt/.json) -> score sentence-aligned windows per scene -> pick the best non-overlapping ones ->
 render (enhance audio, cut pauses/fillers, layout, burn captions, encode on GPU if one really works).
 
-* Free, local, no service dependencies (downloading is off unless `input` holds an http(s) URL; the optional local
-  LLM re-rank is the only other network use).
+* Free, local, no service dependencies (downloading is off unless `input` holds an http(s) URL; the other network uses
+  are the local Ollama, and three one-time downloads: the Whisper model, the sherpa ONNX enhancer and Stable-Diffusion
+  weights, all SHA-256-verifiable and automatic).
 * Runs on Linux, macOS and Windows, Python >= 3.11 (developed and verified on 3.12). No system ffmpeg required.
 * Four parts: `core` (the engine), `cli` (the command line), `app` (the desktop app, Tk) and `server` (the optional
   FastAPI/WebSocket service).
@@ -99,7 +100,8 @@ autoclip/
     models.py       small slotted dataclasses: Span/Word/Segment/Moment, MediaInfo, Encoder, RenderJob, Downloaded
     errors.py       AutoclipError, ConfigError, DownloadError
     resources.py    ResourceMonitor + RESOURCES singleton: CPU/RAM -> worker plan, cache budget, adaptive tuning
-    internal/       derived runtime decisions and constants (mode profiles, adaptive helpers, decision logs,
+    internal/       derived runtime decisions and constants (the resource-aware engine: encode-quality / performance-mode /
+                    LLM-model / server-concurrency selection, mode profiles, adaptive helpers, decision logs,
                     admission policy for the render pool);
                     not user-facing configuration, logged as `automation ...`
     log.py          LOG, setup_logging, traced decorator, speed_text
@@ -163,6 +165,7 @@ tools/            frozen_entry.py - the frozen build's entry point: freeze_suppo
                   verify_output.py - development aid: checks a finished output directory
 docs/             stt-comparison.md - the measured comparison of transcription models and denoisers
                  memory-regression.md - the memory suite: budgets, recalibration rules, known limits
+                 UPGRADING-4.0.md - the 3.x -> 4.0 migration; UPGRADING-5.0.md - the 4.0 -> 5.0 one (engine-derived quality/mode/LLM)
 AGENTS.md        this file (guidance for coding agents)
 pyproject.toml    deps, ruff, mypy(strict), pytest(+coverage gate, `network` marker), coverage(multiprocessing)
 .github/workflows/ci.yml       ubuntu/macos/windows x py3.11/3.12/3.13 (reusable for build.yml on main; standalone for other branches), then re-run with Pillow>=12.3
@@ -219,7 +222,7 @@ main()
       mode == "split": ffmpeg stream-copy parts -> {out}/long/{video}/   (done)
       Store(.work/{video}/autoclip.db, fresh=True) + Cache      ({video} = name or src.stem)
       scan_audio -> optimized source if silence is worth removing (`optimizer.py`)
-      detect_scenes + store shot boundaries
+      detect_scenes (the cut boundaries feed moment selection; nothing is stored)
       get_transcript(..., needs_text(cfg))        sidecar file | downloaded subtitle | disk cache | faster-whisper
                                              (5 min chunks) -> SQLite (each chunk enhanced by `SpeechEnhancer` first);
                                              subtitles follow the video's original language; consent is always auto;
@@ -291,7 +294,7 @@ step, percent, outputs); nothing else is persisted except the job folder and the
 
 1. `POST /api/jobs` streams the upload to `OUTPUT_DIR/<job_id>/input<ext>` while enforcing `MAX_FILE_SIZE` (413 above
    it), parses `config_json`/`config` and replaces `input`/`output_dir` with the uploaded file and job folder.
-2. The job is queued behind an `asyncio.Semaphore(MAX_CONCURRENT_JOBS)`; a FastAPI `BackgroundTask` runs `run_job` in
+2. The job is queued behind an `asyncio.Semaphore` whose capacity is engine-derived from the machine (cores and free RAM, at most 4; logged as `automation max_concurrent_jobs=N`); a FastAPI `BackgroundTask` runs `run_job` in
    the thread pool, so the event loop stays free.
 3. `run_job` repeats `process_video` stage by stage so each one can publish progress: `validating` 2 % -> `probing` 5 %
    -> `transcribing` 12/35 % -> `selecting` 45 % -> `rendering` 60 % -> `packaging` 90 % -> `completed` 100 %
@@ -350,10 +353,11 @@ step, percent, outputs); nothing else is persisted except the job folder and the
     dataclasses, so a new option that is not in the catalogue (or an entry that is not in the config) fails
     the suite. The app writes the same config file the command line reads - never a second format.
     The catalogue must stay complete: every file option appears there (nine today), and nothing else does.
-12. **A local-only run never imports yt-dlp and never makes a network request.** `is_url` decides what is downloaded;
-    `yt_dlp` is imported inside `Downloader.__init__`/`platforms` helpers, and `Downloader` is only constructed when
-    `input` holds a URL (inspection modes included). `tests/unit/test_cli_download.py` proves it with a poisoned
-    `sys.modules["yt_dlp"] = None`.
+12. **A local-only run never downloads from the network the things it does not own.** `is_url` decides what is
+    downloaded from `input`; `yt_dlp` is imported inside `Downloader.__init__`/`platforms` helpers, and `Downloader` is
+    only constructed when `input` holds a URL (inspection modes included). The remaining network uses are the local
+    Ollama and the three automatic one-time downloads (Whisper model, sherpa ONNX enhancer, Stable-Diffusion weights);
+    no other traffic exists. `tests/unit/test_cli_download.py` proves the yt-dlp path with a poisoned `sys.modules["yt_dlp"] = None`.
 13. **The platform policy runs before the request.** `identify` (host + extractor match) -> allow/deny (deny wins,
     groups expand, aliases canonicalise) -> `check_families` raises `DownloadError`, and only then is yt-dlp asked
     anything. `generic` (any web page) is never in a group and is refused unless named. `allowed_extractors` is also
@@ -371,8 +375,8 @@ step, percent, outputs); nothing else is persisted except the job folder and the
     `SkipCfg`. `skip.stt` still uses a sidecar, a downloaded subtitle or the disk cache and never calls Whisper;
     `skip.audio` mutes the clip and stops audio decoding, so pause removal cannot run; `skip.denoise` transcribes raw
     audio and disables noise reduction of the clip audio; `skip.thumbnail` keeps the frame JPEG; `skip.llm` forbids
-    Ollama calls. `captions.enabled` and `--skip title` are the remaining switches; titles are shown only when the
-    model generated one. `needs_text(cfg)` decides whether a transcript is loaded at all (highlights, or captions/titles
+    Ollama calls. `captions.enabled` and `--skip title` are the remaining switches; short clips get a title only
+    when the model generated one; long clips fall back to a heuristic title (short clips keep none). `needs_text(cfg)` decides whether a transcript is loaded at all (highlights, or captions/titles
     that are not skipped).
 17. **The server owns the input and the output folder.** `prepare_config` always drops `input` and `output_dir` from the
     uploaded config and sets them to the uploaded file and the job folder; a server job can never write outside its
@@ -395,17 +399,21 @@ step, percent, outputs); nothing else is persisted except the job folder and the
 The **file** schema is exactly nine keys (`FileConfig`): `input`, `clips.preset`, `clips.scenes`, `clips.keywords`,
 `clips.ranges`, `download.allow`, `download.deny`, `llm.system_prompt`, `image.prompt`. Everything else is a runtime override
 (`RuntimeOverrides`) or derived internally. `FileConfig.to_config(overrides)` builds the full runtime `Config`
-(quality tier, built-in short/long profiles, derived download settings). Removed keys are dropped by
-`_strip_removed` with a warning via `REMOVED_KEYS` (see `docs/UPGRADING-4.0.md`); unknown keys still raise
-`ConfigError`.
+(engine-derived encode quality and resource profile, the built-in short/long profiles, derived download settings).
+Removed keys are dropped by `_strip_removed` with a warning via `REMOVED_KEYS` (see `docs/UPGRADING-4.0.md`); unknown
+keys still raise `ConfigError`.
 
 `Config` (runtime) = `input`, `output_dir`, `mode`, `quality`, `download`, `clips`,
-`llm`, `image`, `video`, `captions`, `skip`. `KindCfg` = `count`, `min_seconds`, `max_seconds`, `aspect`,
-`ranges` (no `target_seconds` in 4.0). `SkipCfg` = `stt`, `denoise`, `audio_enhance`, `audio`, `pauses`,
-`caption`, `title`, `fade`, `thumbnail`, `llm` (all `false`; see invariant 16). `DownloadCfg` = `cookies`, `time_range`,
-`platforms` (runtime overrides or derived from the allow/deny lists; never file keys). `PlatformsCfg` = `allow`, `deny` only in the file; `groups`,
-`settings`, `group_by_platform` are gone (groups are named directly in allow/deny). `LlmCfg` = `base_url`, `model` and
-`system_prompt` (the last from the file; empty keeps the built-in editor messages). `ImageCfg` = `prompt` (from the
+`llm`, `image`, `video`, `captions`, `skip`. `mode` (`performance`/`resources`/`balance`) and `quality`
+(`high`/`medium`/`low`) are **internal, engine-derived** fields (chosen by `internal.auto` from the measured cores and
+free RAM in `to_config`; never accepted from the file, the environment or the command line). `KindCfg` = `count`, `min_seconds`,
+`max_seconds`, `aspect`, `ranges` (no `target_seconds` in 4.0). `SkipCfg` = `stt`, `denoise`, `audio_enhance`, `audio`,
+`pauses`, `caption`, `title`, `fade`, `thumbnail`, `llm` (all `false`; see invariant 16). `DownloadCfg` = `cookies`, `time_range`,
+`platforms` (runtime cookies or derived from the allow/deny lists; never file keys). `PlatformsCfg` = `allow`, `deny` only in the file; `groups`,
+`settings`, `group_by_platform` are gone (groups are named directly in allow/deny). `LlmCfg` = `base_url` (internal: always the local
+`http://localhost:11434`), `model` (internal: empty means the engine picks - the largest installed model whose on-disk size
+fits inside half of the free RAM, falling back to the smallest; the file's `system_prompt` is the only user-facing piece).
+`ImageCfg` = `prompt` (from the
 file; the Stable Diffusion prompt). Runtime values are derived internally and logged, never accepted from the config file.
 
 The transcript comes from: a sidecar `.json`/`.srt` next to the video (`<stem>.json` preferred over `<stem>.srt`),
@@ -420,7 +428,7 @@ Invalid *values* fall back: `_coerce_defaults` replaces a value that fails valid
 Four previously user-facing knobs are still internally derived (see `autoclip/core/internal/automation.py`):
 `transcript.enhance.num_threads`, `transcript.beam_size`, `captions.max_chars`, and
 `captions.safe_top` / `captions.safe_bottom`. Do not reintroduce them in user-facing config. Download quality derives
-from output quality via `DOWNLOAD_QUALITY_BY_OUTPUT` (1080/720/480/360/240 for highest/high/medium/low/lowest).
+from the engine-derived output quality via `DOWNLOAD_QUALITY_BY_OUTPUT` (720/480/360 for high/medium/low).
 `formats.choose` prefers a direct HTTPS format over HLS/DASH at equal quality and fps (the segmented variants report
 inflated bitrates and throttle); `audio_language: null` follows `info["language"]` (the original track).
 
@@ -627,9 +635,11 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     main process and replace the frame JPEG only when they succeed. LLM calls carry the file's
     `llm.system_prompt` (empty keeps the built-in messages); the thumbnails use the file's `image.prompt`.
     Every Ollama call is made with a 180 s timeout and an 8k context window (`LLM_TIMEOUT` / `LLM_NUM_CTX`), and
-    the temperature is 0, so the response never depends on a sampling seed. The run asks the server once for its
-    model list (`llm_available(base_url, model)`, cached) and disables the AI helpers when the configured model is
-    missing instead of erroring per clip; the old per-call probing is gone. Re-rank replies are constrained with a
+    the temperature is 0, so the response never depends on a sampling seed. The process asks the server once for its
+    model list (`llm_model()`, cached per process) and picks the model itself - the largest installed one whose on-disk size
+    (`/api/tags` `size`) fits inside half of the free RAM, falling back to the smallest known one; tests may
+    inject an explicit model by setting `cfg.llm.model`. The AI helpers are disabled when the server is unreachable
+    or lists no model instead of erroring per clip. Re-rank replies are constrained with a
     JSON schema (`_RERANK_SCHEMA`) and validated with pydantic: scores are clamped to 0-10, titles are cut to 80
     characters, ids outside the candidate list are ignored, and an off-schema reply raises - `moments._rerank`
     catches it and keeps the heuristic order.
@@ -758,7 +768,7 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 
 * The Hugging Face host (Whisper models) may be unreachable: use the stub (`install_stub_whisper`) or a sidecar `.srt` next to the video.
 * No GPU may be present: GPU code paths are verified by probe/fallback behaviour and software stand-ins only.
-* One CPU core: use `mode: "performance"` and the thread fake (or monkeypatch `RESOURCES.cpus` to more than one) to force the parallel code path.
+* One CPU core: use the thread fake (or monkeypatch `RESOURCES.cpus` — see `tests/unit/test_runner_cli.py`) to force the parallel code path; for the engine's quality/mode choice, tests monkeypatch `detect_cpu_count` / `free_ram_mb` on `autoclip.core.config` (see `test_to_config_derives_quality_and_mode_from_the_machine`).
 * Long-running commands (e.g. 30+ minute media) must be detached (`setsid nohup ... &`) and polled.
 * A 35-minute synthetic video with a chunk-aware Whisper stub is the reference for chunking behaviour (7 chunks, ~19 MB
   of audio each, ~30 s end to end on one core, peak RSS ~435 MB).

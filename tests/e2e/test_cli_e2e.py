@@ -89,7 +89,7 @@ def test_manifest_video_renders_short_and_long_clips(
     source = files[0]
     info = probe(source)
     assert info.duration >= 60, (info.duration, source.name)  # the whole video is downloaded now
-    # ``quality: best`` really picks a high-resolution format (the old default capped it at 480p).
+    # the engine-derived default targets a 720-pixel short side, so a high-resolution source is picked
     assert max(info.width, info.height) >= 720, (info.width, info.height, source.name)
     subtitle = english_subtitle(source)
     cues = parse_srt(subtitle.read_text(encoding="utf-8-sig"))
@@ -110,10 +110,12 @@ def test_manifest_video_renders_short_and_long_clips(
         assert 0 <= start < end <= info.duration + 1, (kind, clip, info.duration)
         assert 0 < trimmed <= end - start + 0.01, (kind, clip)
     short, long = clips["short"][0], clips["long"][0]
+    from autoclip.core.internal.auto import auto_quality  # noqa: PLC0415
     from autoclip.core.internal.quality import quality_short_side  # noqa: PLC0415
+    from autoclip.core.internal.runtime import detect_cpu_count, free_ram_mb  # noqa: PLC0415
     from autoclip.core.render import canvas_size  # noqa: PLC0415
 
-    side = quality_short_side("high")  # the default output quality tier
+    side = quality_short_side(auto_quality(cpus=detect_cpu_count(), free_ram_mb=free_ram_mb()))  # the engine-derived tier of this host
     short_dims = canvas_size("9:16", side, info.width, info.height)
     long_dims = canvas_size("16:9", side, info.width, info.height)
     assert (short["width"], short["height"]) == short_dims, short

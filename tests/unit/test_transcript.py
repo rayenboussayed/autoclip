@@ -161,13 +161,14 @@ def asr_cfg(media: Media, tmp_path: Path, **sections: Any) -> Config:
 
 
 def test_transcribe_cpu_with_stub(media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path) -> None:
+    monkeypatch.setattr("autoclip.core.transcript.RESOURCES.usable_memory", lambda: 10 * 1024 * 1024 * 1024)
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
     cfg = asr_cfg(media, tmp_path)
     segs = transcribe(media.video, cfg, info)
     name, device, compute, threads = rec["init"]
-    assert (name, device, compute) == ("tiny", "cpu", "int8") and threads == RESOURCES.cpu_budget()
-    assert rec["options"]["beam_size"] == 1 and rec["options"]["language"] is None and rec["options"]["multilingual"] is True
+    assert (name, device, compute) == ("small", "cpu", "int8") and threads == RESOURCES.cpu_budget()
+    assert rec["options"]["beam_size"] == 3 and rec["options"]["language"] is None and rec["options"]["multilingual"] is True
     assert [s.text for s in segs] == SENTENCES and not segs[0].pseudo and segs[0].words[0].text == "Welcome"
 
 
@@ -368,8 +369,7 @@ def test_whisper_result_is_cached_reused_and_invalidated(
     assert get_transcript(video, cfg, tmp_path, store, info, need_text=True)
     assert "init" not in rec, "second run must reuse the cache"
 
-    stale = make_cfg(media, tmp_path / "out", source=video)
-    stale.quality = "highest"  # differs enough -> cache key differs
+    stale = make_cfg(media, tmp_path / "out", source=video, skip={"denoise": True})  # an enhancement setting change busts the cache key
     with caplog.at_level(logging.WARNING, logger="autoclip"):
         assert get_transcript(video, stale, tmp_path, store, info, need_text=True)
     assert "stale" in caplog.text and rec["init"]

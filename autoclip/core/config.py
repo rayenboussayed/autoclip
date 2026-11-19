@@ -25,9 +25,11 @@ from pydantic import ConfigDict, Field, Strict, StringConstraints, TypeAdapter, 
 from pydantic.dataclasses import dataclass
 
 from .errors import ConfigError
+from .internal.auto import auto_mode, auto_quality
 from .internal.automation import COOKIE_BROWSERS
 from .internal.background import background_kind, resolve_background
 from .internal.content import load_lexicon
+from .internal.runtime import detect_cpu_count, free_ram_mb
 from .platforms import BUILTIN_GROUPS, canonical, deep_merge
 from .styles import STYLES
 
@@ -125,10 +127,10 @@ class ClipsCfg(Section):
 
 @dataclass(config=SCHEMA)
 class LlmCfg(Section):
-    """Optional local re-ranking (Ollama or any OpenAI-compatible server). Ollama is local and needs no API key."""
+    """Optional local re-ranking (a local Ollama server). The server is always the local one; the model is the engine's choice."""
 
-    base_url: Url = "http://localhost:11434"
-    model: str = "bonsai-2:2b"
+    base_url: Url = "http://localhost:11434"  # internal: always the local server; tests inject their fake here
+    model: str = ""  # internal: empty means the engine picks (the largest installed model that fits free RAM)
     system_prompt: str = ""  # overrides the built-in system message when set (re-ranking, titles and captions)
 
 
@@ -191,18 +193,6 @@ class SkipCfg(Section):
 
 
 SkipName = Literal["stt", "denoise", "audio_enhance", "audio", "pauses", "caption", "title", "fade", "thumbnail", "llm"]
-SKIP_NAMES: tuple[SkipName, ...] = (
-    "stt",
-    "denoise",
-    "audio_enhance",
-    "audio",
-    "pauses",
-    "caption",
-    "title",
-    "fade",
-    "thumbnail",
-    "llm",
-)
 
 
 @dataclass(config=SCHEMA)
@@ -314,27 +304,10 @@ def _default_output_dir(system: str | None = None, env: Mapping[str, str] | None
 class Config(Section):
     """The whole configuration file."""
 
-    @model_validator(mode="before")
-    @classmethod
-    def _normalise_mode(cls, data: JsonValue) -> JsonValue:
-        """An unknown or empty ``mode`` quietly falls back to ``balance`` instead of failing validation."""
-        if isinstance(data, dict) and "mode" in data:
-            mode = data["mode"]
-            if mode not in ("performance", "resources", "balance"):
-                data = {**data, "mode": "balance"}
-        return data
-
-    @model_validator(mode="after")
-    def _mode_is_valid(self) -> Config:
-        """Keep the runtime choice consistent: ``profile_for`` never raises on a misconfigured value."""
-        if self.mode not in ("performance", "resources", "balance"):
-            self.mode = "balance"  # pragma: no cover
-        return self
-
     input: list[str] = field(default_factory=lambda: ["input.mp4"])  # files, glob patterns or http(s) URLs
     output_dir: str = field(default_factory=_default_output_dir)  # one sub-folder per video is created inside
-    mode: Literal["performance", "resources", "balance"] = "balance"  # performance/resource/balance policy
-    quality: Literal["highest", "high", "medium", "low", "lowest"] = "high"  # encode resolution/fps/audio quality
+    mode: Literal["performance", "resources", "balance"] = "balance"  # internal: the engine sets this (see to_config)
+    quality: Literal["high", "medium", "low"] = "high"  # internal: the engine sets this (see to_config)
     download: DownloadCfg = field(default_factory=DownloadCfg)
     clips: ClipsCfg = field(default_factory=ClipsCfg)
     llm: LlmCfg = field(default_factory=LlmCfg)
@@ -405,8 +378,8 @@ class FilePlatformsCfg(Section):
 #: Keys older versions accepted, with the replacement to use instead. A removed *section* covers its children.
 REMOVED_KEYS: dict[str, str] = {
     "output_dir": "set AUTOCLIP_OUTPUT_DIR, pass --output-dir, or choose the folder in the app",
-    "mode": "pass --mode performance|resources|balance",
-    "quality": "pass --quality highest|high|medium|low|lowest",
+    "mode": "the engine balances the run automatically from the measured machine; there is nothing to set",
+    "quality": "the engine chooses the encode quality automatically from the measured machine; there is nothing to set",
     "logging": "logging is internal: DEBUG in debug mode (AUTOCLIP_DEBUG=1), INFO otherwise",
     "clips.mode": "clips.preset chooses shorts/long/both; use clips.ranges for exact cuts or pass --split",
     "clips.kinds": "use clips.preset",
@@ -421,8 +394,8 @@ REMOVED_KEYS: dict[str, str] = {
     "clips.split_seconds": "pass --split",
     "transcript": "a sidecar .srt/.json next to the video is used automatically (no config keys)",
     "transcript_file": "a sidecar .srt/.json next to the video is used automatically (no config keys)",
-    "llm.base_url": "pass --llm-url (or AUTOCLIP_LLM_URL); a local Ollama is detected automatically",
-    "llm.model": "pass --llm-model (or AUTOCLIP_LLM_MODEL)",
+    "llm.base_url": "a local Ollama at http://localhost:11434 is used automatically; there is no way to point elsewhere",
+    "llm.model": "the engine picks the largest installed model that fits free RAM; there is no way to force one",
     "llm.api_key": "Ollama is local and needs no API key",
     "compute": "the GPU is probed and used automatically (there is no --device flag)",
     "device": "the GPU is probed and used automatically (there is no --device flag)",
@@ -502,11 +475,7 @@ class RuntimeOverrides(Section):
     output_dir: str | None = None
     cookies: str | None = None  # a browser name or a Netscape cookies file
     skip: list[SkipName] | None = None
-    llm_base_url: Url | None = None
-    llm_model: str | None = None
     split: Bool | None = None
-    mode: Literal["performance", "resources", "balance"] | None = None
-    quality: Literal["highest", "high", "medium", "low", "lowest"] | None = None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> RuntimeOverrides:
@@ -516,10 +485,6 @@ class RuntimeOverrides(Section):
         names = {
             "AUTOCLIP_OUTPUT_DIR": "output_dir",
             "AUTOCLIP_COOKIES": "cookies",
-            "AUTOCLIP_LLM_URL": "llm_base_url",
-            "AUTOCLIP_LLM_MODEL": "llm_model",
-            "AUTOCLIP_MODE": "mode",
-            "AUTOCLIP_QUALITY": "quality",
         }
         for variable, field_name in names.items():
             value = env.get(variable, "").strip()
@@ -579,6 +544,15 @@ class FileConfig(Section):
         for name in ov.skip or ():
             setattr(skip, name, True)
         ranges = list(self.clips.ranges)
+        try:
+            cpus = detect_cpu_count()
+            free = free_ram_mb()
+        except Exception as e:  # measuring must never crash the run; degrade to the safest tier instead
+            log.warning("the engine could not measure the machine (%s: %s); choosing the conservative defaults", type(e).__name__, e)
+            cpus = 1
+            free = 0.0
+        auto_quality_tier = auto_quality(cpus=cpus, free_ram_mb=free)
+        auto_mode_name = auto_mode(cpus=cpus, free_ram_mb=free)
         if ov.split and ranges:
             raise ConfigError("--split cannot be combined with clips.ranges")
         mode: Literal["highlights", "ranges", "split"] = "split" if ov.split else ("ranges" if ranges else "highlights")
@@ -599,15 +573,11 @@ class FileConfig(Section):
         return Config(
             input=list(self.input if ov.input is None else ov.input),
             output_dir=ov.output_dir or _default_output_dir(),
-            mode=ov.mode or "balance",
-            quality=ov.quality or "high",
+            mode=auto_mode_name,
+            quality=auto_quality_tier,
             download=download,
             clips=clips,
-            llm=LlmCfg(
-                base_url=ov.llm_base_url or "http://localhost:11434",
-                model=ov.llm_model or "llama3.2",
-                system_prompt=self.llm.system_prompt,
-            ),
+            llm=LlmCfg(system_prompt=self.llm.system_prompt),
             image=ImageCfg(prompt=self.image.prompt),
             video=VideoCfg(),
             captions=CaptionsCfg(enabled=not skip.caption),

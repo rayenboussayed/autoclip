@@ -6,7 +6,7 @@ Free, local, one command. Runs on **Linux, macOS and Windows** (Python 3.11+). N
 ```bash
 pip install -r requirements.txt
 pip install -U "Pillow>=12.3"          # security fixes; MoviePy's "<12" pin is only conservative (CI tests both)
-python -m autoclip --init config.json  # starter config (nine keys)
+python -m autoclip --init config.json  # starter config (seven keys; --init-full writes all nine)
 python -m autoclip config.json         # or: autoclip config.json  (after `pip install -e .`)
 python -m autoclip                     # no config: ./input.mp4 with the built-in defaults
 python -m autoclip.app                 # the desktop app (same options, explained)
@@ -114,12 +114,13 @@ Runtime overrides (flags win over environment variables):
 | `--output-dir DIR` | `AUTOCLIP_OUTPUT_DIR` | output folder |
 | `--cookies BROWSER\|FILE` | `AUTOCLIP_COOKIES` | cookies for downloads |
 | `--skip NAME` | `AUTOCLIP_SKIP` | skip pipeline steps (comma separated) |
-| `--llm-model MODEL` | `AUTOCLIP_LLM_MODEL` / `AUTOCLIP_LLM_URL` | local LLM model / URL |
+| `--allow a,b` | — | platforms/@groups to permit (overrides `download.allow`) |
+| `--deny c` | — | platforms/@groups to refuse (overrides `download.deny`) |
 | `--split` | — | cut the video into equal 600 s parts |
-| `--mode …` | `AUTOCLIP_MODE` | performance / resources / balance |
-| `--quality …` | `AUTOCLIP_QUALITY` | output quality tier |
 
-Env values apply first; an explicit flag always wins. `--init` and `--init-full` both write the complete nine-key file.
+Env values apply first; an explicit flag always wins. `--init` writes a seven-key starter; `--init-full` writes every option with its default.
+There is deliberately **no** flag for encode quality, machine mode or the LLM model: the engine measures the
+machine and the local server and picks them itself (see *Media quality*, *Performance mode* and *AI*).
 
 A wrong *type* or an unknown key is still fatal (`ConfigError`). A wrong *value* warns
 (`config: invalid value for <path>; falling back to default`) and uses the field default, so a typo in one option no
@@ -163,8 +164,8 @@ same pipeline as a local file:
 }
 ```
 
-* **Quality and format are automatic**: the download short side follows the output quality tier (1080/720/480/360/240 for
-  highest/high/medium/low/lowest). A direct HTTP(S) format beats an HLS/DASH variant with the same quality and fps (the
+* **Quality and format are automatic**: the download short side follows the engine-chosen output quality
+  (720/480/360 for high/medium/low). A direct HTTP(S) format beats an HLS/DASH variant with the same quality and fps (the
   segmented one reports an inflated bitrate and throttles badly), and the video's original audio track is kept over a
   higher-bitrate dub. Cookies (`--cookies`/`AUTOCLIP_COOKIES`) are a runtime-only choice; downloads use the network directly (there is no proxy option).
 * **Originals** are kept in `{output_dir}/.work/downloads/` and reused by later runs; the clip folders stay clips-only.
@@ -186,25 +187,28 @@ same pipeline as a local file:
   prints every available format and the one autoclip would choose (no config file needed); `--platforms [URL]` prints the
   allow/deny policy and where a URL would go; `--allow a,b` and `--deny c` override the loaded lists for one run.
   Inspection modes create no folders and configure no logging. A run with only local files never imports yt-dlp and makes
-  no network request.
+  no network request beyond the one-time Whisper model download on the first transcribing run.
 
 ## AI (optional, local)
 
-All local LLM calls (Ollama or any OpenAI-compatible server) and Stable Diffusion thumbnails go through one
-process-wide lock, so even in `performance` mode they never run concurrently. A missing backend is logged and skipped,
-never fatal; the clips keep their heuristic result.
+All local LLM calls and Stable Diffusion thumbnails go through one
+process-wide lock, so even on a `performance` profile they never run concurrently. A missing backend is logged and skipped,
+never fatal; the clips keep their heuristic result. The Ollama helpers need the `ai` extra (`pip install "autoclip[ai]"`);
+without the `ollama` package they are disabled and the clips keep their heuristic result.
 
-* `--llm-model MODEL` (`AUTOCLIP_LLM_MODEL`/`AUTOCLIP_LLM_URL`) selects the model and server; a local Ollama at
-  `http://localhost:11434` with `bonsai-2:2b` is the default. At the start of a run autoclip asks the server once for
-  its model list (`/api/tags`, cached) and keeps the heuristic ranking when the configured model is not installed.
+* The engine picks the Ollama model by itself: at the first AI call of the run autoclip asks the local server for its
+  model list (`/api/tags`, cached once per process) and uses the largest installed model whose on-disk size fits inside
+  half of the free RAM, falling back to the smallest known one (alphabetical-first when no sizes are reported). There is
+  no setting for the model or the server URL - a local Ollama at `http://localhost:11434` is used automatically. When the
+  server is unreachable or lists no models, the AI helpers are off for the run and the clips keep their heuristic result.
 * Every Ollama call is made with a 180 s request timeout and an 8k context window (the server default can be as low
   as 4096, and an overflow silently truncates the prompt); the temperature is 0. Re-rank replies are constrained with
   a JSON schema and validated: scores are clamped to 0-10, titles are cut to 80 characters, ids outside the candidate
   list are ignored; anything invalid falls back to the heuristic ranking.
 * With an LLM available, highlight moments get re-rank scores, generated titles and social captions; long clips get
   heuristic titles otherwise. Captions are written as `<clip>.txt` sidecars.
-* Stable Diffusion thumbnails replace the frame JPEG only when `torch`/`diffusers` are installed; otherwise the frame
-  JPEG is kept.
+* Stable Diffusion thumbnails replace the frame JPEG only when `torch`/`diffusers` are installed (the weights download
+  from Hugging Face on first use); otherwise the frame JPEG is kept.
 * `llm.system_prompt` (file) replaces the system message of every LLM call for your house style or rating rubric
   (empty keeps the built-in editor messages); `image.prompt` (file) sets the Stable Diffusion prompt of the AI thumbnails.
 * `--skip llm` skips every Ollama call. Whisper model downloads are automatic; `--skip stt` avoids Whisper entirely (a sidecar, downloaded or cached transcript is used instead).
@@ -258,14 +262,13 @@ docker compose up --build
 
 The uploaded config keeps only the nine keys; `input` and `output_dir` are always overridden because the server owns
 the uploaded file and the job folder. The defaults are the same as the command line - notably the download short side
-follows the quality tier, source fps, no upscaling and `quality: "high"` - so a server job produces high-quality clips
-unless the config asks for something else.
+follows the engine-chosen output quality (`high` on a normal machine), source fps and the never-enlarged canvas - so a
+server job produces good clips without any tuning.
 
 | environment variable | default | meaning |
 | --- | --- | --- |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | where uvicorn listens; set `HOST` to `0.0.0.0` and configure both `AUTH_*` to serve the API on the network |
 | `MAX_FILE_SIZE` | `1073741824` (1 GiB) | larger uploads get HTTP 413 |
-| `MAX_CONCURRENT_JOBS` | `1` | renders running at once (the rest wait in the queue) |
 | `MAX_PENDING_JOBS` | `8` | queued-and-running cap; excess POSTs get HTTP 429 |
 | `CORS_ALLOW_ORIGINS` | `""` | comma-separated browser origins; empty = same-origin only; `*` allowed but without credentials |
 | `OUTPUT_DIR` / `CACHE_DIR` | `.server/outputs` / `.server/cache` | jobs, work folders and ZIPs |
@@ -273,6 +276,11 @@ unless the config asks for something else.
 | `AUTOCLIP_SERVER_INPROCESS` | unset | test-only: the pipeline runs in the server process instead of re-entering `python -m autoclip`; never set this in production |
 | `AUTH_USERNAME` / `AUTH_PASSWORD` | empty | HTTP Basic auth **only when both are set**; otherwise the API is public |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | export OpenTelemetry spans to a collector (none are exported when unset) |
+
+The number of jobs the server renders at once is **derived from the machine** (one job per two cores and per ~1.5 GiB of
+free RAM, at most four, and never less than one) at the first job; it is logged as `automation max_concurrent_jobs=N`.
+It cannot be configured directly - bound it with the deployment's memory/CPU limit instead (e.g. `MEM_LIMIT` in
+`docker-compose.yml`); `MAX_PENDING_JOBS` remains the explicit queue cap.
 
 If auth is enabled, connect the WebSocket with a `?ticket=` issued by `POST /api/jobs/{job_id}/ticket`
 (short-lived, single-use; preferred) or `?token=<user>:<password>` (kept for backwards compatibility, put
@@ -286,24 +294,23 @@ and configure both `AUTH_USERNAME` and `AUTH_PASSWORD` — without them, the ser
 The GPU is used automatically when there is one and it really works (probed by encoding a test clip; NVENC/QSV/AMF/VideoToolbox,
 transcriber with CUDA). Otherwise everything runs on the CPU and the log says so. A `GPU` you cannot really use is never selected.
 
-On the CPU the transcriber is much slower: `large-v3` needs roughly ten times the time of `small`, so pick a smaller
-model tier (via `--quality`) for long videos on a CPU-only machine. `--quality` also selects the transcription model:
-highest/high use `large-v3` (high drops to `small` with no GPU), medium `small`, low `base`, lowest `tiny`.
+On the CPU the transcriber is much slower: `large-v3` needs roughly ten times the time of `small`, so the engine uses
+`large-v3` only on CUDA and `small` on the CPU (a model that does not fit into the free RAM is replaced by a smaller one).
 
-## Media quality (`--quality`)
+## Media quality (chosen by the engine)
 
-`--quality` is the single global output-quality control instead of low-level encoder knobs:
+autoclip measures the machine once per run (cores, free RAM) and picks the encode tier - there is no setting for it:
 
 | value | resolution vs 1080 short side | frame rate | audio |
 | --- | --- | --- | --- |
-| `highest` | 100% | source | 256 kbps AAC |
-| `high` (default) | 80% | source | 192 kbps AAC |
+| `high` | 80% | source | 192 kbps AAC |
 | `medium` | 60% | capped at 30 fps | 128 kbps AAC |
 | `low` | 40% | capped at 24 fps | 96 kbps AAC |
-| `lowest` | 20% | capped at 15 fps | 64 kbps AAC |
 
-Dimensions are rounded to even numbers and the source is never enlarged. The chosen level also selects CPU/GPU encoder
-arguments; users no longer configure CRF, FFmpeg presets, bitrate caps or audio bitrates.
+`high` (the 4.0/4.0.1 default) is used by any normal desktop (4+ cores and ≥ 3 GiB free RAM); weaker machines are stepped
+down to `medium` (2 cores, ≥ 2 GiB) and then `low`. A GPU only affects speed, never the tier or the picture. The chosen
+level also selects CPU/GPU encoder arguments; there are no knobs for CRF, FFmpeg presets, bitrates or frame rates.
+Dimensions are rounded to even numbers and the source is never enlarged.
 
 ## GPU acceleration (automatic, with CPU fallback)
 
@@ -345,8 +352,9 @@ available on headless Linux runners.
 Before the audio is transcribed it is **enhanced**, so the ASR model hears clear words instead of room noise,
 keyboard clicks or hum. Enhancement is automatic:
 
-* `sherpa` (small ONNX denoiser) or `noisereduce` (spectral gating, no model) is chosen internally; `gtcrn` is the
-  fastest model, `dpdfnet8` the best.
+* `sherpa` (small ONNX denoiser, downloaded once on first use and SHA-256-verified) enhances the transcription audio;
+  `gtcrn` is the fastest model, `dpdfnet8` the best. If the package or the model is unavailable the run transcribes
+  the untouched audio instead. The clip audio, when it is denoised at all, uses `noisereduce` (spectral gating, no model).
 * **Denoising only helps when there is noise.** A clean recording is damaged by it and the ASR model then drifts into
   the wrong language, so every chunk is measured first and left alone when it is clean enough.
 * Enhancement is part of the transcript cache key: changing it re-transcribes the video.
@@ -355,8 +363,8 @@ keyboard clicks or hum. Enhancement is automatic:
 
 ## Transcription
 
-* The model follows `--quality` (highest/high `large-v3`, medium `small`, low `base`, lowest `tiny`; high drops to
-  `small` with no GPU). On the CPU a model that does not fit into the free RAM is replaced by a smaller one.
+* The model follows the machine: `large-v3` on CUDA, `small` on the CPU; a model that does not fit into the free RAM
+  is replaced by a smaller one. The beam size follows the device as well (5 on CUDA, 3 on the CPU).
 * The audio is transcribed in fixed 5-minute chunks: neither the denoiser nor Whisper ever holds more than that,
   and the language is detected once and reused for the remaining chunks.
 * A sidecar transcript (`<video-stem>.json` preferred, `.srt` otherwise) next to the video is used; `--skip stt` stops
@@ -390,21 +398,22 @@ rest of the config - useful for a quick render, a silent clip or a run that must
 `--skip audio` mutes the clips and stops audio decoding. Setting `--skip caption`/`--skip title` lets ranges/split runs
 avoid transcription entirely when no text is needed.
 
-## Automatic performance mode (`--mode`)
+## Performance mode (chosen by the engine)
 
-`--mode` decides how the run balances throughput against resource usage:
+autoclip also derives the run's resource policy from the machine - there is no setting for it either. It picks one of
+three profiles once per run (and the adaptive tuner refines the CPU budget inside the profile as the run progresses):
 
-| value | meaning | typical use |
+| profile | meaning | typical machine |
 | --- | --- | --- |
-| `performance` | Use as much CPU and memory as the configured limits allow | dedicated machine / servers |
-| `resources` | Stay as lean as possible; render in-process and keep memory pressure low | laptops, shared machines |
-| `balance` | Start in the middle and adapt after every batch (default) | default |
+| `performance` | Use as much CPU and memory as the limits allow | dedicated machine / servers (≥ 8 cores and ≥ 8 GiB free) |
+| `resources` | Stay as lean as possible; render in-process and keep memory pressure low | laptops / shared machines (≤ 2 cores or < 1.5 GiB free) |
+| `balance` | Start in the middle and adapt during the run (the usual case) | everything in between |
 
-The mode is **adaptive, not static**: before each render batch the worker plan is recomputed from current free
-memory and CPU, and after each completed batch the monitor smooths the observed utilisation (EMA) and nudges the
-CPU budget up or down. If memory becomes tight or a worker dies, parallelism drops automatically; when utilisation
-is below target and memory is calm, budget is raised (within the mode's bounds). Containers/cgroups are honoured
-on Linux, and macOS/Windows/Linux all use the same affinity/`psutil`-based accounting. Automatic values are logged
+The choice is **adaptive, not static**: before each render batch the worker plan is recomputed from current free
+memory and CPU, and after each completed batch the monitor feeds the observed utilisation into the CPU budget (a
+running mean over recent samples) and nudges it up or down. If memory becomes tight or a worker dies, parallelism drops automatically; when utilisation
+is below target and memory is calm, budget is raised (within the profile's bounds). Containers/cgroups (affinity and the
+memory/CPU limit) are honoured on Linux; macOS and Windows use `os.cpu_count()`. Automatic values are logged
 as `automation ...`, and the current CPU-budget choice is persisted under `<output_dir>/.work/adaptive.json` so the
 next run starts close to the learned optimum.
 
@@ -412,8 +421,8 @@ next run starts close to the learned optimum.
 
 * Before and after every operation the script re-reads CPU count (affinity + container quota) and *free* RAM. The number
   of parallel renders, encoder threads, cache size and CPU budget are derived automatically from these readings and the
-  active `--mode`; they shrink under memory pressure and recover when memory is available again. A smaller Whisper
-  model is chosen if the requested one will not fit in free RAM.
+  engine-derived performance profile; they shrink under memory pressure and recover when memory is available again. A smaller Whisper
+  model is chosen when the CPU one does not fit in free RAM (the shrink is CPU-only; a GPU model is used as-is).
 * One SQLite database (WAL) per video, recreated empty at every start. Only the transcript JSON is kept between runs.
 * Every production function is wrapped with `traced`: callers get `[START]` / `[END]` output, `START` /
   `END` / `FAIL` log records with machine state, and post-operation memory rebalancing. Nested calls are
@@ -512,9 +521,11 @@ See `docs/options-reference.md` for every option and its explanation (this is th
 ## Upgrading from 3.x
 
 See `docs/UPGRADING-4.0.md` for the nine-key schema, the removed-key → runtime replacement table, the
-`--flag`/`AUTOCLIP_*` equivalents, and the behaviour that is automatic now. `UPGRADING-3.0.md` covers the 2.x → 3.0
-changes and is kept as history. 4.0 is a breaking config-schema release: old config files still load (removed keys warn
-and are ignored), but their settings must move to flags or environment variables.
+`--flag` / `AUTOCLIP_*` equivalents, and the behaviour that is automatic now; `docs/UPGRADING-5.0.md` covers the
+4.0 → 5.0 release (the last machine-policy knobs are removed; the engine chooses them). `UPGRADING-3.0.md` covers the
+2.x → 3.0 changes and is kept as history. 4.0 was a breaking config-schema release: old config files still load
+(removed keys warn and are ignored), but their replacements moved to flags, environment variables or - for the machine
+settings - to nothing at all, because the engine chooses them.
 
 ## Upgrading from 2.1
 
@@ -529,8 +540,9 @@ A list of styles used to be *blended* into one ranking; now each gets separate c
 
 ## Security
 
-Config files are trusted input, but: no shell is ever invoked (argument lists only), `llm.base_url` must be http(s), SQL is
-parameterised, cached arrays load with `allow_pickle=False`, ruff's bandit rules are enforced.
+Config files are trusted input, but: no shell is ever invoked (argument lists only), the LLM endpoint is always the local
+Ollama (there is no setting for it outside the Python API, so no URL to weaken), and SQL is
+parameterised; cached arrays load with `allow_pickle=False`, and ruff's bandit rules are enforced.
 
 Downloading only happens for http(s) URLs in `input`; the platform policy is checked before any request, the
 `generic` family (any web page) is refused unless it is named, and `deny` always wins. The downloader exposes

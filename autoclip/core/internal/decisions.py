@@ -1,30 +1,18 @@
-"""Logging helpers for runtime decisions derived internally in autoclip."""
+"""Logging for the machine-derived decisions of a run (see ``internal.auto`` for the rules)."""
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
-from .runtime import RuntimeDecision, runtime_decisions
+from .runtime import detect_device, runtime_decisions
 
 log = logging.getLogger("autoclip")
 
 
-def decision_text(decisions: list[RuntimeDecision]) -> str:
-    """A stable, JSON-safe diagnostic representation."""
-    return json.dumps(
-        [{"name": d.name, "value": d.value, "source": d.source} for d in decisions],
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-if TYPE_CHECKING:
-    pass  # kept for import symmetry; the protocol below is what the callers must satisfy
-
-
 class _HasQualityAndMode(Protocol):
+    """The minimal surface of a runtime config the decision log needs (``Config`` satisfies it)."""
+
     @property
     def quality(self) -> str: ...
     @property
@@ -32,14 +20,16 @@ class _HasQualityAndMode(Protocol):
 
 
 def log_decisions(cfg: _HasQualityAndMode | None = None) -> None:
-    """Record every auto-derived value in the run log.
+    """Record the derived values in the run log (a best-effort snapshot, not a contract).
 
-    With ``cfg`` the recorded values match what this run will actually use; without it they are the high/balance/CPU defaults.
+    The Whisper model row names the requested model (before the free-memory fit can shrink it),
+    and ``max_cpu_percent`` reports the profile default (the adaptive value, if any, is logged by
+    the monitor). Without ``cfg`` the snapshot is the high/balance defaults on the detected device.
     """
-    quality, mode, device = ("high", "balance", "cpu")
+    quality, mode = ("high", "balance")
     if cfg is not None:
         quality, mode = cfg.quality, cfg.mode
-    for decision in runtime_decisions(quality, mode, device):
+    for decision in runtime_decisions(quality, mode, detect_device()):
         log.info(
             "automation %s=%s | source=%s",
             decision.name,
@@ -48,4 +38,4 @@ def log_decisions(cfg: _HasQualityAndMode | None = None) -> None:
         )
 
 
-__all__ = ["decision_text", "log_decisions"]
+__all__ = ["log_decisions"]

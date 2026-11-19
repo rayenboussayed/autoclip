@@ -39,7 +39,7 @@ def test_encode_writes_a_real_file_in_the_requested_container(tmp_path: Path, co
 def test_render_clip_writes_the_container_from_the_output_suffix(media: Media, tmp_path: Path) -> None:
     """The output file name decides the muxer: rendering must not depend on a separate container setting."""
     cfg = make_cfg(media, tmp_path, captions={"enabled": False})
-    cfg.quality = "lowest"
+    cfg.quality = "low"
     store = Store(tmp_path / "r.db", fresh=True)
     store.put_segments(load_transcript_file(media.transcript))
     cache = Cache(store, RESOURCES)
@@ -66,6 +66,6 @@ def test_render_clip_writes_the_container_from_the_output_suffix(media: Media, t
         vclip.close()
         cache.close()
         store.close()
-    assert dst.is_file() and size == (216, 384)
+    assert dst.is_file() and size == (320, 568)
     assert not list(tmp_path.glob("*.part*")), "the temporary file must be renamed away"
     assert probe(dst).duration > 3

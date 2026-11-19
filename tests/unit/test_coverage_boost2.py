@@ -177,25 +177,23 @@ def test_events_cancelled_before_report() -> None:
         r("render", 0.5)
 
 
-def test_config_default_model_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_detect_device_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     import sys
 
     monkeypatch.setitem(sys.modules, "ctranslate2", None)
-    from autoclip.core.internal.runtime import default_transcript_model
+    from autoclip.core.internal.runtime import detect_device
 
-    assert default_transcript_model() == "small"
+    assert detect_device() == "cpu"
 
 
-def test_config_resolve_default_model_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_detect_device_falls_back_to_cpu_on_cuda_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     import ctranslate2
 
-    original = ctranslate2.get_cuda_device_count
     monkeypatch.setattr(ctranslate2, "get_cuda_device_count", lambda: (_ for _ in ()).throw(RuntimeError()))
 
-    from autoclip.core.internal.runtime import transcript_model_for
+    from autoclip.core.internal.runtime import detect_device
 
-    assert transcript_model_for("high", "cpu") == "small"
-    ctranslate2.get_cuda_device_count = original
+    assert detect_device() == "cpu"
 
 
 def test_unique_name_duplicate2() -> None:
@@ -260,9 +258,9 @@ def test_config_default_model_cpu_branch(monkeypatch: pytest.MonkeyPatch) -> Non
     import ctranslate2
 
     monkeypatch.setattr(ctranslate2, "get_cuda_device_count", lambda: 0)
-    from autoclip.core.internal.runtime import default_transcript_model
+    from autoclip.core.internal.runtime import detect_device
 
-    assert default_transcript_model() == "small"
+    assert detect_device() == "cpu"
 
 
 def test_unique_name_no_conflict() -> None:
@@ -305,7 +303,7 @@ def test_cli_main_json_flag(media: Any, tmp_path: Path, monkeypatch: pytest.Monk
         "clips": {"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}},
         "skip": {"stt": True, "caption": True, "title": True},
         "video": {"short_side": 320, "gpu": "off"},
-        "quality": "lowest",
+        "quality": "low",
     }
     p = tmp_path / "c.json"
     p.write_text(__import__("json").dumps(cfg), encoding="utf-8")
@@ -324,7 +322,7 @@ def test_cli_main_events_jsonl_flag(media: Any, tmp_path: Path, monkeypatch: pyt
         "clips": {"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}},
         "skip": {"stt": True, "caption": True, "title": True},
         "video": {"short_side": 320, "gpu": "off"},
-        "quality": "lowest",
+        "quality": "low",
     }
     p = tmp_path / "c.json"
     p.write_text(__import__("json").dumps(cfg), encoding="utf-8")

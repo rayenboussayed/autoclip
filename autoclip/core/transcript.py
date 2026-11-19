@@ -20,7 +20,7 @@ from .errors import AutoclipError
 from .events import CancelToken
 from .internal import CHUNK_MINUTES as _CHUNK_MINUTES
 from .internal.automation import ENHANCE_ATTENUATION_DB, ENHANCE_SNR_THRESHOLD_DB, transcription_beam_size
-from .internal.runtime import transcript_model_for
+from .internal.runtime import whisper_model_for
 from .log import speed_text, traced
 from .media import atomic_write_text, decode_audio
 from .model_engine import release_allocations
@@ -197,10 +197,10 @@ def fit_whisper_model(name: str, device: str) -> str:
     return chosen
 
 
-def transcript_model(cfg: Config) -> str:
+def transcript_model() -> str:
     """The Whisper model chosen for this run, after the free-memory fit is applied."""
     device = asr_device()
-    return fit_whisper_model(transcript_model_for(cfg.quality, device), device)
+    return fit_whisper_model(whisper_model_for(device), device)
 
 
 def asr_device() -> str:
@@ -362,7 +362,7 @@ def transcribe(
     cutmap = cutmap or CutMap.identity(info.duration)
     chunks = list(chunks) if chunks is not None else cutmap.chunked_pieces(_CHUNK_MINUTES * 60.0)
     device = asr_device()
-    model_name = model_name_override or transcript_model(cfg)
+    model_name = model_name_override or transcript_model()
     model_name = fit_whisper_model(model_name, device)
     threads = RESOURCES.cpu_budget()
     # Whisper models download automatically on first use (consent is not a configuration option)
@@ -390,6 +390,7 @@ def transcribe(
             attempts.append(("cuda", e))
             _release_whisper(model)
             device = "cpu"
+            model_name = fit_whisper_model(model_name, device)  # a GPU-sized pick is re-fit for the CPU
             try:
                 model = load(device)
             except Exception as ce:
@@ -430,7 +431,7 @@ def transcribe(
                         word_timestamps=True,
                         language=language,
                         condition_on_previous_text=False,
-                        beam_size=transcription_beam_size(cfg.quality),
+                        beam_size=transcription_beam_size(device),
                         **options,
                     )
                     chunk_rows: list[dict[str, Any]] = []
@@ -606,7 +607,7 @@ def get_transcript(
         if downloaded:
             store.put_segments(downloaded)
             return True
-    selected_model = transcript_model(cfg)
+    selected_model = transcript_model()
     cache_file, key = work_dir / f"{stem}.transcript.json", _cache_key(cache_src, selected_model, cutmap, enhance=not cfg.skip.denoise)
     partial = work_dir / f"{stem}.transcript.partial.jsonl"
     cached_segments: list[Segment] = []
