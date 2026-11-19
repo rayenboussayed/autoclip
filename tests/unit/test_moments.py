@@ -23,7 +23,6 @@ from autoclip.core.moments import (
     build_lexicons,
     compile_lexicon,
     count_units,
-    energy_track,
     llm_rerank,
     make_title,
     pick,
@@ -34,6 +33,7 @@ from autoclip.core.moments import (
     zscore,
 )
 from autoclip.core.resources import RESOURCES
+from autoclip.core.speech import scan_audio
 from autoclip.core.store import Cache, Store
 from autoclip.core.styles import STYLES
 
@@ -246,7 +246,8 @@ def pipeline(media: Media, tmp_path: Path):  # type: ignore[no-untyped-def]
     store = Store(tmp_path / "p.db")
     cache = Cache(store, RESOURCES)
     info = probe(media.video)
-    yield store, cache, info, energy_track(media.video, info, cache)
+    scan = scan_audio(media.video, info)
+    yield store, cache, info, scan.energy_db
     cache.close()
     store.close()
 
@@ -266,13 +267,9 @@ def select(
     return select_moments(media.video, info, store, cache, make_cfg(media, tmp_path, None, **sections), kind, db, have_text)
 
 
-def test_energy_track_is_cached_and_flat_without_audio(media: Media, pipeline: Any) -> None:
-    store, cache, info, db = pipeline
+def test_scan_audio_matches_the_loudness_contract(media: Media, pipeline: Any) -> None:
+    _, _, _, db = pipeline
     assert db.dtype == np.float32 and len(db) == pytest.approx(80, abs=2) and db.max() > db.min() + 20
-    assert store.conn.execute("SELECT COUNT(*) FROM kv WHERE k LIKE 'energy:%'").fetchone()[0] == 1
-    assert energy_track(media.video, info, cache).shape == db.shape  # second call: from the cache
-    silent = energy_track(media.silent, probe(media.silent), cache)
-    assert len(silent) == pytest.approx(80, abs=2) and not silent.any()
 
 
 def test_each_scene_type_gets_its_own_distinct_moments(media: Media, pipeline: Any, tmp_path: Path) -> None:
@@ -313,7 +310,7 @@ def test_select_moments_audio_only_and_silent_video(media: Media, pipeline: Any,
         cache,
         make_cfg(media, tmp_path, None, **sections),
         "short",
-        energy_track(media.silent, silent, cache),
+        np.zeros(int(silent.duration / 0.5) + 1, dtype=np.float32),
         False,
     )
     assert len(quiet) == 2  # no audio: flat energy, windows are still produced
@@ -377,3 +374,20 @@ def test_disabled_llm_keeps_the_heuristic_ranking_without_a_request(
     llm = {"base_url": "http://127.0.0.1:9"}
     picks = select(media, pipeline, tmp_path, clips={"short": {"count": 2}}, llm=llm, skip={"llm": True})
     assert len(picks) == 2 and llm_server["requests"] == [] and all(m.llm_score is None for m in picks)
+
+
+def test_shot_boundaries_snap_selected_edges_without_breaking_the_contract(media: Media, pipeline: Any, tmp_path: Path) -> None:
+    store, cache, info, db = pipeline
+    load_segments(store, media)
+    cfg = make_cfg(media, tmp_path, None, clips={"scenes": ["best"], "short": {"count": 1, "min_seconds": 3, "max_seconds": 5}})
+    picks = select_moments(media.video, info, store, cache, cfg, "short", db, True, shots=[0.15, 4.3])
+    assert picks
+    assert picks[0].start == pytest.approx(0.15)
+    assert picks[0].end == pytest.approx(4.3)
+    assert cfg.clips.short.min_seconds <= picks[0].end - picks[0].start <= cfg.clips.short.max_seconds
+
+
+def test_text_padding_is_clamped_to_the_maximum_clip_length(media: Media, pipeline: Any, tmp_path: Path) -> None:
+    picks = select(media, pipeline, tmp_path, clips={"scenes": ["best"], "short": {"count": 1, "min_seconds": 2.9, "max_seconds": 3.0}})
+    assert picks
+    assert all(3.0 - 1e-9 <= pick.end - pick.start <= 3.0 + 1e-9 for pick in picks)

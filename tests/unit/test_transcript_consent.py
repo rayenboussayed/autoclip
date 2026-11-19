@@ -7,7 +7,6 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-import numpy as np
 import pytest
 
 from autoclip.core import transcript
@@ -38,7 +37,7 @@ def _run(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, downloader
     install_stub_whisper(monkeypatch, media, {}, download_model=downloader)
     cfg = make_cfg(media, tmp_path / "out", **sections)
     info: MediaInfo = probe(media.video)
-    return transcript.transcribe(media.video, cfg, info, np.zeros(10, dtype=np.float32), None)
+    return transcript.transcribe(media.video, cfg, info)
 
 
 def test_a_cached_model_needs_no_download(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

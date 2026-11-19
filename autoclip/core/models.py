@@ -23,6 +23,8 @@ class Word(Span):
     """One transcribed word; ``pseudo`` marks timings interpolated from a segment (no real word times)."""
 
     pseudo: bool = False
+    source_start: float | None = None
+    source_end: float | None = None
 
 
 @dataclass(slots=True)
@@ -31,6 +33,8 @@ class Segment(Span):
 
     words: list[Word] = field(default_factory=list)
     pseudo: bool = False
+    source_start: float | None = None
+    source_end: float | None = None
 
 
 @dataclass(slots=True)
@@ -45,6 +49,8 @@ class Moment(Span):
     i: int = -1  # first/last transcript segment of the window (-1 when selected from audio only)
     j: int = -1
     trimmed: float = 0.0
+    source_start: float | None = None
+    source_end: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,3 +107,4 @@ class RenderJob:
     parent_pid: int
     threads: int = 1
     fillers: frozenset[str] = field(default_factory=frozenset)
+    audio_ready: bool = False

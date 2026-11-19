@@ -444,7 +444,7 @@ def test_store_clips_are_tracked_per_kind_and_scene(tmp_path: Path) -> None:
 def test_store_transaction_rolls_back(tmp_path: Path) -> None:
     s = Store(tmp_path / "a.db")
     with pytest.raises(RuntimeError), s.transaction():
-        s.conn.execute("INSERT INTO words VALUES (1, 2, 'x', 0)")
+        s.conn.execute("INSERT INTO words VALUES (1, 2, 1, 2, 'x', 0)")
         raise RuntimeError
     assert s.window_words(0, 10) == []
     s.close()

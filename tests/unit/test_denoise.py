@@ -8,7 +8,7 @@ import logging
 import sys
 import urllib.request
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
@@ -120,12 +120,11 @@ def test_missing_backend_falls_back_to_the_original_audio(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setitem(sys.modules, "sherpa_onnx", None)  # importing it fails
+    enhancer = SpeechEnhancer(True, tmp_path)
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        enhancer = SpeechEnhancer(True, tmp_path)
+        assert np.array_equal(enhancer(noisy()), noisy())
     assert not enhancer.active
     assert "speech enhancement unavailable" in caplog.text
-    audio = tone()
-    assert np.array_equal(enhancer(audio), audio)
 
 
 def test_a_failing_backend_is_disabled_after_the_first_failure(
@@ -136,7 +135,7 @@ def test_a_failing_backend_is_disabled_after_the_first_failure(
 
     enhancer = SpeechEnhancer(True, tmp_path)
     monkeypatch.setattr(enhancer, "_denoise", boom)
-    audio = tone()
+    audio = noisy()
     with caplog.at_level(logging.WARNING, logger="autoclip"):
         assert np.array_equal(enhancer(audio), audio)
     assert "speech enhancement failed" in caplog.text
@@ -147,7 +146,7 @@ def test_fetch_model_downloads_once_and_reuses_the_file(tmp_path: Path, monkeypa
     calls: list[str] = []
 
     class Response:
-        def read(self) -> bytes:
+        def read(self, _n: int = -1) -> bytes:
             return b"onnx-bytes"
 
         def __enter__(self) -> Response:
@@ -197,22 +196,24 @@ def test_an_invalid_model_is_reported(tmp_path: Path, monkeypatch: pytest.Monkey
         def __init__(self, *args: Any) -> None:
             pass
 
-    module = ModuleType("sherpa_onnx")
-    module.OfflineSpeechDenoiserGtcrnModelConfig = Gtcrn  # type: ignore[attr-defined]
-    module.OfflineSpeechDenoiserDpdfNetModelConfig = Dpdf  # type: ignore[attr-defined]
-    module.OfflineSpeechDenoiserModelConfig = ModelConfig  # type: ignore[attr-defined]
-    module.OfflineSpeechDenoiserConfig = Config  # type: ignore[attr-defined]
-    module.OfflineSpeechDenoiser = lambda config: None  # type: ignore[attr-defined]
+    module: Any = ModuleType("sherpa_onnx")
+    module.OfflineSpeechDenoiserGtcrnModelConfig = Gtcrn
+    module.OfflineSpeechDenoiserDpdfNetModelConfig = Dpdf
+    module.OfflineSpeechDenoiserModelConfig = ModelConfig
+    module.OfflineSpeechDenoiserConfig = Config
+    module.OfflineSpeechDenoiser = lambda config: None
     monkeypatch.setitem(sys.modules, "sherpa_onnx", module)
     monkeypatch.setattr(denoise, "fetch_model", lambda model, directory, timeout=120.0: directory / "m.onnx")
 
     enhancer = SpeechEnhancer(True, tmp_path)
+    audio = noisy()
+    assert np.array_equal(enhancer(audio), audio)
     assert not enhancer.active  # the invalid model disables the enhancement instead of failing the run
 
 
 def test_fetch_model_rejects_a_wrong_sha256(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     class Response:
-        def read(self) -> bytes:
+        def read(self, _n: int = -1) -> bytes:
             return b"tampered-bytes"
 
         def __enter__(self) -> Response:
@@ -270,3 +271,45 @@ def test_audio_enhance_uses_serial_denoise_on_windows(media: Media, monkeypatch:
     monkeypatch.setattr("os.name", "nt")
     audio_mod.enhance_audio(media.video, 0.5, 5.0, 4, enhance=False, denoise=True)
     assert calls and all(call["n_jobs"] == 1 for call in calls)
+
+
+def test_sherpa_denoiser_validates_and_returns_a_callable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module: Any = ModuleType("sherpa_onnx")
+
+    class Fake:
+        def __init__(self) -> None:
+            self.model = ""
+
+    class Config:
+        def __init__(self, model: object) -> None:
+            self.model = model
+
+        def validate(self) -> bool:
+            return True
+
+    class Denoiser:
+        def __init__(self, config: object) -> None:
+            self.config = config
+
+        def run(self, audio: NDArray[np.float32], _sample_rate: int = 16000) -> SimpleNamespace:
+            return SimpleNamespace(samples=audio[::-1])
+
+    def FakeConfigArgs(*args: object, **kwargs: object) -> Config:
+        return Config(args[0] if args else None)
+
+    module.OfflineSpeechDenoiserGtcrnModelConfig = Fake
+    module.OfflineSpeechDenoiserDpdfNetModelConfig = Fake
+    module.OfflineSpeechDenoiserModelConfig = FakeConfigArgs
+    module.OfflineSpeechDenoiserConfig = Config
+    module.OfflineSpeechDenoiser = Denoiser
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", module)
+    monkeypatch.setattr(denoise, "fetch_model", lambda model, directory, timeout=120.0: directory / "model.onnx")
+    monkeypatch.setattr(denoise, "denoiser_threads", lambda mode: 4)
+    denoiser = denoise._sherpa_denoise(tmp_path)
+    audio = np.arange(10, dtype=np.float32)
+    assert denoiser(audio).tolist() == list(reversed(audio))
+
+
+def test_backend_is_not_built_when_the_enhancer_is_disabled(tmp_path: Path) -> None:
+    enhancer = SpeechEnhancer(False, tmp_path)
+    assert enhancer._backend() is None

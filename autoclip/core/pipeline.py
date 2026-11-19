@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .config import Config, KindCfg, parse_hms
+from .cutmap import CutMap
 from .errors import AutoclipError
 from .events import Cancelled, CancelToken, Reporter
 from .internal.automation import SPLIT_SECONDS
@@ -22,10 +23,12 @@ from .internal.quality import quality_short_side
 from .log import health_check, safe_path_text, traced
 from .media import external_env, ffmpeg_exe, probe
 from .models import Encoder, MediaInfo, Moment, RenderJob
-from .moments import energy_track, make_title, select_moments
+from .moments import make_title, select_moments
+from .optimizer import prepare_source
 from .render import canvas_size, estimate_render_bytes
 from .resources import RESOURCES
 from .runner import render_all
+from .scenes import detect_scenes
 from .store import Cache, ClipRow, Store
 from .transcript import get_transcript
 
@@ -60,17 +63,29 @@ def split_video(src: Path, out_dir: Path, seconds: float, duration: float, name:
 
 
 def ranges_moments(
-    store: Store, kcfg: KindCfg, info: MediaInfo, cfg: Config, have_text: bool, fillers: frozenset[str] | None = None, kind: str = "short"
+    store: Store,
+    kcfg: KindCfg,
+    info: MediaInfo,
+    cfg: Config,
+    have_text: bool,
+    fillers: frozenset[str] | None = None,
+    kind: str = "short",
+    cutmap: CutMap | None = None,
 ) -> list[Moment]:
     """Moments for the explicit ``ranges`` of a clip kind (scene type "custom"), clamped to the video."""
     if fillers is None:
         fillers = frozenset()
+    cutmap = cutmap or CutMap.identity(info.duration)
     from . import ai
 
     use_llm = not cfg.skip.llm and ai.llm_available(cfg.llm.base_url, cfg.llm.model)
     out = []
     for span in kcfg.ranges:
-        lo, hi = (min(parse_hms(x), info.duration) for x in span.split("-"))
+        source_lo, source_hi = (min(parse_hms(x), cutmap.duration) for x in span.split("-"))
+        lo, hi = cutmap.source_span_to_optimized(source_lo, source_hi)
+        if hi - lo <= 0:
+            log.warning("clips.ranges entry %s was fully removed by silence; no custom clip for that span", span)
+            continue
         text = store.window_text(lo, hi) if have_text else ""
         title = make_title(text, fillers) if kind == "long" else ""
         caption = ""
@@ -82,7 +97,7 @@ def ranges_moments(
                 caption = ai.generate_caption(cfg, text)
             except Exception as e:
                 log.warning("AI generation failed (%s: %s); keeping the heuristic title", type(e).__name__, e)
-        out.append(Moment(lo, hi, text, scene="custom", title=title, caption=caption))
+        out.append(Moment(lo, hi, text, scene="custom", title=title, caption=caption, source_start=source_lo, source_end=source_hi))
     return out
 
 
@@ -108,6 +123,8 @@ def _write_clip_summaries(root: Path, stem: str, rows: Sequence[ClipRow]) -> Non
                 "scene": r["scene"],
                 "start": round(r["start"], 2),
                 "end": round(r["end"], 2),
+                "source_start": _number(r["source_start"]),
+                "source_end": _number(r["source_end"]),
                 "title": r["title"],
                 "caption": r["caption"],
                 "text": r["text"],
@@ -146,23 +163,13 @@ def process_video(
     """
     reporter = report if report is not None else Reporter(cancel=cancel)
     root, cc, stem = Path(cfg.output_dir), cfg.clips, name or src.stem
+    original_source = src
     from .internal.content import fillers_from, load_lexicon
 
     fillers = fillers_from(load_lexicon(config_dir))
-    log.info("system health before preprocess/unsilence: %s", health_check("unsilence"))
-    destination = root / ".work" / stem / f"unsilence_{stem}.mp4"
-    reporter("validate", 0.02, "cleaning silence")
-    try:
-        from .unsilence import remove_silence
-
-        src = remove_silence(src, cfg, destination, reporter=reporter, cancel=cancel)
-        if src == destination:
-            subtitle = None  # the new timeline is no longer aligned with platform subtitles
-    except Exception as exc:
-        log.warning("preprocessing: cannot clean %s (%s); continuing with the original", stem, exc)
-        pass
     info = probe(src)
-    reporter("validate", 0.2, f"probed {src.name}")
+    original_info = info
+    reporter("validate", 0.02, "probed source")
     log.info("system health before input: %s", health_check("input"))
     log.info(
         "input metadata: path=%s | size=%d | duration=%.2fs | %dx%d @ %.2ffps | audio=%s",
@@ -184,24 +191,32 @@ def process_video(
 
     work = root / ".work" / stem
     work.mkdir(parents=True, exist_ok=True)
+    log.info("system health before the optimizer: %s", health_check("optimizer"))
+    prepared = prepare_source(original_source, cfg, original_info, work, cancel=cancel)
+    src, info, cutmap = prepared.path, prepared.info, prepared.cutmap
+    db = prepared.energy_db
+    if prepared.path != original_source:
+        log.info("using the optimized source %s (%.2fs)", safe_path_text(prepared.path), prepared.info.duration)
     store = Store(work / "autoclip.db", fresh=True)
     cache = Cache(store, RESOURCES)
     try:
-        db = energy_track(src, info, cache)
+        cuts = detect_scenes(src, info, cancel=cancel) if cc.mode != "ranges" else []
         if cancel is not None:
             cancel.check()
         log.info("system health before transcript: %s", health_check("transcript"))
         have_text = get_transcript(
-            src,
+            original_source,
             cfg,
             work,
             store,
-            info,
-            db,
+            original_info,
             needs_text(cfg),
             subtitle=subtitle,
             subtitle_manual=subtitle_manual,
             name=stem,
+            cutmap=cutmap,
+            cache_source=original_source,
+            cancel=cancel,
         )
         if needs_text(cfg):
             reporter("transcribe", 1.0, "transcript ready" if have_text else "transcription skipped - selecting on audio only")
@@ -212,9 +227,9 @@ def process_video(
         for kind in cc.kinds:
             kcfg = cc.kind(kind)
             moments = (
-                ranges_moments(store, kcfg, info, cfg, have_text, kind=kind)
+                ranges_moments(store, kcfg, info, cfg, have_text, kind=kind, cutmap=cutmap)
                 if cc.mode == "ranges"
-                else select_moments(src, info, store, cache, cfg, kind, db, have_text, config_dir=config_dir)
+                else select_moments(src, info, store, cache, cfg, kind, db, have_text, config_dir=config_dir, cutmap=cutmap, shots=cuts)
             )
             if not moments:
                 log.warning("no %s clips for %s (video shorter than the length range, or no ranges given)", kind, name or src.name)
@@ -248,6 +263,7 @@ def process_video(
                         log_file,
                         os.getpid(),
                         fillers=fillers,
+                        audio_ready=prepared.audio_ready,
                     )
                 )
                 needs = max(needs, estimate_render_bytes(size, m.end - m.start))
@@ -272,6 +288,7 @@ def process_video(
     finally:
         cache.close()
         store.close()
+    _write_clip_summaries(root, stem, rows)
     # Optional Stable Diffusion thumbnails (serialized in the AI queue; skipped when unavailable or offline).
     if not cfg.skip.thumbnail and not cfg.skip.llm:
         try:
@@ -298,7 +315,6 @@ def process_video(
         except Exception as e:
             log.warning("Stable Diffusion thumbnail pass failed (%s: %s)", type(e).__name__, e)
 
-    _write_clip_summaries(root, stem, rows)
     for clip_kind in dict.fromkeys(r["kind"] for r in rows):
         log.info("output folder: %s", safe_path_text(root / clip_kind / stem))
         for r in rows:

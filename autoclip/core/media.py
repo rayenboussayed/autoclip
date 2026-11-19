@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import os
 import shutil
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -25,6 +27,24 @@ F32 = NDArray[np.float32]
 SR = 16000  # analysis sample rate (Hz)
 FRAME = 0.5  # seconds per energy frame
 AUDIO_SR = 44100  # sample rate of the clip audio that is processed and exported
+
+
+def atomic_write_bytes(path: Path, data: bytes) -> Path:
+    """Write ``data`` to ``path`` atomically, so a crash cannot leave a half-published file."""
+    temp = path.with_suffix(path.suffix + f".tmp-{os.getpid()}-{uuid.uuid4().hex}")
+    temp.write_bytes(data)
+    os.replace(temp, path)
+    return path
+
+
+def atomic_write_text(path: Path, data: str) -> Path:
+    """Atomically write UTF-8 text to ``path``."""
+    return atomic_write_bytes(path, data.encode("utf-8"))
+
+
+def atomic_write_json(path: Path, data: object) -> Path:
+    """Atomically write compact JSON to ``path``."""
+    return atomic_write_text(path, json.dumps(data, separators=(",", ":"), sort_keys=True))
 
 
 @functools.cache
@@ -99,7 +119,7 @@ def frame_energy_db(path: Path) -> F32:
     """RMS level (dB) of every 0.5 s of the file, streamed so memory stays flat.
 
     Raises ``AutoclipError`` if ffmpeg fails (a silent file has no audio, which is reported by
-    ``energy_track`` before this is called - see there, and the test suite).  Keeping this silent
+    the caller's audio probe - see the optimizer and the test suite).  Keeping this silent
     hid a broken ffmpeg build (bundled libssl under the AppImage) as a flat-zero energy track
     for the whole file instead of a loud failure."""
     last_err: AutoclipError = AutoclipError(f"cannot analyse '{path.name}': ffmpeg failed")

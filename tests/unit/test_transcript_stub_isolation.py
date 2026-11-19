@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pytest
 
 from autoclip.core import transcript
@@ -33,5 +32,5 @@ def test_a_cached_real_utils_module_does_not_turn_the_stub_into_a_download(
         media,
         tmp_path / "out",
     )
-    segs = transcript.transcribe(media.video, cfg, probe(media.video), np.zeros(10, dtype=np.float32), None)
+    segs = transcript.transcribe(media.video, cfg, probe(media.video))
     assert [s.text for s in segs] == SENTENCES

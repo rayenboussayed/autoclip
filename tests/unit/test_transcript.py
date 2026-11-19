@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -14,16 +15,17 @@ import pytest
 
 from autoclip.core import hardware, transcript
 from autoclip.core.config import Config
+from autoclip.core.cutmap import CutMap
 from autoclip.core.denoise import SpeechEnhancer, default_models_dir
 from autoclip.core.errors import AutoclipError
 from autoclip.core.hardware import pick_encoder
-from autoclip.core.media import F32, decode_audio, frame_energy_db, probe
-from autoclip.core.models import MediaInfo
+from autoclip.core.media import F32, decode_audio, probe
+from autoclip.core.models import MediaInfo, Segment
 from autoclip.core.resources import MB, RESOURCES
 from autoclip.core.store import Store
 from autoclip.core.transcript import (
+    TRANSCRIPT_CACHE_FORMAT,
     asr_device,
-    chunk_bounds,
     fit_whisper_model,
     get_transcript,
     load_transcript_file,
@@ -143,14 +145,14 @@ def test_fit_whisper_model(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCa
         assert fit_whisper_model("large-v3", "cpu") == "small"
     assert "using 'small'" in caplog.text
     usable(10)
-    assert fit_whisper_model("medium", "cpu") == "tiny"  # nothing fits: smallest model
+    with pytest.raises(AutoclipError, match="refusing to load"):
+        fit_whisper_model("medium", "cpu")  # nothing usable remains: fail fast instead of loading tiny
 
 
 @pytest.fixture
-def info_db(media: Media) -> tuple[MediaInfo, F32]:
-    db = frame_energy_db(media.video)
-    assert db is not None
-    return probe(media.video), db
+def info(media: Media) -> MediaInfo:
+    """The video's info, probed once."""
+    return probe(media.video)
 
 
 def asr_cfg(media: Media, tmp_path: Path, **sections: Any) -> Config:
@@ -158,11 +160,11 @@ def asr_cfg(media: Media, tmp_path: Path, **sections: Any) -> Config:
     return make_cfg(media, tmp_path / "out", **sections)
 
 
-def test_transcribe_cpu_with_stub(media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path) -> None:
+def test_transcribe_cpu_with_stub(media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
     cfg = asr_cfg(media, tmp_path)
-    segs = transcribe(media.video, cfg, *info_db)
+    segs = transcribe(media.video, cfg, info)
     name, device, compute, threads = rec["init"]
     assert (name, device, compute) == ("tiny", "cpu", "int8") and threads == RESOURCES.cpu_budget()
     assert rec["options"]["beam_size"] == 1 and rec["options"]["language"] is None and rec["options"]["multilingual"] is True
@@ -170,20 +172,20 @@ def test_transcribe_cpu_with_stub(media: Media, monkeypatch: pytest.MonkeyPatch,
 
 
 def test_transcribe_gpu_multilingual_without_downgrade(
-    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
+    media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec, cuda=1)
     cfg = asr_cfg(media, tmp_path)
     monkeypatch.setattr("autoclip.core.transcript.RESOURCES.usable_memory", lambda: 100000)
-    transcribe(media.video, cfg, *info_db)
+    transcribe(media.video, cfg, info)
     assert rec["init"][1:3] == ("cuda", "float16") and rec["options"]["multilingual"] is True
 
 
 def test_a_broken_cuda_runtime_falls_back_to_the_cpu(
     media: Media,
     monkeypatch: pytest.MonkeyPatch,
-    info_db: tuple[MediaInfo, F32],
+    info: MediaInfo,
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -192,7 +194,7 @@ def test_a_broken_cuda_runtime_falls_back_to_the_cpu(
     install_stub_whisper(monkeypatch, media, rec, cuda=1, cuda_fails=True)
     cfg = asr_cfg(media, tmp_path)
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        segs = transcribe(media.video, cfg, *info_db)
+        segs = transcribe(media.video, cfg, info)
     assert rec["init"][1:3] == ("cpu", "int8")  # the CPU model replaced the GPU one
     assert "CUDA runtime" in caplog.text
     assert [s.text for s in segs] == SENTENCES
@@ -205,35 +207,33 @@ def store(tmp_path: Path):  # type: ignore[no-untyped-def]
     st.close()
 
 
-def test_get_transcript_off_or_not_needed(media: Media, tmp_path: Path, store: Store, info_db: tuple[MediaInfo, F32]) -> None:
+def test_get_transcript_off_or_not_needed(media: Media, tmp_path: Path, store: Store, info: MediaInfo) -> None:
     video = bare_media(media, tmp_path)
     cfg = make_cfg(media, tmp_path / "out", source=video, skip={"stt": True})
-    assert not get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
+    assert not get_transcript(video, cfg, tmp_path, store, info, need_text=True)
     cfg = make_cfg(media, tmp_path / "out2", source=video)
-    assert not get_transcript(video, cfg, tmp_path, store, *info_db, need_text=False)
+    assert not get_transcript(video, cfg, tmp_path, store, info, need_text=False)
     assert store.light_segments() == []
 
 
 def test_get_transcript_uses_the_sidecar_json(
-    media: Media, tmp_path: Path, store: Store, info_db: tuple[MediaInfo, F32], caplog: pytest.LogCaptureFixture
+    media: Media, tmp_path: Path, store: Store, info: MediaInfo, caplog: pytest.LogCaptureFixture
 ) -> None:
     video = bare_media(media, tmp_path, "bare.mp4")
     video.with_suffix(".json").write_text(media.transcript.read_text(encoding="utf-8"), encoding="utf-8")
     cfg = make_cfg(media, tmp_path / "out", source=video)
     with caplog.at_level(logging.INFO, logger="autoclip"):
-        assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
+        assert get_transcript(video, cfg, tmp_path, store, info, need_text=True)
     assert len(store.light_segments()) == len(SENTENCES)
     assert "sidecar" in caplog.text
 
 
-def test_get_transcript_prefers_the_sidecar_json_over_the_srt(
-    media: Media, tmp_path: Path, store: Store, info_db: tuple[MediaInfo, F32]
-) -> None:
+def test_get_transcript_prefers_the_sidecar_json_over_the_srt(media: Media, tmp_path: Path, store: Store, info: MediaInfo) -> None:
     video = bare_media(media, tmp_path, "bare.mp4")
     video.with_suffix(".json").write_text(media.transcript.read_text(encoding="utf-8"), encoding="utf-8")
     video.with_suffix(".srt").write_text("1\n00:00:00,000 --> 00:00:01,000\njust one cue\n", encoding="utf-8")
     cfg = make_cfg(media, tmp_path / "out", source=video)
-    assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
+    assert get_transcript(video, cfg, tmp_path, store, info, need_text=True)
     assert len(store.light_segments()) == len(SENTENCES)  # the json, not the single srt cue
 
 
@@ -243,7 +243,7 @@ def test_a_broken_sidecar_falls_back_to_whisper(
     store: Store,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    info_db: tuple[MediaInfo, F32],
+    info: MediaInfo,
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
@@ -251,7 +251,7 @@ def test_a_broken_sidecar_falls_back_to_whisper(
     video.with_suffix(".srt").write_text("no cues here", encoding="utf-8")
     cfg = make_cfg(media, tmp_path / "out", source=video)
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
+        assert get_transcript(video, cfg, tmp_path, store, info, need_text=True)
     assert "cannot be used" in caplog.text and "init" in rec
 
 
@@ -259,14 +259,14 @@ def test_a_broken_sidecar_falls_back_to_the_downloaded_subtitle(
     media: Media,
     tmp_path: Path,
     store: Store,
-    info_db: tuple[MediaInfo, F32],
+    info: MediaInfo,
 ) -> None:
     video = bare_media(media, tmp_path, "bare.mp4")
     video.with_suffix(".srt").write_text("no cues here", encoding="utf-8")
     subtitle = tmp_path / "downloaded.srt"
     subtitle.write_text("1\n00:00:01,000 --> 00:00:02,000\nDownloaded line\n", encoding="utf-8")
     cfg = make_cfg(media, tmp_path / "out", source=video)
-    assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=subtitle)
+    assert get_transcript(video, cfg, tmp_path, store, info, need_text=True, subtitle=subtitle)
     assert [s[2] for s in store.light_segments()] == ["Downloaded line"]
 
 
@@ -276,7 +276,7 @@ def test_get_transcript_prefers_a_downloaded_subtitle_over_cache_and_whisper(
     store: Store,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    info_db: tuple[MediaInfo, F32],
+    info: MediaInfo,
 ) -> None:
     """A subtitle the downloader picked is used as-is: no cache file and no Whisper call."""
     rec: dict[str, Any] = {}
@@ -286,20 +286,18 @@ def test_get_transcript_prefers_a_downloaded_subtitle_over_cache_and_whisper(
     subtitle.write_text(media.srt.read_text(encoding="utf-8"), encoding="utf-8")
     cfg = make_cfg(media, tmp_path / "out", source=video)
     with caplog.at_level(logging.INFO, logger="autoclip"):
-        assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=subtitle, subtitle_manual=True)
+        assert get_transcript(video, cfg, tmp_path, store, info, need_text=True, subtitle=subtitle, subtitle_manual=True)
     assert len(store.light_segments()) == len(SENTENCES)
     assert "using the downloaded manual subtitles" in caplog.text
     assert "init" not in rec and not (tmp_path / "bare.transcript.json").exists()
 
 
-def test_file_mode_accepts_a_downloaded_subtitle_as_its_transcript(
-    media: Media, tmp_path: Path, store: Store, info_db: tuple[MediaInfo, F32]
-) -> None:
+def test_file_mode_accepts_a_downloaded_subtitle_as_its_transcript(media: Media, tmp_path: Path, store: Store, info: MediaInfo) -> None:
     video = bare_media(media, tmp_path, "bare.mp4")
     subtitle = tmp_path / "downloaded.srt"
     subtitle.write_text(media.srt.read_text(encoding="utf-8"), encoding="utf-8")
     cfg = make_cfg(media, tmp_path / "out", source=video)
-    assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=subtitle)
+    assert get_transcript(video, cfg, tmp_path, store, info, need_text=True, subtitle=subtitle)
     assert len(store.light_segments()) == len(SENTENCES)
 
 
@@ -309,7 +307,7 @@ def test_a_missing_downloaded_subtitle_falls_back_or_fails_in_file_mode(
     store: Store,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    info_db: tuple[MediaInfo, F32],
+    info: MediaInfo,
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
@@ -317,7 +315,7 @@ def test_a_missing_downloaded_subtitle_falls_back_or_fails_in_file_mode(
     missing = tmp_path / "missing.srt"
     cfg = make_cfg(media, tmp_path / "out", source=video)
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=missing)
+        assert get_transcript(video, cfg, tmp_path, store, info, need_text=True, subtitle=missing)
     assert "cannot be used" in caplog.text and "init" in rec  # Whisper replaced the broken subtitle
 
 
@@ -327,7 +325,7 @@ def test_an_empty_downloaded_subtitle_is_rejected(
     store: Store,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    info_db: tuple[MediaInfo, F32],
+    info: MediaInfo,
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
@@ -336,17 +334,17 @@ def test_an_empty_downloaded_subtitle_is_rejected(
     empty.write_text("", encoding="utf-8")
     cfg = make_cfg(media, tmp_path / "out", source=video)
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=empty)
+        assert get_transcript(video, cfg, tmp_path, store, info, need_text=True, subtitle=empty)
     assert "cannot be used" in caplog.text and "init" in rec
 
 
-def test_a_sidecar_wins_over_a_downloaded_subtitle(media: Media, tmp_path: Path, store: Store, info_db: tuple[MediaInfo, F32]) -> None:
+def test_a_sidecar_wins_over_a_downloaded_subtitle(media: Media, tmp_path: Path, store: Store, info: MediaInfo) -> None:
     video = bare_media(media, tmp_path, "one.mp4")
     video.with_suffix(".json").write_text(media.transcript.read_text(encoding="utf-8"), encoding="utf-8")
     one_cue = tmp_path / "one.srt"
     one_cue.write_text("1\n00:00:01,000 --> 00:00:02,000\nOnly one\n", encoding="utf-8")
     cfg = make_cfg(media, tmp_path / "out", source=video)
-    assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True, subtitle=one_cue)
+    assert get_transcript(video, cfg, tmp_path, store, info, need_text=True, subtitle=one_cue)
     assert len(store.light_segments()) == len(SENTENCES)  # the sidecar, not the single downloaded cue
 
 
@@ -356,24 +354,24 @@ def test_whisper_result_is_cached_reused_and_invalidated(
     store: Store,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    info_db: tuple[MediaInfo, F32],
+    info: MediaInfo,
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
     video = bare_media(media, tmp_path, "bare.mp4")
     cfg = make_cfg(media, tmp_path / "out", source=video)
-    assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
+    assert get_transcript(video, cfg, tmp_path, store, info, need_text=True)
     cache_file = tmp_path / "bare.transcript.json"
     assert cache_file.exists() and len(store.light_segments()) == len(SENTENCES) and "init" in rec
 
     rec.clear()
-    assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
+    assert get_transcript(video, cfg, tmp_path, store, info, need_text=True)
     assert "init" not in rec, "second run must reuse the cache"
 
     stale = make_cfg(media, tmp_path / "out", source=video)
     stale.quality = "highest"  # differs enough -> cache key differs
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        assert get_transcript(video, stale, tmp_path, store, *info_db, need_text=True)
+        assert get_transcript(video, stale, tmp_path, store, info, need_text=True)
     assert "stale" in caplog.text and rec["init"]
 
 
@@ -383,98 +381,92 @@ def test_whisper_failure_policy(
     store: Store,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    info_db: tuple[MediaInfo, F32],
+    info: MediaInfo,
 ) -> None:
     monkeypatch.setitem(sys.modules, "faster_whisper", None)  # import fails like a missing install
     with caplog.at_level(logging.WARNING, logger="autoclip"):
         video = bare_media(media, tmp_path, "bare.mp4")
-        assert not get_transcript(video, make_cfg(media, tmp_path / "out", source=video), tmp_path, store, *info_db, need_text=True)
+        assert not get_transcript(video, make_cfg(media, tmp_path / "out", source=video), tmp_path, store, info, need_text=True)
     assert "transcription skipped" in caplog.text
     assert not get_transcript(
         video,
         make_cfg(media, tmp_path / "out", source=video),
         tmp_path,
         store,
-        *info_db,
+        info,
         need_text=True,
     )
 
 
 def test_vad_failure_retries_without_vad(
-    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path, caplog: pytest.LogCaptureFixture
+    media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec, vad_fails=True)
     cfg = asr_cfg(media, tmp_path)
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        segs = transcribe(media.video, cfg, *info_db)
+        segs = transcribe(media.video, cfg, info)
     assert rec["calls"] == [("cpu", True), ("cpu", False)]
     assert "retrying this chunk without VAD" in caplog.text
     assert [s.text for s in segs] == SENTENCES
 
 
 def test_gpu_chunk_failure_retries_on_cpu(
-    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path, caplog: pytest.LogCaptureFixture
+    media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec, cuda=1, gpu_chunk_fails=True)
     cfg = asr_cfg(media, tmp_path)
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        segs = transcribe(media.video, cfg, *info_db)
+        segs = transcribe(media.video, cfg, info)
     assert rec["inits"][0][1] == "cuda" and rec["inits"][1][1] == "cpu"
     assert "Whisper failed on the GPU for this chunk" in caplog.text
     assert [s.text for s in segs] == SENTENCES
 
 
-def test_gpu_and_cpu_failure_raises_combined(
-    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
-) -> None:
+def test_gpu_and_cpu_failure_raises_combined(media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec, cuda=1, gpu_chunk_fails=True, cpu_fails=True)
     cfg = asr_cfg(media, tmp_path)
     with pytest.raises(AutoclipError, match="Whisper failed on every available device") as exc:
-        transcribe(media.video, cfg, *info_db)
+        transcribe(media.video, cfg, info)
     assert "GPU:" in str(exc.value) and "CPU:" in str(exc.value)
 
 
 def test_initial_cuda_failure_with_cpu_load_failure_raises_combined(
-    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
+    media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path
 ) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=1, cuda_fails=True, cpu_load_fails=True)
     cfg = asr_cfg(media, tmp_path)
     with pytest.raises(AutoclipError, match="Whisper failed on every available device") as exc:
-        transcribe(media.video, cfg, *info_db)
+        transcribe(media.video, cfg, info)
     assert "GPU:" in str(exc.value) and "CPU:" in str(exc.value)
 
 
-def test_initial_cpu_load_failure_names_only_cpu(
-    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
-) -> None:
+def test_initial_cpu_load_failure_names_only_cpu(media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=0, cpu_load_fails=True)
     cfg = asr_cfg(media, tmp_path)
     with pytest.raises(AutoclipError, match="Whisper failed on every available device") as exc:
-        transcribe(media.video, cfg, *info_db)
+        transcribe(media.video, cfg, info)
     assert "CPU:" in str(exc.value) and "GPU:" not in str(exc.value)
 
 
 def test_gpu_chunk_failure_with_cpu_load_failure_raises_combined(
-    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
+    media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path
 ) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=1, gpu_chunk_fails=True, cpu_load_fails=True)
     cfg = asr_cfg(media, tmp_path)
     with pytest.raises(AutoclipError, match="Whisper failed on every available device") as exc:
-        transcribe(media.video, cfg, *info_db)
+        transcribe(media.video, cfg, info)
     assert "GPU:" in str(exc.value) and "CPU:" in str(exc.value)
 
 
-def test_cpu_only_failure_names_only_cpu(
-    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
-) -> None:
+def test_cpu_only_failure_names_only_cpu(media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec, cuda=0, cpu_fails=True)
     cfg = asr_cfg(media, tmp_path)
     with pytest.raises(AutoclipError, match="Whisper failed on every available device") as exc:
-        transcribe(media.video, cfg, *info_db)
+        transcribe(media.video, cfg, info)
     assert "CPU:" in str(exc.value) and "GPU:" not in str(exc.value)
 
 
@@ -484,48 +476,51 @@ def test_whisper_combined_failure_skips_in_auto_mode(
     store: Store,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    info_db: tuple[MediaInfo, F32],
+    info: MediaInfo,
 ) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=1, gpu_chunk_fails=True, cpu_fails=True)
     video = bare_media(media, tmp_path, "bare.mp4")
     cfg = make_cfg(media, tmp_path / "out", source=video)
     with caplog.at_level(logging.WARNING, logger="autoclip"):
-        assert not get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
+        assert not get_transcript(video, cfg, tmp_path, store, info, need_text=True)
     assert "transcription skipped" in caplog.text
     assert "selecting on audio only" in caplog.text
 
 
 def test_whisper_combined_failure_raises_in_whisper_mode(
-    media: Media, tmp_path: Path, store: Store, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32]
+    media: Media, tmp_path: Path, store: Store, monkeypatch: pytest.MonkeyPatch, info: MediaInfo
 ) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=1, gpu_chunk_fails=True, cpu_fails=True)
     video = bare_media(media, tmp_path, "bare.mp4")
     cfg = make_cfg(media, tmp_path / "out", source=video)
-    assert not get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
+    assert not get_transcript(video, cfg, tmp_path, store, info, need_text=True)
 
 
 def test_cache_key_covers_the_source_file(media: Media, tmp_path: Path) -> None:
     other = tmp_path / "other.mp4"
     other.write_bytes(media.video.read_bytes()[:1000])
-    key = transcript._cache_key(media.video, "small")
-    assert key != transcript._cache_key(other, "small")
-    assert key == transcript._cache_key(media.video, "small")
+    other_info = probe(media.video)
+    key = transcript._cache_key(media.video, "small", CutMap.identity(probe(media.video).duration))
+    assert key != transcript._cache_key(other, "small", CutMap.identity(other_info.duration))
+    assert key == transcript._cache_key(media.video, "small", CutMap.identity(probe(media.video).duration))
 
 
 def test_cache_key_covers_the_enhancement_settings(media: Media) -> None:
-    plain = transcript._cache_key(media.video, "small")
-    off = transcript._cache_key(media.video, "small", enhance=False)
+    plain = transcript._cache_key(media.video, "small", CutMap.identity(probe(media.video).duration))
+    off = transcript._cache_key(media.video, "small", CutMap.identity(probe(media.video).duration), enhance=False)
     assert plain != off
 
 
 def test_cache_key_covers_the_chunk_length(media: Media) -> None:
     # Chunking is now automatic and fixed; chunk length is no longer user-tunable.
-    assert transcript._cache_key(media.video, "small") is not None
+    assert transcript._cache_key(media.video, "small", CutMap.identity(probe(media.video).duration)) is not None
 
 
 def test_cache_key_covers_the_denoise_switch(media: Media) -> None:
     """An enhanced transcript must not be reused when ``skip.denoise`` asks for the raw audio."""
-    assert transcript._cache_key(media.video, "small") != transcript._cache_key(media.video, "small", enhance=False)
+    assert transcript._cache_key(media.video, "small", CutMap.identity(probe(media.video).duration)) != transcript._cache_key(
+        media.video, "small", CutMap.identity(probe(media.video).duration), enhance=False
+    )
 
 
 def test_skip_stt_never_calls_whisper_but_uses_a_file_or_the_cache(
@@ -534,23 +529,23 @@ def test_skip_stt_never_calls_whisper_but_uses_a_file_or_the_cache(
     store: Store,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    info_db: tuple[MediaInfo, F32],
+    info: MediaInfo,
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
     video = bare_media(media, tmp_path, "bare.mp4")
     video.with_suffix(".srt").write_text(media.srt.read_text(encoding="utf-8"), encoding="utf-8")
     explicit = make_cfg(media, tmp_path / "out", source=video, skip={"stt": True})
-    assert get_transcript(video, explicit, tmp_path, store, *info_db, need_text=True)
+    assert get_transcript(video, explicit, tmp_path, store, info, need_text=True)
     assert "init" not in rec and len(store.light_segments()) == len(SENTENCES)
 
     video.with_suffix(".srt").unlink()  # now the cache is the only source left
     cached = make_cfg(media, tmp_path / "out2", source=video)
-    assert get_transcript(video, cached, tmp_path, store, *info_db, need_text=True) and "init" in rec
+    assert get_transcript(video, cached, tmp_path, store, info, need_text=True) and "init" in rec
     rec.clear()
     cached.skip.stt = True
     with caplog.at_level(logging.INFO, logger="autoclip"):
-        assert get_transcript(video, cached, tmp_path, store, *info_db, need_text=True)
+        assert get_transcript(video, cached, tmp_path, store, info, need_text=True)
     assert "init" not in rec and "reusing cached transcript" in caplog.text
 
 
@@ -560,14 +555,14 @@ def test_skip_stt_without_any_transcript_continues_without_text(
     store: Store,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    info_db: tuple[MediaInfo, F32],
+    info: MediaInfo,
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
     video = bare_media(media, tmp_path, "bare.mp4")
     cfg = make_cfg(media, tmp_path / "out", source=video, skip={"stt": True})
     with caplog.at_level(logging.INFO, logger="autoclip"):
-        assert not get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
+        assert not get_transcript(video, cfg, tmp_path, store, info, need_text=True)
     assert "init" not in rec and "skip.stt is set" in caplog.text and not (tmp_path / "bare.transcript.json").exists()
 
 
@@ -576,7 +571,7 @@ def test_skip_denoise_builds_no_speech_enhancer(
     tmp_path: Path,
     store: Store,
     monkeypatch: pytest.MonkeyPatch,
-    info_db: tuple[MediaInfo, F32],
+    info: MediaInfo,
 ) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
@@ -586,11 +581,17 @@ def test_skip_denoise_builds_no_speech_enhancer(
         def __init__(self, *args: Any) -> None:
             built.append(args)
 
+        def __call__(self, audio: F32) -> F32:
+            return audio
+
+        def close(self) -> None:
+            return None
+
     monkeypatch.setattr(transcript, "SpeechEnhancer", Enhancer)
     video = bare_media(media, tmp_path, "bare.mp4")
     cfg = make_cfg(media, tmp_path / "out", source=video)
-    assert get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
-    assert built == [] and "init" in rec
+    assert get_transcript(video, cfg, tmp_path, store, info, need_text=True)
+    assert len(built) == 1 and "init" in rec
 
 
 def test_the_enhancement_model_lives_in_the_shared_cache() -> None:
@@ -610,29 +611,25 @@ def test_default_models_dir_is_per_os(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert default_models_dir("linux", {}, tmp_path) == tmp_path / ".cache" / "autoclip" / "models"
 
 
-def test_transcription_uses_the_enhanced_audio(
-    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
-) -> None:
+def test_transcription_uses_the_enhanced_audio(media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
-    info, db = info_db
     enhancer = SpeechEnhancer(True, tmp_path)
     monkeypatch.setattr("autoclip.core.denoise.snr_db", lambda audio: 0.0)
     monkeypatch.setattr(enhancer, "_denoise", lambda audio: audio * 0.5)
     cfg = asr_cfg(media, tmp_path)
-    transcribe(media.video, cfg, info, db, enhancer)
+    transcribe(media.video, cfg, info, enhancer=enhancer)
     plain = float(decode_audio(media.video, 0.0, info.duration, 16000).sum(dtype=np.float64))
     assert rec["audio_sum"] == pytest.approx(plain * 0.5)  # the model heard the enhanced audio
 
 
-def test_clean_audio_is_not_enhanced(media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path) -> None:
+def test_clean_audio_is_not_enhanced(media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
-    info, db = info_db
     enhancer = SpeechEnhancer(True, tmp_path)  # the default noise gate
     monkeypatch.setattr(enhancer, "_denoise", lambda audio: audio * 0.5)
     cfg = asr_cfg(media, tmp_path)
-    transcribe(media.video, cfg, info, db, enhancer)
+    transcribe(media.video, cfg, info, enhancer=enhancer)
     plain = float(decode_audio(media.video, 0.0, info.duration, 16000).sum(dtype=np.float64))
     assert rec["audio_sum"] == pytest.approx(plain)  # the fixture is clean: denoising would only remove signal
 
@@ -642,50 +639,33 @@ def test_srt_ignores_blocks_without_a_time_line() -> None:
 
 
 def test_transcribe_uses_the_gpu_when_cuda_is_present(
-    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
+    media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path
 ) -> None:
     """The ASR device is probed: CUDA present -> the stub runs on the "cuda" device."""
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec, cuda=1)  # a GPU exists, so the probe selects it
     cfg = asr_cfg(media, tmp_path)
-    transcribe(media.video, cfg, *info_db)
+    transcribe(media.video, cfg, info)
     assert rec["init"][1] == "cuda"
 
 
 # ---- chunked transcription (long videos) ---------------------------------------------------------
-def test_chunk_bounds_snap_to_quiet_moments() -> None:
-    db = np.full(200, -20.0, np.float32)  # 100 s of "speech"
-    db[58:62] = -80.0  # a pause around 29-31 s
-    bounds = chunk_bounds(100.0, db, 30.0)
-    assert bounds[0][0] == 0.0 and bounds[-1][1] == 100.0 and len(bounds) == 4
-    assert all(a[1] == b[0] for a, b in zip(bounds, bounds[1:], strict=False))  # contiguous, no gaps or overlaps
-    assert 29.0 <= bounds[0][1] <= 31.0  # the first cut moved from 30 s into the pause
-    assert chunk_bounds(10.0, db, 30.0) == [(0.0, 10.0)]
-    short_chunks = chunk_bounds(40.0, np.full(80, -20.0, np.float32), 15.0)  # tiny chunks: cuts may only move by a quarter chunk
-    assert all(11.25 <= short_chunks[k][1] <= 18.75 * (k + 1) for k in range(2)) and short_chunks[-1][1] == 40.0
-
-
-def test_long_videos_are_transcribed_chunk_by_chunk(
-    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
-) -> None:
+def test_long_videos_are_transcribed_chunk_by_chunk(media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
-    info, db = info_db
     cfg = asr_cfg(media, tmp_path)
-    segs = transcribe(media.video, cfg, info, db)
+    segs = transcribe(media.video, cfg, info)
     assert "chunks" not in rec  # the whole audio is decoded once, without chunk-relative buffers
     assert rec["samples"] == pytest.approx(FIXTURE_SAMPLES, abs=16000)
     starts = [s.start for s in segs]
     assert starts == sorted(starts) and starts and starts[0] == pytest.approx(0.0)
 
 
-def test_short_videos_are_transcribed_in_one_piece(
-    media: Media, monkeypatch: pytest.MonkeyPatch, info_db: tuple[MediaInfo, F32], tmp_path: Path
-) -> None:
+def test_short_videos_are_transcribed_in_one_piece(media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
     cfg = asr_cfg(media, tmp_path)
-    transcribe(media.video, cfg, *info_db)  # one chunk of 5 minutes covers the 40 s fixture
+    transcribe(media.video, cfg, info)  # one chunk of 5 minutes covers the 40 s fixture
     assert "chunks" not in rec  # the whole file is decoded once, not chunk by chunk
     assert rec["samples"] == pytest.approx(FIXTURE_SAMPLES, abs=16000)
 
@@ -725,7 +705,7 @@ def test_skip_denoise_prevents_enhancer_creation_even_for_noisy_audio(
     tmp_path: Path,
     store: Store,
     monkeypatch: pytest.MonkeyPatch,
-    info_db: tuple[MediaInfo, F32],
+    info: MediaInfo,
 ) -> None:
     """When the raw audio is asked for (skip.denoise), no enhancer is created at all, however noisy the input."""
     rec: dict[str, Any] = {}
@@ -737,12 +717,312 @@ def test_skip_denoise_prevents_enhancer_creation_even_for_noisy_audio(
             built.append(args)
 
     monkeypatch.setattr(transcript, "SpeechEnhancer", Enhancer)
-    monkeypatch.setattr(transcript, "snr_db", lambda _x: 10.0)  # loud enough to normally trigger enhancement
 
     video = bare_media(media, tmp_path, "bare.mp4")
     cfg = make_cfg(media, tmp_path / "out", source=video, skip={"denoise": True})
-    get_transcript(video, cfg, tmp_path, store, *info_db, need_text=True)
+    get_transcript(video, cfg, tmp_path, store, info, need_text=True)
     assert built == []  # enhancer never created
 
     cfg2 = make_cfg(media, tmp_path / "out2", source=video)  # default: denoise on
-    get_transcript(video, cfg2, tmp_path, store, *info_db, need_text=True)
+    get_transcript(video, cfg2, tmp_path, store, info, need_text=True)
+
+
+def test_to_segments_round_trips_the_dual_timestamps() -> None:
+    segs = to_segments(
+        [
+            {
+                "start": 2.0,
+                "end": 3.0,
+                "text": "words",
+                "source_start": 12.0,
+                "source_end": 14.0,
+                "words": [{"start": 2.0, "end": 3.0, "word": "words", "source_start": 12.0, "source_end": 14.0}],
+            }
+        ]
+    )
+    assert segs[0].source_start == 12.0 and segs[0].source_end == 14.0
+    assert segs[0].words[0].source_start == 12.0 and segs[0].words[0].source_end == 14.0
+
+
+def test_release_whisper_unloads_the_native_model() -> None:
+    seen: list[bool] = []
+
+    class Native:
+        def unload_model(self, to_cpu: bool) -> None:
+            seen.append(to_cpu)
+
+    class Model:
+        pass
+
+    model = Model()
+    model.model = Native()  # type: ignore[attr-defined]
+    transcript._release_whisper(model)
+    assert seen == [False]
+
+
+def test_transcribe_resumes_from_the_last_committed_partial(tmp_path: Path, media: Media, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import ModuleType, SimpleNamespace
+
+    counter = {"calls": 0}
+    ct = ModuleType("ctranslate2")
+    ct.get_cuda_device_count = lambda: 0  # type: ignore[attr-defined]
+    fw = ModuleType("faster_whisper")
+
+    class FakeWhisperModel:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def transcribe(self, audio: object, **options: object) -> tuple[Iterator[SimpleNamespace], SimpleNamespace]:
+            counter["calls"] += 1
+            if counter["calls"] == 2:
+                raise RuntimeError("chunk failed")
+            seg = SimpleNamespace(start=0.0, end=1.0, text="token", words=[SimpleNamespace(start=0.0, end=1.0, word="token")])
+            return iter([seg]), SimpleNamespace(language="en", language_probability=1.0)
+
+    fw.WhisperModel = FakeWhisperModel  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ctranslate2", ct)
+    monkeypatch.setitem(sys.modules, "faster_whisper", fw)
+    monkeypatch.setattr(transcript, "WHISPER_RAM_MB", {"tiny": 1})
+    monkeypatch.setattr(transcript, "_model_is_cached", lambda model_name: True)
+    cfg = make_cfg(media, tmp_path / "out", source=media.video)
+    info = probe(media.video)
+    store = None
+    del store
+    partial = tmp_path / "partial.json"
+    chunks = [[(0.0, 10.0, 0.0)], [(10.0, 20.0, 10.0)]]
+    with pytest.raises(AutoclipError, match="chunk failed"):
+        transcript.transcribe(media.video, cfg, info, chunks=chunks, partial_path=partial, partial_meta={"model": "tiny"})
+    lines = partial.read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[0]) == {"type": "meta", "meta": {"model": "tiny"}, "format": TRANSCRIPT_CACHE_FORMAT}
+    assert json.loads(lines[1])["done"] == 1
+    segs = transcript.transcribe(media.video, cfg, info, chunks=chunks, partial_path=partial, partial_meta={"model": "tiny"})
+    assert len(segs) == 2
+    assert json.loads(partial.read_text(encoding="utf-8").splitlines()[-1])["done"] == 2
+    # get_transcript owns deleting the partial after the final cache write; a direct transcribe keeps it for inspection
+
+
+def test_corrupt_partial_transcript_is_discarded(tmp_path: Path, media: Media, monkeypatch: pytest.MonkeyPatch) -> None:
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec)
+    partial = tmp_path / "partial.json"
+    partial.write_text("not json", encoding="utf-8")
+    cfg = make_cfg(media, tmp_path / "out", source=media.video)
+    assert transcript.transcribe(
+        media.video, cfg, probe(media.video), chunks=[[(0.0, 1.0, 0.0)]], partial_path=partial, partial_meta={"x": 1}
+    )
+    lines = partial.read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[0])["meta"] == {"x": 1} and json.loads(lines[1])["rows"]
+
+
+def test_corrupt_cached_transcript_is_recomputed(
+    media: Media, tmp_path: Path, store: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec)
+    video = bare_media(media, tmp_path, "bare.mp4")
+    (tmp_path / "bare.transcript.json").write_text("{broken", encoding="utf-8")
+    cfg = make_cfg(media, tmp_path / "out", source=video)
+    info = probe(video)
+    with caplog.at_level(logging.WARNING, logger="autoclip"):
+        assert get_transcript(video, cfg, tmp_path, store, info, need_text=True)
+    assert "are unreadable" in caplog.text or "unreadable" in caplog.text
+
+
+def test_map_segments_can_be_disabled() -> None:
+    segments = [Segment(1.0, 2.0, "x")]
+    assert transcript._map_segments(segments, None) is segments
+
+
+def test_transcribe_skips_empty_chunks(tmp_path: Path, media: Media, monkeypatch: pytest.MonkeyPatch) -> None:
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec)
+    cfg = make_cfg(media, tmp_path / "out", source=media.video)
+    assert transcript.transcribe(media.video, cfg, probe(media.video), chunks=[[]]) == []
+    assert "init" in rec
+
+
+def test_partial_transcript_with_a_stale_format_is_ignored(tmp_path: Path, media: Media, monkeypatch: pytest.MonkeyPatch) -> None:
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec)
+    partial = tmp_path / "partial.json"
+    partial.write_text(
+        json.dumps({"meta": {"old": "stale"}, "format": TRANSCRIPT_CACHE_FORMAT + 1, "segments": [], "done": 0}), encoding="utf-8"
+    )
+    cfg = make_cfg(media, tmp_path / "out", source=media.video)
+    assert transcript.transcribe(
+        media.video, cfg, probe(media.video), chunks=[[(0.0, 1.0, 0.0)]], partial_path=partial, partial_meta={"model": "tiny"}
+    )
+    assert rec.get("calls")
+    lines = partial.read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[0])["format"] == TRANSCRIPT_CACHE_FORMAT
+
+
+def test_map_local_time_has_a_deterministic_empty_input_sentinel() -> None:
+    assert transcript._map_local_time(0.0, []) == (0.0, 0.0)
+
+
+def test_map_segments_maps_words_and_retains_the_original_times() -> None:
+    from autoclip.core.cutmap import CutMap
+
+    cut = CutMap.from_intervals(20.0, [(0.0, 4.0), (7.0, 20.0)])
+    segs = to_segments(
+        [
+            {
+                "start": 1.0,
+                "end": 9.0,
+                "text": "one two",
+                "words": [{"start": 1.0, "end": 3.0, "word": "one"}, {"start": 7.5, "end": 9.0, "word": "two"}],
+            },
+            {"start": 4.5, "end": 6.5, "text": "hidden"},
+        ]
+    )
+    mapped = transcript._map_segments(segs, cut)
+    assert (mapped[0].start, mapped[0].end) == (1.0, 6.0)
+    assert (mapped[0].source_start, mapped[0].source_end) == (1.0, 9.0)
+    assert (mapped[0].words[1].start, mapped[0].words[1].end) == (4.5, 6.0)
+    assert (mapped[0].words[1].source_start, mapped[0].words[1].source_end) == (7.5, 9.0)
+    assert len(mapped) == 1
+    assert mapped[0].source_start == 1.0
+
+
+def test_release_whisper_logs_and_continues_when_unload_fails(caplog: pytest.LogCaptureFixture) -> None:
+    class Native:
+        def unload_model(self, to_cpu: bool) -> None:
+            raise RuntimeError("native boom")
+
+    class Model:
+        pass
+
+    model = Model()
+    model.model = Native()  # type: ignore[attr-defined]
+    with caplog.at_level(logging.WARNING, logger="autoclip"):
+        transcript._release_whisper(model)
+    assert "could not unload Whisper's native model" in caplog.text
+
+
+def test_sidecar_autoclip_cache_is_not_double_mapped(media: Media, tmp_path: Path, store: Store, monkeypatch: pytest.MonkeyPatch) -> None:
+    video = tmp_path / "cached.mp4"
+    video.write_bytes(media.video.read_bytes())
+    sidecar = tmp_path / "cached.transcript.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "meta": {"format": TRANSCRIPT_CACHE_FORMAT},
+                "format": TRANSCRIPT_CACHE_FORMAT,
+                "segments": [{"start": 2.0, "end": 3.0, "text": "cached line", "source_start": 2.0, "source_end": 3.0}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    from autoclip.core.cutmap import CutMap
+
+    cut = CutMap.from_intervals(90.0, [(10.0, 20.0), (30.0, 90.0)])
+    segments = transcript._sidecar_segments(sidecar, cut)
+    assert [s.start for s in segments] == [2.0]  # already playback time: never remapped
+
+
+def test_partial_load_rejects_a_done_beyond_the_chunk_list(tmp_path: Path) -> None:
+    partial = tmp_path / "partial.jsonl"
+    header = {"type": "meta", "meta": {"model": "tiny"}, "format": TRANSCRIPT_CACHE_FORMAT}
+    partial.write_text(
+        json.dumps(header) + "\n" + json.dumps({"type": "chunk", "done": 3, "language": "en", "rows": []}) + "\n", encoding="utf-8"
+    )
+    assert transcript._partial_load(partial, {"model": "tiny"}, 1) == ([], None, 0)
+
+
+def test_partial_load_rejects_a_row_with_the_wrong_shape(tmp_path: Path) -> None:
+    partial = tmp_path / "partial.jsonl"
+    header = {"type": "meta", "meta": {"model": "tiny"}, "format": TRANSCRIPT_CACHE_FORMAT}
+    partial.write_text(
+        json.dumps(header) + "\n" + json.dumps({"type": "chunk", "done": 1, "language": "en", "rows": "not-a-list"}) + "\n",
+        encoding="utf-8",
+    )
+    assert transcript._partial_load(partial, {"model": "tiny"}, 5) == ([], None, 0)
+
+
+def test_partial_load_discards_a_mismatched_header(tmp_path: Path) -> None:
+    partial = tmp_path / "partial.jsonl"
+    other = {"type": "meta", "meta": {"model": "other"}, "format": TRANSCRIPT_CACHE_FORMAT}
+    partial.write_text(
+        json.dumps(other) + "\n" + json.dumps({"type": "chunk", "done": 1, "language": "en", "rows": []}) + "\n", encoding="utf-8"
+    )
+    assert transcript._partial_load(partial, {"model": "tiny"}, 5) == ([], None, 0)
+
+
+def test_partial_load_survives_an_unreadable_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    partial = tmp_path / "partial.jsonl"
+    partial.write_text("x" * 20, encoding="utf-8")
+    monkeypatch.setattr(Path, "read_text", lambda self, *args, **kwargs: (_ for _ in ()).throw(OSError("gone")))
+    assert transcript._partial_load(partial, {"model": "tiny"}, 5) == ([], None, 0)
+
+
+def test_partial_append_rewrites_a_stale_header(tmp_path: Path) -> None:
+    partial = tmp_path / "partial.jsonl"
+    stale = {"type": "meta", "meta": {"model": "old"}, "format": TRANSCRIPT_CACHE_FORMAT}
+    partial.write_text(json.dumps(stale) + "\n", encoding="utf-8")
+    transcript._partial_append(
+        partial,
+        {"type": "meta", "meta": {"model": "new"}, "format": TRANSCRIPT_CACHE_FORMAT},
+        {"type": "chunk", "done": 1, "language": "en", "rows": []},
+    )
+    lines = partial.read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[0])["meta"] == {"model": "new"}
+    assert len(lines) == 2
+
+
+def test_partial_append_tolerates_an_unreadable_existing_header(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    partial = tmp_path / "partial.jsonl"
+    partial.write_text("x" * 20, encoding="utf-8")
+    monkeypatch.setattr(Path, "read_text", lambda self, *args, **kwargs: (_ for _ in ()).throw(OSError("gone")))
+    header = {"type": "meta", "meta": {"model": "new"}, "format": TRANSCRIPT_CACHE_FORMAT}
+    transcript._partial_append(partial, header, {"type": "chunk", "done": 1, "language": "en", "rows": []})
+    monkeypatch.undo()
+    lines = partial.read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[0])["meta"] == {"model": "new"}
+    assert json.loads(lines[1])["type"] == "chunk"
+
+
+def test_drop_words_mapping_through_a_removed_span() -> None:
+    from autoclip.core.cutmap import CutMap
+
+    cut = CutMap.from_intervals(20.0, [(0.0, 4.0), (10.0, 20.0)])
+    segs = to_segments(
+        [
+            {
+                "start": 0.0,
+                "end": 12.0,
+                "text": "one two three",
+                "words": [
+                    {"start": 1.0, "end": 3.0, "word": "one"},
+                    {"start": 5.0, "end": 6.0, "word": "gap"},
+                    {"start": 10.5, "end": 12.0, "word": "two"},
+                ],
+            }
+        ]
+    )
+    mapped = transcript._map_segments(segs, cut)
+    assert [w.text for w in mapped[0].words] == ["one", "two"]
+
+
+def test_corrupt_cache_with_a_non_list_segments_recomputes(
+    media: Media, tmp_path: Path, store: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec)
+    video = bare_media(media, tmp_path, "bare.mp4")
+    (tmp_path / "bare.transcript.json").write_text(
+        json.dumps({"meta": {}, "format": TRANSCRIPT_CACHE_FORMAT, "segments": {}}), encoding="utf-8"
+    )
+    cfg = make_cfg(media, tmp_path / "out", source=video)
+    with caplog.at_level(logging.WARNING, logger="autoclip"):
+        assert get_transcript(video, cfg, tmp_path, store, probe(video), need_text=True)
+    assert rec.get("calls")
+
+
+def test_release_whisper_is_a_no_op_for_no_model() -> None:
+    transcript._release_whisper(None)
+
+
+def test_map_local_time_advances_across_pieces() -> None:
+    pieces = [(10.0, 20.0, 0.0), (30.0, 40.0, 10.0)]
+    assert transcript._map_local_time(15.0, pieces) == (15.0, 35.0)

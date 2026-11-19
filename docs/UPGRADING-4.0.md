@@ -37,7 +37,7 @@ and are ignored), but the behaviour you used to configure is now either automati
 | `clips.preset` | `both`, `shorts` or `long` — which clip families to render |
 | `clips.scenes` | `best`, a list, or `all` — the scene types to pick moments for |
 | `clips.keywords` | words or phrases that boost a moment |
-| `clips.ranges` | exact cuts (`"00:01:00-00:01:45"`), one per line |
+| `clips.ranges` | exact cuts (`"00:01:00-00:01:45"`) in original-source seconds, remapped through silence removal; a range fully inside a removed span is skipped with a warning |
 | `download.allow` | extractor families or groups (`@popular`, …) that may be downloaded |
 | `download.deny` | families that are never downloaded, even when an allow entry covers them |
 | `llm.system_prompt` | the system message of every local LLM call (moment ranking, titles, social captions); empty keeps the built-in editor messages |
@@ -70,7 +70,7 @@ A removed key no longer exists in the file. When you set it, autoclip prints
 | `captions` | the automatic social style; `--skip caption` disables |
 | `title` | titles are automatic; `--skip title` disables |
 | `audio` | audio processing is automatic; `--skip audio_enhance` disables |
-| `unsilence`, `silence` | silence removal is automatic |
+| `unsilence`, `silence` | silence removal is automatic; too little silence leaves the original unchanged |
 | `skip` | `--skip NAME` (see `autoclip run --help`) |
 | `metadata`, `cookies`, `js_runtime`, `network` | always written / `--cookies` (`AUTOCLIP_COOKIES`) / probed automatically; proxies are not supported |
 | `download.quality`, `download.fps`, `download.prefer`, `download.codec`, `download.container` | the best matching format is chosen automatically |
@@ -108,7 +108,7 @@ Env values apply first; an explicit flag always wins. The desktop app keeps the 
 - **Subtitles**: a downloaded subtitle is used when it exists; a sidecar transcript (`<video-stem>.json` preferred over `.srt`) next to the video always wins.
 - **Captions**: the social theme, lower position; `.txt` sidecar written when a caption exists.
 - **Titles**: heuristic for long clips; LLM-generated when available.
-- **Silence removal**: always attempted to `.work/{stem}/unsilence_{stem}.mp4`, fails soft.
+- **Silence removal**: always attempted to `.work/{stem}/optimized_{stem}.mp4` when the gate passes; below it the original stays. `clips.json`, transcript rows, words and range rows now publish both the playback and source timelines.
 - **Speech enhancement**: chosen per quality tier; clean audio is left untouched.
 - **Thumbnails**: a Stable Diffusion thumbnail replaces the frame JPEG only when `torch`/`diffusers` are installed, otherwise the frame JPEG is kept.
 

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Mapping
+from bisect import bisect_left
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,10 +14,11 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .config import Config, KindCfg
-from .internal.automation import CLIP_PAD_END, CLIP_PAD_START, DEFAULT_FILLERS, LLM_TOP_K
+from .cutmap import CutMap
+from .internal.automation import CLIP_PAD_END, CLIP_PAD_START, DEFAULT_FILLERS, LLM_TOP_K, SCENE_SNAP_RADIUS_SECONDS
 from .internal.content import load_lexicon
 from .log import traced
-from .media import F32, FRAME, frame_energy_db, snap_to_quiet
+from .media import F32, FRAME, snap_to_quiet
 from .models import MediaInfo, Moment
 from .store import Cache, Store
 from .styles import LEXICONS, STYLES
@@ -211,17 +213,19 @@ def _rerank(top: list[Moment], count: int, cfg: Config, scene: str) -> list[Mome
     return sorted(top, key=lambda m: m.score or 0.0, reverse=True)[:count]
 
 
-def energy_track(src: Path, info: MediaInfo, cache: Cache) -> F32:
-    """The 0.5 s loudness track of ``src`` (cached; flat zeros for a video without audio)."""
-    st = src.stat()
+def _nearest_cut(cuts: Sequence[float], edge: float, radius: float) -> float:
+    """Nearest shot boundary to ``edge`` within ``radius``; ties resolve to the earlier cut."""
+    if not cuts:
+        return edge
+    pos = bisect_left(cuts, edge)
+    left = cuts[pos - 1] if pos else None
+    right = cuts[pos] if pos < len(cuts) else None
+    choices = [cut for cut in (left, right) if cut is not None and abs(cut - edge) <= radius]
+    return min(choices, key=lambda cut: (abs(cut - edge), cut)) if choices else edge
 
-    def compute() -> F32:
-        if not info.has_audio:
-            return np.zeros(int(info.duration / FRAME) + 1, dtype=np.float32)
-        return frame_energy_db(src)
 
-    track: F32 = cache.memoize_array(f"energy:{src.name}:{st.st_size}:{st.st_mtime_ns}", compute).astype(np.float32, copy=False)
-    return track
+def _overlaps(start: float, end: float, others: Sequence[tuple[float, float]]) -> bool:
+    return any(start < other_end and other_start < end for other_start, other_end in others)
 
 
 @traced("select_moments")
@@ -235,6 +239,8 @@ def select_moments(
     db: F32,
     have_text: bool,
     config_dir: Path | None = None,
+    cutmap: CutMap | None = None,
+    shots: Sequence[float] = (),
 ) -> list[Moment]:
     """The best moments of ``src`` for every requested scene type, as ``kind`` ("short" or "long") clips.
 
@@ -242,6 +248,8 @@ def select_moments(
     picks its best non-overlapping windows. A moment picked for one scene type is never reused for another.
     """
     cc, kcfg = cfg.clips, cfg.clips.kind(kind)
+    cutmap = cutmap or CutMap.identity(info.duration)
+    shots = sorted(set(shots))
     segs = store.light_segments() if have_text else []
     cands = text_candidates(segs, kcfg, info.duration)
     text_mode = len(cands) > 0
@@ -274,8 +282,9 @@ def select_moments(
         elif not use_llm and text_mode and kind == "long":
             for m in found:
                 m.title = make_title(m.text, set(DEFAULT_FILLERS))
-        taken += [(m.start, m.end) for m in found]
+        placements = list(taken)
         for m in sorted(found, key=lambda m: m.score or 0.0, reverse=True):
+            original_span = (m.start, m.end)
             if text_mode:
                 s, e = max(0.0, m.start - CLIP_PAD_START), min(info.duration, m.end + CLIP_PAD_END)
             else:
@@ -283,9 +292,14 @@ def select_moments(
                 # Snapping may move both edges: keep it only when the window still honours the length the user asked for.
                 if not kcfg.min_seconds <= e - s <= kcfg.max_seconds:
                     s, e = m.start, m.end
+            s, e = _nearest_cut(shots, s, SCENE_SNAP_RADIUS_SECONDS), _nearest_cut(shots, e, SCENE_SNAP_RADIUS_SECONDS)
+            if not kcfg.min_seconds <= e - s <= kcfg.max_seconds or _overlaps(s, e, placements):
+                s, e = m.start, m.end
             m.start, m.end = s, e
-            if m.end - m.start > kcfg.max_seconds:
-                m.end = m.start + kcfg.max_seconds  # the padding must not push the clip over its maximum
+            placements.append(original_span)
+            taken.append(original_span)
             m.title = m.title or make_title(m.text, frozenset(DEFAULT_FILLERS))
+            m.source_start = cutmap.optimized_to_source(m.start)
+            m.source_end = cutmap.optimized_to_source(m.end)
             moments.append(m)
     return moments

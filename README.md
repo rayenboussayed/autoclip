@@ -47,11 +47,12 @@ is exactly what `python -m autoclip config.json` would run.
   short/{video}/   {video}_{scene}_{nn}_{start}s.mp4 + .jpg cover + .srt, clips.json     (9:16, 20-60 s by default)
   long/{video}/    same, for the long clips                                               (16:9, 3-10 min by default)
   logs/            autoclip_<timestamp>.log
-  .work/{video}/   autoclip.db (recreated empty on every start) and the transcript cache
+  .work/{video}/   autoclip.db (recreated empty on every start), the transcript cache, the optimized source
   .work/downloads/ originals downloaded from URLs (reused by later runs)
 ```
 
-A kind that is not requested (or finds nothing) gets no folder. Several videos share the same `short/` and `long/` folders. A *relative* `output_dir` is resolved against the current working
+Every `clips.json` row carries `start`/`end` for the processed timeline and `source_start`/`source_end` for the
+original input file. `trimmed` remains the length after pause/filler cuts. A kind that is not requested (or finds nothing) gets no folder. Several videos share the same `short/` and `long/` folders. A *relative* `output_dir` is resolved against the current working
 directory - not against the config file - so the output folder is independent of where your config lives. An absolute `output_dir`
 (or the default `~/Videos/clips`) is used as-is.
 
@@ -96,7 +97,7 @@ variable) or derived automatically.
 | `clips.preset` | `both`, `shorts` or `long` - which clip families to render |
 | `clips.scenes` | `best`, a list, or `all` - the scene types to pick moments for |
 | `clips.keywords` | words or phrases that boost a moment |
-| `clips.ranges` | exact cuts (`"00:01:00-00:01:45"`), one per line |
+| `clips.ranges` | exact cuts (`"00:01:00-00:01:45"`) in original-source seconds, one per line (remapped through silence removal; missing spans are skipped with a warning) |
 | `download.allow` | extractor families or groups (`@popular`, …) that may be downloaded |
 | `download.deny` | families that are never downloaded, even when an allow entry covers them |
 | `llm.system_prompt` | the system message of the local LLM (moment ranking, titles, captions); empty keeps the built-in editor messages |
@@ -318,19 +319,26 @@ encoders such as `h264_nvenc` even on computers without that GPU); otherwise lib
 
 ## Very long videos
 
-The transcript is produced in **fixed 5-minute chunks chosen automatically**; the boundaries move to the quietest
-moment nearby and the language is detected once and reused. Neither the denoiser nor Whisper ever holds more than one
-chunk in memory, so a 3-hour file no longer needs 3 hours of audio at once. Analysis already streams, noise reduction
-works in 60 s pieces, and selection stays **global**, so a clip is never cut at a chunk edge and a long clip may be
-longer than a chunk. Very short videos are transcribed in a single chunk; chunking is not user-tunable.
+The transcript is produced in **5-minute chunks of the audio that is kept** after silence removal; the language is
+detected once and reused. Neither the denoiser nor Whisper ever holds more than one chunk in memory, so a 3-hour file
+does not need 3 hours of audio at once. The pipeline scans audio once to find loudness and kept spans, uses those
+same spans for the voice pipeline, and concatenates bounded optimized segments without a Python clip list. Selection
+stays **global**, so a clip is never cut at a chunk edge and a long clip may be longer than a chunk. Very short
+videos are transcribed in a single chunk; chunking is not user-tunable.
 
-## Unsilencing (automatic)
+## Silence removal and scene boundaries (automatic)
 
-Silence removal is always attempted before processing: the media is copied to `{output}/.work/{stem}/unsilence_{stem}.mp4`
-using pydub silence detection and a conservative MoviePy cut. Every later stage, including transcription, selection and
-rendering, then operates only on the audible stretches. pydub needs FFmpeg to load the audio, and the feature fails
-softly to the original file when that dependency or the audio itself are unavailable (and platform subtitles are dropped,
-since the new timeline is no longer aligned).
+Silence removal is always attempted before processing. The audio is scanned once in 16 kHz chunks to produce the
+0.5-second loudness track and the non-silent spans. When the removable time clears the gate, only those spans are
+encoded through the voice pipeline and concatenated to `{output}/.work/{stem}/optimized_{stem}.mp4`; if the source has too
+little silence to be worth another encode, the original remains the source. The optimizer can resume committed video
+segments after a crash and publishes both source and optimized timestamps in `clips.json`, the transcript cache and the
+SQLite rows. Sidecar and downloaded subtitles are remapped to the playback timeline instead of being discarded.
+
+After the optimized video exists, visible cuts are detected with PySceneDetect. A selected clip edge may move to a cut
+within 2 seconds when the length contract remains valid; the ordinary caption, timing and rendering paths otherwise
+stay unchanged. The default detector is `scenedetect-headless` with `AdaptiveDetector`, so the same behavior is
+available on headless Linux runners.
 
 ## Clear speech for the transcriber (on by default)
 
@@ -582,7 +590,7 @@ The `e2e` GitHub workflow runs the end-to-end cases by hand (Actions -> e2e -> R
 
 `tests/memory/` is the opt-in memory-regression suite. It measures peak RSS of the engine in child
 processes (the parent's tree, polled every 10 ms) for three shapes of work: `process_video` on the 40 s
-fixture, the many-parts unsilence re-encode, a 720p render at `medium` quality, and the CLI as a
+fixture, the many-parts optimized-source assembly, a 720p render at `medium` quality, and the CLI as a
 subprocess (fixture and many-parts). Budgets live in `tests/memory/budgets.py`; they are measured
 values with headroom, recalibrated in the file's header comment - not guesses.
 

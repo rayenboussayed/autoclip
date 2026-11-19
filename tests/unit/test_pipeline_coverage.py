@@ -3,13 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
+from autoclip.core.cutmap import CutMap
+from autoclip.core.media import probe
+from autoclip.core.optimizer import PreparedSource
 from autoclip.core.pipeline import process_video
 from tests.support import install_stub_whisper, make_cfg
 
 
-def test_process_video_unsilence_returns_destination(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_process_video_uses_the_optimized_source(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
     import shutil
 
@@ -19,10 +23,15 @@ def test_process_video_unsilence_returns_destination(media: Any, tmp_path: Path,
     cfg.captions.enabled = False
     cfg.skip.title = True
 
-    destination = out / ".work" / media.video.stem / f"unsilence_{media.video.stem}.mp4"
+    destination = out / ".work" / media.video.stem / f"optimized_{media.video.stem}.mp4"
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(media.video, destination)
-    monkeypatch.setattr("autoclip.core.unsilence.remove_silence", lambda src, cfg, dst, *a, **k: dst)
+    monkeypatch.setattr(
+        "autoclip.core.pipeline.prepare_source",
+        lambda src, cfg, info, work, **k: PreparedSource(
+            destination, probe(destination), CutMap.identity(info.duration), __import__("numpy").zeros(1, dtype=np.float32), False
+        ),
+    )
 
     rc = process_video(
         media.video, cfg, None, __import__("autoclip.core.hardware", fromlist=["cpu_encoder"]).cpu_encoder(cfg.video, cfg.quality)
@@ -30,7 +39,7 @@ def test_process_video_unsilence_returns_destination(media: Any, tmp_path: Path,
     assert rc[0] >= 0
 
 
-def test_process_video_unsilence_exception(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_process_video_optimizer_exception_is_not_swallowed(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
     out = tmp_path / "out2"
     out.mkdir()
@@ -41,21 +50,26 @@ def test_process_video_unsilence_exception(media: Any, tmp_path: Path, monkeypat
     def boom(*a: Any, **k: Any) -> None:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("autoclip.core.unsilence.remove_silence", boom)
-    rc = process_video(
-        media.video, cfg, None, __import__("autoclip.core.hardware", fromlist=["cpu_encoder"]).cpu_encoder(cfg.video, cfg.quality)
-    )
-    assert rc[0] >= 0
+    monkeypatch.setattr("autoclip.core.pipeline.prepare_source", boom)
+    with pytest.raises(RuntimeError, match="boom"):
+        process_video(
+            media.video, cfg, None, __import__("autoclip.core.hardware", fromlist=["cpu_encoder"]).cpu_encoder(cfg.video, cfg.quality)
+        )
 
 
-def test_process_video_unsilence_returns_original(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_process_video_optimizer_identity_returns_the_original(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     install_stub_whisper(monkeypatch, media, {}, cuda=0)
     out = tmp_path / "out4"
     out.mkdir()
     cfg = make_cfg(media, out, clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
     cfg.captions.enabled = False
     cfg.skip.title = True
-    monkeypatch.setattr("autoclip.core.unsilence.remove_silence", lambda src, cfg, dst, *a, **k: src)
+    monkeypatch.setattr(
+        "autoclip.core.pipeline.prepare_source",
+        lambda src, cfg, info, work, **k: PreparedSource(
+            src, info, CutMap.identity(info.duration), __import__("numpy").zeros(1, dtype=np.float32), False
+        ),
+    )
     from autoclip.core.hardware import cpu_encoder as ce
 
     rc = process_video(media.video, cfg, None, ce(cfg.video, cfg.quality))
@@ -354,3 +368,33 @@ def test_process_video_cancel_writes_the_partial_index(media: Any, tmp_path: Pat
     assert clips_json.is_file()
     rows = json.loads(clips_json.read_text(encoding="utf-8"))
     assert [r["file"] for r in rows] == ["kept_clip.mp4"]
+
+
+def test_ranges_inside_a_removed_span_are_skipped(media: Any, tmp_path: Path) -> None:
+    from autoclip.core.cutmap import CutMap
+    from autoclip.core.pipeline import ranges_moments
+    from autoclip.core.store import Store
+
+    store = Store(tmp_path / "t.db")
+    cfg = make_cfg(media, tmp_path, None, clips={"short": {"ranges": ["00:00:02-00:00:04"], "count": 1}})
+    info = probe(media.video)
+    cut = CutMap.from_intervals(info.duration, [(10.0, info.duration)])
+    assert ranges_moments(store, cfg.clips.short, info, cfg, False, cutmap=cut) == []
+    store.close()
+
+
+def test_process_video_persists_both_timelines_in_clips_json(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import json as _json
+
+    from autoclip.core.hardware import cpu_encoder
+
+    install_stub_whisper(monkeypatch, media, {}, cuda=0)
+    monkeypatch.setattr("autoclip.core.optimizer.UNSILENCE_MIN_TOTAL_SECONDS", 0.0)
+    out = tmp_path / "out"
+    cfg = make_cfg(media, out, source=media.video, clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
+    cfg.captions.enabled = False
+    cfg.skip.title = True
+    process_video(media.video, cfg, None, cpu_encoder(cfg.video, cfg.quality))
+    rows = list(_json.loads((out / "short" / media.video.stem / "clips.json").read_text(encoding="utf-8")))
+    assert rows and all("source_start" in row and "source_end" in row for row in rows)
+    assert rows[0]["source_end"] >= rows[0]["end"]

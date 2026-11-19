@@ -35,6 +35,8 @@ class ClipRow(TypedDict):
     n: int
     start: float
     end: float
+    source_start: float | None
+    source_end: float | None
     score: float | None
     llm_score: float | None
     title: str
@@ -50,11 +52,12 @@ class ClipRow(TypedDict):
 
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS segments(id INTEGER PRIMARY KEY, start REAL, end REAL, text TEXT,
+CREATE TABLE IF NOT EXISTS segments(id INTEGER PRIMARY KEY, start REAL, end REAL, source_start REAL, source_end REAL, text TEXT,
                                     boundary INTEGER);
-CREATE TABLE IF NOT EXISTS words(start REAL, end REAL, text TEXT, pseudo INTEGER);
+CREATE TABLE IF NOT EXISTS words(start REAL, end REAL, source_start REAL, source_end REAL, text TEXT, pseudo INTEGER);
 CREATE INDEX IF NOT EXISTS ix_words_start ON words(start);
 CREATE TABLE IF NOT EXISTS clips(id INTEGER PRIMARY KEY, kind TEXT, scene TEXT, n INTEGER, start REAL, end REAL,
+                                 source_start REAL, source_end REAL,
                                  score REAL, llm_score REAL, title TEXT, caption TEXT, text TEXT, status TEXT, file TEXT,
                                  width INTEGER, height INTEGER, trimmed REAL, wall REAL, error TEXT, peak_rss INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v BLOB NOT NULL, size INTEGER, atime REAL);
@@ -109,13 +112,35 @@ class Store:
         rows, words = [], []
         for idx, seg in enumerate(segments):
             gap = segments[idx + 1].start - seg.end if idx + 1 < len(segments) else None
-            rows.append((idx, seg.start, seg.end, seg.text, int(is_boundary(seg.text, gap))))
-            words += [(w.start, w.end, w.text, int(w.pseudo)) for w in seg.words]
+            rows.append(
+                (
+                    idx,
+                    seg.start,
+                    seg.end,
+                    seg.source_start if seg.source_start is not None else seg.start,
+                    seg.source_end if seg.source_end is not None else seg.end,
+                    seg.text,
+                    int(is_boundary(seg.text, gap)),
+                )
+            )
+            words += [
+                (
+                    w.start,
+                    w.end,
+                    w.source_start if w.source_start is not None else w.start,
+                    w.source_end if w.source_end is not None else w.end,
+                    w.text,
+                    int(w.pseudo),
+                )
+                for w in seg.words
+            ]
         with self.transaction():
             self.conn.execute("DELETE FROM segments")
             self.conn.execute("DELETE FROM words")
-            self.conn.executemany("INSERT INTO segments VALUES (?,?,?,?,?)", rows)
-            self.conn.executemany("INSERT INTO words VALUES (?,?,?,?)", words)
+            self.conn.executemany(
+                "INSERT INTO segments(id, start, end, source_start, source_end, text, boundary) VALUES (?,?,?,?,?,?,?)", rows
+            )
+            self.conn.executemany("INSERT INTO words(start, end, source_start, source_end, text, pseudo) VALUES (?,?,?,?,?,?)", words)
 
     def light_segments(self) -> list[tuple[float, float, str, bool]]:
         """``(start, end, text, ends_sentence)`` of every segment - without the (large) word table."""
@@ -135,18 +160,32 @@ class Store:
     def window_words(self, a: float, b: float) -> list[Word]:
         """Words overlapping ``[a, b]`` with times clamped to the window (absolute seconds)."""
         rows = self.conn.execute(
-            "SELECT start, end, text, pseudo FROM words WHERE start >= ? AND start < ? AND end > ? ORDER BY start, rowid",
+            "SELECT start, end, source_start, source_end, text, pseudo "
+            "FROM words WHERE start >= ? AND start < ? AND end > ? ORDER BY start, rowid",
             (a - MAX_SPAN, b, a),
         )
-        return [Word(max(r["start"], a), min(r["end"], b), r["text"], bool(r["pseudo"])) for r in rows]
+        return [Word(max(r["start"], a), min(r["end"], b), r["text"], bool(r["pseudo"]), r["source_start"], r["source_end"]) for r in rows]
 
     # -- clips ----------------------------------------------------------------------------------
     def save_moment(self, kind: str, scene: str, n: int, m: Moment) -> int:
         """Register a selected clip as ``pending`` and return its id."""
         cur = self.conn.execute(
-            "INSERT INTO clips(kind, scene, n, start, end, score, llm_score, title, caption, text, status) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?, 'pending')",
-            (kind, scene, n, m.start, m.end, m.score, m.llm_score, m.title, m.caption, m.text),
+            "INSERT INTO clips(kind, scene, n, start, end, source_start, source_end, score, llm_score, title, caption, text, status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'pending')",
+            (
+                kind,
+                scene,
+                n,
+                m.start,
+                m.end,
+                m.source_start if m.source_start is not None else m.start,
+                m.source_end if m.source_end is not None else m.end,
+                m.score,
+                m.llm_score,
+                m.title,
+                m.caption,
+                m.text,
+            ),
         )
         assert cur.lastrowid is not None
         return cur.lastrowid

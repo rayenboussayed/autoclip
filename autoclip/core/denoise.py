@@ -28,6 +28,7 @@ from .audio import frame_db
 from .errors import AutoclipError
 from .internal.automation import DENOISE_STRENGTH, ENHANCE_ATTENUATION_DB, ENHANCE_SNR_THRESHOLD_DB, denoiser_threads
 from .media import F32
+from .model_engine import release_allocations
 from .resources import RESOURCES
 
 log = logging.getLogger("autoclip")
@@ -76,6 +77,7 @@ SHERPA_MODEL_SHA256: dict[str, str] = {
     "dpdfnet8": "2751c1f5a4e849d23a07c675b4c838158b249b42152f10cc318522dd339134f0",
 }
 MODEL_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/{name}.onnx"
+MAX_MODEL_BYTES = 50 * 1024 * 1024
 
 
 def snr_db(audio: F32) -> float:
@@ -92,17 +94,21 @@ def fetch_model(model: str, model_dir: Path, timeout: float = 120.0) -> Path:
     """The ONNX file of ``model``, downloaded into ``model_dir`` once."""
     name = SHERPA_MODELS[model]
     dest = model_dir / f"{name}.onnx"
-    if dest.is_file() and dest.stat().st_size > 0:
-        return dest
+    want_sha = SHERPA_MODEL_SHA256.get(name)
+    if dest.is_file():
+        if dest.stat().st_size > 0 and want_sha is not None and hashlib.sha256(dest.read_bytes()).hexdigest() == want_sha:
+            return dest
+        dest.unlink(missing_ok=True)
     model_dir.mkdir(parents=True, exist_ok=True)
     url = MODEL_URL.format(name=name)
-    want_sha = SHERPA_MODEL_SHA256.get(name)
     log.info("downloading speech enhancement model %s", name)
     last_exc: Exception | None = None
     for _attempt in range(3):
         try:
             with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - fixed https url
-                data = response.read()
+                data = response.read(MAX_MODEL_BYTES + 1)
+            if len(data) > MAX_MODEL_BYTES:
+                raise OSError(f"the speech enhancement model is larger than {MAX_MODEL_BYTES} bytes")
             if want_sha is not None and (got := hashlib.sha256(data).hexdigest()) != want_sha:
                 raise OSError(f"SHA-256 mismatch for {name}: got {got}, expected {want_sha}")
             break
@@ -162,21 +168,34 @@ class SpeechEnhancer:
     def __init__(self, enabled: bool, model_dir: Path) -> None:
         self.enabled, self.model_dir = enabled, model_dir
         self._denoise: Callable[[F32], F32] | None = None
-        if not enabled:
-            return
+        self._attempted = False
+
+    def _backend(self) -> Callable[[F32], F32] | None:
+        """Create the ONNX backend only for a noisy chunk, and only once."""
+        if not self.enabled:
+            return None
+        if self._denoise is not None or self._attempted:
+            return self._denoise
+        self._attempted = True
         try:
-            self._denoise = _sherpa_denoise(model_dir)
+            self._denoise = _sherpa_denoise(self.model_dir)
         except Exception as exc:  # optional dependency, download or model problem
             log.warning("speech enhancement unavailable (%s: %s) - transcribing the original audio", type(exc).__name__, exc)
+        return self._denoise
+
+    def close(self) -> None:
+        """Release the native ONNX session now that transcription is finished."""
+        self._denoise = None
+        release_allocations()
 
     @property
     def active(self) -> bool:
-        """Whether a backend is available (the audio may still be left alone when it is clean)."""
-        return self._denoise is not None
+        """Whether enhancement can run (or has a loaded backend); nothing is downloaded until a noisy chunk arrives."""
+        return self.enabled and (not self._attempted or self._denoise is not None)
 
     def __call__(self, audio: F32) -> F32:
-        """The enhanced audio (the original one when the backend is unavailable)."""
-        if self._denoise is None:
+        """Enhance noisy audio, leaving clean chunks untouched and unloaded."""
+        if not self.enabled:
             return audio
         limit = ENHANCE_SNR_THRESHOLD_DB
         if limit is not None:
@@ -188,9 +207,15 @@ class SpeechEnhancer:
                 log.info("audio is clean (%.0f dB signal-to-noise): not enhancing", ratio)
                 return audio  # the audio is already clean: denoising would only remove signal
             log.info("enhancing noisy audio (%.0f dB signal-to-noise)", ratio)
+        denoise = self._backend()
+        if denoise is None:
+            return audio
         try:
-            return self._denoise(audio)
+            enhanced = denoise(audio)
+            self._attempted = True
+            return enhanced
         except Exception as exc:
             log.warning("speech enhancement failed (%s: %s) - using the original audio", type(exc).__name__, exc)
             self._denoise = None
+            self._attempted = True
             return audio

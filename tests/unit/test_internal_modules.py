@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import contextlib
 import json
+import sys
 import tempfile
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -471,3 +473,160 @@ def test_the_breaker_logs_only_the_first_failure(monkeypatch: pytest.MonkeyPatch
         _ai._disable_for_this_run(RuntimeError("second failure"))
     assert "AI disabled" not in caplog.text
     _ai._RUN_TRIPPED.clear()
+
+
+def _fake_sd_modules(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    from importlib.machinery import ModuleSpec
+
+    torch = ModuleType("torch")
+    torch.__spec__ = ModuleSpec("torch", loader=None)
+    cuda = SimpleNamespace(is_available=lambda: False)
+    mps = SimpleNamespace(is_available=lambda: False)
+    torch.cuda = cuda  # type: ignore[attr-defined]
+    torch.backends = SimpleNamespace(mps=mps)  # type: ignore[attr-defined]
+    torch.float32 = "float32"  # type: ignore[attr-defined]
+    torch.float16 = "float16"  # type: ignore[attr-defined]
+    torch.cuda.empty_cache = lambda: None
+    diffusers = ModuleType("diffusers")
+    diffusers.__spec__ = ModuleSpec("diffusers", loader=None)
+
+    class Result:
+        def __init__(self) -> None:
+            self.images = [SimpleNamespace(save=lambda path: Path(path).write_bytes(b"thumbnail"))]
+
+    class Pipe:
+        @classmethod
+        def from_pretrained(cls, *args: object, **kwargs: object) -> Pipe:
+            return cls()
+
+        def to(self, device: str) -> Pipe:
+            self.device = device
+            return self
+
+        def __call__(self, **kwargs: object) -> Result:
+            return Result()
+
+    diffusers.StableDiffusionImg2ImgPipeline = Pipe  # type: ignore[attr-defined]
+    image_module = ModuleType("PIL.Image")
+
+    class ImageFile:
+        def convert(self, mode: str) -> ImageFile:
+            return self
+
+        def resize(self, size: tuple[int, int]) -> ImageFile:
+            return self
+
+    image_module.open = lambda path: ImageFile()  # type: ignore[attr-defined]
+    pil = ModuleType("PIL")
+    pil.Image = image_module  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+    monkeypatch.setitem(sys.modules, "PIL", pil)
+    monkeypatch.setitem(sys.modules, "PIL.Image", image_module)
+    return {"torch": torch, "diffusers": diffusers}
+
+
+def test_sd_generate_success_and_worker_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _fake_sd_modules(monkeypatch)
+    monkeypatch.setattr("autoclip.core.model_engine.release_allocations", lambda: None)
+    frame, out = tmp_path / "frame.jpg", tmp_path / "out.jpg"
+    frame.write_bytes(b"jpg")
+    assert ai._sd_generate(frame, out, "prompt", "cpu")
+    assert out.read_bytes() == b"thumbnail"
+
+    decision = SimpleNamespace(subprocess=False, reason="tiny test room")
+    monkeypatch.setattr("autoclip.core.model_engine.choose_model", lambda *args, **kwargs: decision)
+    assert ai.generate_sd_thumbnail(frame, out, "prompt")
+
+    decision = SimpleNamespace(subprocess=True, reason="low memory")
+    monkeypatch.setattr("autoclip.core.model_engine.choose_model", lambda *args, **kwargs: decision)
+
+    class FakeProcess:
+        def start(self) -> None:
+            pass
+
+        def join(self, timeout: float | None = None) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            return False
+
+        exitcode = 0
+
+    monkeypatch.setattr("multiprocessing.get_context", lambda name: SimpleNamespace(Process=lambda **kwargs: FakeProcess()))
+    assert ai.generate_sd_thumbnail(frame, out, "prompt")
+
+    decision = SimpleNamespace(subprocess=True, reason="low memory")
+    monkeypatch.setattr("autoclip.core.model_engine.choose_model", lambda *args, **kwargs: decision)
+
+    class FailingProcess(FakeProcess):
+        exitcode = 1
+
+    monkeypatch.setattr("multiprocessing.get_context", lambda name: SimpleNamespace(Process=lambda **kwargs: FailingProcess()))
+    assert not ai.generate_sd_thumbnail(frame, out, "prompt")
+
+
+def test_sd_generate_logs_a_failure_and_releases(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _fake_sd_modules(monkeypatch)
+
+    class BrokenPipe:
+        @classmethod
+        def from_pretrained(cls, *args: object, **kwargs: object) -> object:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(sys.modules["diffusers"], "StableDiffusionImg2ImgPipeline", BrokenPipe)
+    monkeypatch.setattr("autoclip.core.model_engine.release_allocations", lambda: None)
+    frame, out = tmp_path / "frame.jpg", tmp_path / "out.jpg"
+    frame.write_bytes(b"jpg")
+    assert ai._sd_generate(frame, out, "prompt", "cpu") is False
+
+
+def test_sd_device_selection_covers_cuda_mps_and_cpu(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _fake_sd_modules(monkeypatch)
+    torch = sys.modules["torch"]
+    torch.cuda.is_available = lambda: True
+    assert ai._sd_generate(tmp_path / "frame.jpg", tmp_path / "out.jpg", "prompt", "auto")
+
+    torch.cuda.is_available = lambda: False
+    torch.backends.mps = SimpleNamespace(is_available=lambda: True)
+    assert ai._sd_generate(tmp_path / "frame.jpg", tmp_path / "out.jpg", "prompt", "auto")
+
+    monkeypatch.setattr(ai, "_sd_generate", lambda *args, **kwargs: True)
+    with pytest.raises(SystemExit, match="0"):
+        ai._sd_process(str(tmp_path / "frame.jpg"), str(tmp_path / "out.jpg"), "prompt", "auto")
+    with pytest.raises(SystemExit, match="1"):
+        monkeypatch.setattr(ai, "_sd_generate", lambda *args, **kwargs: False)
+        ai._sd_process(str(tmp_path / "frame.jpg"), str(tmp_path / "out.jpg"), "prompt", "auto")
+
+
+def test_sd_available_returns_false_when_the_probe_breaks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("importlib.util.find_spec", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("half-registered")))
+    assert ai.sd_available() is False
+
+
+def test_sd_worker_kills_a_wedged_process(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _fake_sd_modules(monkeypatch)
+    monkeypatch.setattr("autoclip.core.model_engine.choose_model", lambda *args, **kwargs: SimpleNamespace(subprocess=True, reason="x"))
+    actions: list[str] = []
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"jpg")
+    out = tmp_path / "out.jpg"
+
+    class Wedged:
+        exitcode = 0
+
+        def start(self) -> None:
+            pass
+
+        def join(self, timeout: float | None = None) -> None:
+            actions.append(f"join{timeout}")
+
+        def is_alive(self) -> bool:
+            return "killed" not in actions
+
+        def kill(self) -> None:
+            actions.append("killed")
+
+    monkeypatch.setattr("multiprocessing.get_context", lambda name: SimpleNamespace(Process=lambda **kwargs: Wedged()))
+    assert ai.generate_sd_thumbnail(frame, out, "prompt") is False
+    assert "killed" in actions and "join900.0" in actions and "join5.0" in actions

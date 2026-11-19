@@ -196,45 +196,76 @@ def _messages(cfg: Config, prompt: str) -> list[dict[str, str]]:
 
 
 def sd_available() -> bool:
-    """True when torch + diffusers are importable."""
+    """Cheap availability probe: does not import torch into the parent process."""
+    import importlib.util
+
     try:
-        import torch  # noqa: F401  # pragma: no cover
-        from diffusers import StableDiffusionImg2ImgPipeline  # noqa: F401  # pragma: no cover
-
-        return True  # pragma: no cover
-    except Exception:  # pragma: no cover
-        return False  # pragma: no cover
+        return importlib.util.find_spec("torch") is not None and importlib.util.find_spec("diffusers") is not None
+    except (ValueError, ModuleNotFoundError, ImportError):  # a half-registered package must not abort the run
+        return False
 
 
-def generate_sd_thumbnail(source_frame: Path, out_path: Path, prompt: str, device: str = "auto") -> bool:  # pragma: no cover
-    """Generate an AI thumbnail with Stable Diffusion img2img. Returns True on success."""  # pragma: no cover
-    if not sd_available():  # pragma: no cover
-        return False  # pragma: no cover
-    try:  # pragma: no cover
-        import torch  # pragma: no cover
-        from diffusers import StableDiffusionImg2ImgPipeline  # pragma: no cover
-        from PIL import Image  # pragma: no cover
+def _sd_generate(source_frame: Path, out_path: Path, prompt: str, device: str) -> bool:
+    """Run the SD pipeline and release it before returning (native allocations are best-effort)."""
+    try:
+        import torch
+        from diffusers import StableDiffusionImg2ImgPipeline
+        from PIL import Image
 
-        # pragma: no cover
-        with _AI_LOCK:  # pragma: no cover
-            if device == "auto":  # pragma: no cover
-                if torch.cuda.is_available():  # pragma: no cover
-                    device = "cuda"  # pragma: no cover
-                elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():  # pragma: no cover
-                    device = "mps"  # pragma: no cover
-                else:  # pragma: no cover
-                    device = "cpu"  # pragma: no cover
-            dtype = torch.float16 if device in ("cuda", "mps") else torch.float32  # pragma: no cover
-            # pinned revision: upstream has not changed since 2022, pinned verification cannot roll with an upstream release
-            pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-                "CompVis/stable-diffusion-v1-4", torch_dtype=dtype, revision="133a221b8aa7292a167afc5127cb63fb5005638b"
-            )  # pragma: no cover
-            pipe = pipe.to(device)  # pragma: no cover
-            image = Image.open(source_frame).convert("RGB")  # pragma: no cover
-            image = image.resize((512, 512))  # pragma: no cover
-            result = pipe(prompt=prompt, image=image, strength=0.4, guidance_scale=7.5)  # pragma: no cover
-            result.images[0].save(out_path)  # pragma: no cover
-        return True  # pragma: no cover
-    except Exception as e:  # pragma: no cover
-        log.warning("Stable Diffusion thumbnail failed (%s: %s)", type(e).__name__, e)  # pragma: no cover
-        return False  # pragma: no cover
+        pipe = None
+        try:
+            with _AI_LOCK:
+                if device == "auto":
+                    if torch.cuda.is_available():
+                        device = "cuda"
+                    elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+                        device = "mps"
+                    else:
+                        device = "cpu"
+                dtype = torch.float16 if device in ("cuda", "mps") else torch.float32
+                pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+                    "CompVis/stable-diffusion-v1-4",
+                    torch_dtype=dtype,
+                    revision="133a221b8aa7292a167afc5127cb63fb5005638b",
+                )
+                pipe = pipe.to(device)
+                image = Image.open(source_frame).convert("RGB").resize((512, 512))
+                result = pipe(prompt=prompt, image=image, strength=0.4, guidance_scale=7.5)
+                result.images[0].save(out_path)
+            return True
+        finally:
+            del pipe
+            from .model_engine import release_allocations
+
+            release_allocations()
+    except Exception as e:  # an optional thumbnail must never fail the run
+        log.warning("Stable Diffusion thumbnail failed (%s: %s)", type(e).__name__, e)
+        return False
+
+
+def _sd_process(frame: str, out: str, prompt: str, device: str) -> None:
+    """Run one SD call in a bounded child, so a tight machine gets a strong memory release."""
+    import sys
+
+    sys.exit(0 if _sd_generate(Path(frame), Path(out), prompt, device) else 1)
+
+
+def generate_sd_thumbnail(source_frame: Path, out_path: Path, prompt: str, device: str = "auto") -> bool:
+    """Generate an AI thumbnail; a tight machine gets a one-shot worker, otherwise this process runs it and releases it."""
+    if not sd_available():
+        return False
+    from .model_engine import choose_model
+
+    decision = choose_model("stable-diffusion", 5000.0)
+    if not decision.subprocess:
+        return _sd_generate(source_frame, out_path, prompt, device)
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    proc = ctx.Process(target=_sd_process, args=(str(source_frame), str(out_path), prompt, device), name="autoclip-sd")
+    proc.start()
+    proc.join(900.0)
+    if proc.is_alive():
+        proc.kill()
+        proc.join(5.0)
+    return proc.exitcode == 0 and out_path.is_file() and out_path.stat().st_size > 0

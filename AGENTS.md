@@ -106,7 +106,11 @@ autoclip/
     store.py        SQLite Store (WAL), MemoryLRU, Cache (RAM LRU in front of SQLite kv), is_boundary
     media.py        ffmpeg discovery, probe (PyAV), energy track, decode_audio, trim_video
     audio.py        enhance_audio (denoise/loudness/limiter), compute_keep (pauses/fillers), Timeline, build_audio
-    unsilence.py    remove_silence: pydub silence detection + MoviePy re-encode (audio decoded by media.decode_audio)
+    speech.py       scan_audio: one streamed 16 kHz pass for loudness and non-silent spans
+    cutmap.py       source <-> optimized timeline map used by STT, subtitles, ranges and clip metadata
+    optimizer.py    crash-safe assembly of optimized_<stem>.mp4 from bounded FFmpeg segments
+    model_engine.py automatic resource-aware model selection and phase-end release
+    scenes.py       PySceneDetect cut boundaries used to snap selected clip edges
     transcript.py   parse srt/json, downloaded subtitles, faster-whisper (chunked), disk cache, get_transcript
     denoise.py      speech enhancement before transcription: SpeechEnhancer (sherpa-onnx ONNX | noisereduce)
     moments.py      candidates, vectorised features, per-scene scoring, pick(), LLM re-rank, select_moments
@@ -214,7 +218,8 @@ main()
       probe(src)                                   PyAV: duration, audio?, size, fps
       mode == "split": ffmpeg stream-copy parts -> {out}/long/{video}/   (done)
       Store(.work/{video}/autoclip.db, fresh=True) + Cache      ({video} = name or src.stem)
-      energy_track(src)                            0.5 s loudness track (cached in kv)
+      scan_audio -> optimized source if silence is worth removing (`optimizer.py`)
+      detect_scenes + store shot boundaries
       get_transcript(..., needs_text(cfg))        sidecar file | downloaded subtitle | disk cache | faster-whisper
                                              (5 min chunks) -> SQLite (each chunk enhanced by `SpeechEnhancer` first);
                                              subtitles follow the video's original language; consent is always auto;
@@ -582,7 +587,7 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
    95% of the letters *and* digits of a caption, so a mixed Arabic+Latin line finds no font at all
    (per-word fallback does not exist yet).
 4. **MoviePy pins `pillow<12`**, but the suite passes on Pillow 12.3 (security fixes) - CI runs both; README tells users to upgrade.
-5. **PySceneDetect >= 0.7:** use `scene[0].seconds` (`get_seconds()` is deprecated).
+5. **PySceneDetect >= 0.7:** use `scene[0].seconds` (`get_seconds()` is deprecated). `scenedetect-headless` is the required implementation; PySceneDetect failures are a filtered warning and must never stop the pipeline.
 6. **The transcription audio is always decoded by us** (`media.decode_audio`, 16 kHz), never handed to Whisper as a
    file path: the chunks have to be enhanced first. The whisper stub in `tests/support.py` tells a chunk from the
    whole file by its length.
@@ -653,11 +658,10 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     miss yt-dlp's failures or swallow autoclip's own. Never `except DownloadError` around a yt-dlp call.
 23. **The bundled imageio-ffmpeg has no ffprobe.** `download.time_range` is handed to yt-dlp only when a *real*
     `ffmpeg` **and** `ffprobe` are on `PATH` (`Downloader._range_supported`); otherwise the whole video is downloaded
-    and `media.trim_video` cuts it locally (the SRT is shifted and clipped too). Unsilence therefore decodes audio with
-    `media.decode_audio`, never `pydub.AudioSegment.from_file` (which calls `ffprobe` and silently fell back to the
-    original on every machine without a system ffmpeg, including CI and the frozen builds). yt-dlp needs
-    both binaries to cut a range itself, so a "range" that looks supported is not: verify the duration
-    after the download.
+    and `media.trim_video` cuts it locally (the SRT is shifted and clipped too). `scan_audio` decodes directly with
+    FFmpeg and `probe` uses PyAV, so the pre-pass works on every machine, including CI and frozen builds, without a
+    system ffprobe. yt-dlp needs both binaries to cut a range itself, so a "range" that looks supported is not: verify
+    the duration after the download.
 24. **The format id is part of the originals cache prefix** (`<safe title> [<id>] [<format id>]`). Changing `quality`,
     `fps`, `codec`, `container` or a `time_range` therefore downloads a new file instead of reusing one that no longer
     matches the request. The price is that the cache is only checked *after* extraction - the format id can only come
@@ -708,7 +712,8 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 33. **Do not drop or relocate the `@traced` on `process_video`.** A scripted edit stole the decorator once (it ended up
    on the helper above the function), the `[START] process_video` line vanished from the app pane and the suite
    caught it. If a refactor moves that function, keep the decorator on it and let nothing else take it.
-34. **The unsilence re-encode must never use MoviePy `method="compose"`.** Compose holds all concatenated parts as simultaneous layers; RSS grows linearly with the segment count (~15 MB per segment — measured 437 MB at 10 parts, 4.9 GB at 300), which OOM-killed a several-hour recording. `method="chain"` splices frames in order, is flat (~98 MB) and ~6x faster; `tests/unit/test_unsilence.py::test_remove_silence_concatenates_with_chain_not_compose` pins it. All parts come from one source, so they share size, fps and aspect — compose's resolution-mismatch handling is never needed.
+34. **Optimized segments are closed and dropped as soon as they are committed.** The old MoviePy chain/compose path kept all parts in Python and OOM-killed multi-hour inputs; the new path encodes each kept span with FFmpeg, records it in `optimizer.json`, and concatenates only after the scan completes. Do not hold clip objects, decode the whole source again for a SNR pass, or bypass the manifest during assembly.
+34a. **The old pydub path is gone.** `audioop-lts` was removed with it; scan changes live in `speech.py` and are pinned by tests comparing the energy track to `frame_energy_db`. A scanner change must not regress interval IoU or reintroduce a full-file array.
 35. **A red CI leg with no failing-test annotation has died before `report.failed`, not after.** Under `GITHUB_ACTIONS`, `tests/conftest.py` prints every failure as an `::error file=...,line=...` annotation (nodeid + traceback tail); `Print the coverage gaps` turns the missing arcs into `::error` lines via `coverage report --show-missing` and awk (it swallows its own failures with `|| true`). If a leg prints no test failure but exits 1, the interpreter itself died: `BrokenProcessPool` (see 37b) or a hard fault. Read the job annotations first; raw logs and artifacts are 403 for anonymous readers -- the annotations are the only unauthenticated failure surface.
 36. **Coverage's `sys.settrace` on Python <= 3.11 cannot attribute arcs that exit an `async-with` body** - it reports them as missing although the tests hit them; 3.12+ uses PEP 669 `sys.monitoring` and attributes them. The two sites are `unregister` (the arc to the implicit exit) and the download handler's reuse-archive branch (`257->259`). The fix is returning through traced `return` lines (early returns, or extract `async def` helpers), never `pragma: no cover` and never `exclude_also`.
 37. **The three recurring Windows causes** (all seen on the 2026-11-15 push; all healed by the v4.0.1 patch set): **(a)** An integration test that lets the server job re-enter `python -m autoclip` as a fresh subprocess loses the stub and tries to download a real faster-whisper model; anonymous HF requests get rate-limited and every "completed" assertion dies. Fix: every pipeline integration test sets `AUTOCLIP_SERVER_INPROCESS=1` (as `test_parity.py` and `test_cancel.py` already did). **(b)** `noisereduce` spawns joblib/loky workers that must un-serialize SpectralGate's bound method; Windows is spawn-only, the unpickle fails, every clip fails with `BrokenProcessPool: A task has failed to un-serialize.` POSIX is fork-tolerant. Fix: `n_jobs=1` on `os.name == "nt"`. **(c)** Tests that render into the default output root (`~\Videos\clips`) share `.work\talk\autoclip.db` with whatever ran earlier in the suite; `Store(fresh=True)` unlinking it raises `PermissionError: [WinError 32]` on Windows. Fix: pipeline tests pass `output_dir=...` or set `AUTOCLIP_OUTPUT_DIR` (never weaken the test or the `assert`).

@@ -6,6 +6,13 @@ release mentions the source tag/commit for traceability.
 
 ## [Unreleased]
 
+- feat: silence removal is rebuilt around one streaming 16 kHz decode; the same pass produces the 0.5 s loudness track and the kept spans, and the optimizer writes `optimized_<stem>.mp4` from bounded FFmpeg segments with crash-safe manifest resume
+- feat: every transcript word and segment, the transcript cache, SQLite, `clips.json` and detected shot boundaries now carry both optimized `start`/`end` and source `source_start`/`source_end`; downloaded and sidecar subtitles and `clips.ranges` are remapped to the playback timeline instead of being discarded
+- fix: Whisper and the speech denoiser are loaded lazily and released immediately after their phases, with no settable user policy; Stable Diffusion chooses a bounded worker on tight machines and is released after use
+- feat: `scenedetect-headless` detects shot boundaries on the optimized video; a selected clip edge may snap to a nearby cut and falls back to the original acoustic edge when the length contract or existing clip boundaries do not allow it
+- test: resumable assembly and full partial-cache coverage; `pydub` and `audioop-lts` are gone
+- fix: `clips.ranges` are now interpreted in original-source seconds and remapped through the silence removal (previously they addressed the optimized timeline after the re-encode); a range fully inside a removed span is skipped with a warning
+- fix: the transcript disk cache format was bumped to 2; entries from older builds re-transcribe once instead of silently reusing playback/source-mismatched times
 - ci: **every** push to `main` runs the full pipeline — ci matrix, benchmarks, all five OS builds and both installer smokes — but only the release is version-gated: a commit with an unchanged version builds and publishes nothing; the skip-and-build-nothing-earlier behavior is gone. `ci.yml` no longer fires on main pushes (it would have run the matrix twice; it stays standalone for non-main branches and reusable for build.yml)
 - ci: the tag-exists check fails closed — exit 0 means the release tag exists, exit 2 means absent, and any other ls-remote error (or network failure) aborts the release instead of publishing on unchecked state
 - ci: the `release` job now `needs: installers` as well as `check` and `build`; it publishes only when both installer smoke tests passed. The smoke covers linux-x64 (install.sh) and windows-x64 (install.ps1) and re-packs the same build output — the published archives are not byte-identical, and macOS/arm64 and the snaps are built but never installed or run

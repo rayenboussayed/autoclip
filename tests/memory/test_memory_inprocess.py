@@ -56,33 +56,36 @@ print("done:", n, "failed:", bad)
 
 
 @pytest.mark.memory
-def test_unsilence_many_parts_stays_flat(many_parts_video: Path, tmp_path: Path, memory_results: Path) -> None:
-    """The many-parts unsilence re-encode must stay tiny (chain, not compose)."""
-    workdir = memory_results / "unsilence-out"
+def test_optimizer_many_parts_stays_flat(many_parts_video: Path, tmp_path: Path, memory_results: Path) -> None:
+    """The many-parts optimizer must remain below the same bounded-footprint budget as the old chain re-encode."""
+    workdir = memory_results / "optimizer-out"
     snippet = """
 import sys
 from pathlib import Path
-import autoclip.core.unsilence as unsilence_module
-unsilence_module.UNSILENCE_MIN_TOTAL_SECONDS = 0.1
+import autoclip.core.optimizer as optimizer
+optimizer.UNSILENCE_MIN_TOTAL_SECONDS = 0.1
+from autoclip.core.optimizer import prepare_source
 from autoclip.core.config import parse, Config
-from autoclip.core.unsilence import remove_silence
+from autoclip.core.media import probe
 from autoclip.core.log import setup_logging
-from pathlib import Path
 
 src, out = Path(sys.argv[1]), Path(sys.argv[2])
 out.mkdir(parents=True, exist_ok=True)
 setup_logging(out / "run.log", "INFO", None)
 cfg = parse(Config, {"quality": "lowest"})
-result = remove_silence(src, cfg, out / "clean.mp4")
-print("out:", result)
+work = out / ".work"
+info = probe(src)
+prepared = prepare_source(src, cfg, info, work)
+print("out:", prepared.path)
 """
-    code, samples = run_python(snippet, [str(many_parts_video), str(workdir)], out_dir=tmp_path / "case-unsilence")
+    code, samples = run_python(snippet, [str(many_parts_video), str(workdir)], out_dir=tmp_path / "case-optimizer")
     assert code == 0
+    assert (workdir / ".work" / f"optimized_{many_parts_video.stem}.mp4").is_file()
     peak = peak_of(samples)
     assert len(samples) >= budgets.MIN_SAMPLES
     assert peak >= budgets.MIN_PEAK_MB * 1024 * 1024
-    assert peak / (1024 * 1024) <= budgets.UNSILENCE_MANY_PARTS_PEAK_MB, (
-        f"tree peak {peak / (1024 * 1024):.1f} MB exceeded {budgets.UNSILENCE_MANY_PARTS_PEAK_MB} MB"
+    assert peak / (1024 * 1024) <= budgets.OPTIMIZER_MANY_PARTS_PEAK_MB, (
+        f"tree peak {peak / (1024 * 1024):.1f} MB exceeded {budgets.OPTIMIZER_MANY_PARTS_PEAK_MB} MB"
     )
 
 

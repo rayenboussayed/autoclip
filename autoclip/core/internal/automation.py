@@ -33,6 +33,10 @@ __all__ = [
     "LLM_TIMEOUT",
     "LLM_TOP_K",
     "PLAYLIST_MAX_VIDEOS",
+    "SCENE_ADAPTIVE_THRESHOLD",
+    "SCENE_MIN_CONTENT_VAL",
+    "SCENE_MIN_SCENE_LEN_SECONDS",
+    "SCENE_SNAP_RADIUS_SECONDS",
     "SILENCE_KEEP_PADDING",
     "SILENCE_MIN_SECONDS",
     "SPLIT_SECONDS",
@@ -106,16 +110,16 @@ CLIP_PAD_END = 0.30
 """Seconds kept after the last word of a text-selected clip."""
 
 UNSILENCE_SILENCE_THRESHOLD_DB = -40.0
-"""pydub silence threshold used by the unsilence pre-pass."""
+"""Silence threshold used by the analysis-decode pre-pass."""
 
 UNSILENCE_MIN_SILENCE_MS = 500
-"""Minimum silence span removed by the unsilence pre-pass."""
+"""Minimum silence span removed by the optimizer pre-pass."""
 
 UNSILENCE_KEEP_SILENCE_MS = 120
-"""Silence kept on each side of a non-silent span by the unsilence pre-pass."""
+"""Silence kept on each side of a non-silent span by the optimizer pre-pass."""
 
 UNSILENCE_MIN_SEGMENT_SECONDS = 0.25
-"""Smallest non-silent span kept by the unsilence pre-pass."""
+"""Smallest non-silent span kept by the optimizer pre-pass."""
 
 DOWNLOAD_FORMAT_CANDIDATES = 3
 """How many formats the downloader tries (the best and the next two) before giving up on a video."""
@@ -187,7 +191,19 @@ SPLIT_SECONDS = 600.0
 """Length of each part in ``mode: "split"``."""
 
 UNSILENCE_MIN_TOTAL_SECONDS = 30.0
-"""Below this much removable silence the unsilence pre-pass would not pay for its re-encode."""
+"""Below this much removable silence the optimizer pre-pass would not pay for its re-encode."""
+
+SCENE_ADAPTIVE_THRESHOLD = 3.0
+"""AdaptiveDetector rolling-average sensitivity for fast cuts (lower is more sensitive)."""
+
+SCENE_MIN_CONTENT_VAL = 15.0
+"""Minimum HSV content change for a cut to qualify as a PySceneDetect shot boundary."""
+
+SCENE_MIN_SCENE_LEN_SECONDS = 0.6
+"""Shortest shot accepted by the cut detector."""
+
+SCENE_SNAP_RADIUS_SECONDS = 2.0
+"""How far a selected clip edge may move to land on a visible shot boundary."""
 
 
 def audio_fade_seconds(duration: float, *, quality: str = "high") -> float:
