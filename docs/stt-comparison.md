@@ -5,7 +5,7 @@
 >
 > The settings referenced below (`transcript.enhance`, `transcript.model`, `compute.device`,
 > `processing.chunk_minutes`) are 3.x-era names; in 4.0 they are runtime overrides (`--skip denoise`) or automatic.
-> In the next release (5.0) even the remaining machine-policy overrides are gone — the engine derives them (see `docs/UPGRADING-5.0.md`).
+> Since 4.0.2 the remaining machine-policy overrides are gone — the engine derives them (see `docs/UPGRADING-4.0.2.md`).
 > The measured results still apply.
 
 

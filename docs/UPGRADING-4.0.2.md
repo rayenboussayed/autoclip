@@ -1,6 +1,6 @@
-# Upgrading from 4.0 / 4.0.1 to 5.0
+# Upgrading from 4.0 / 4.0.1 to 4.0.2
 
-This document applies from the 5.0.0 release. The **nine config-file keys are unchanged** — no config-file edit is
+This document applies from the 4.0.2 release. The **nine config-file keys are unchanged** — no config-file edit is
 needed. What changes is the last set of *machine-policy* knobs: they are removed from the command line and the
 environment, and the resource-aware engine chooses them per run.
 

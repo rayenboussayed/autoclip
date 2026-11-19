@@ -1,10 +1,10 @@
 # Upgrading from 3.x to 4.0
 
-> **Upgrading to 5.0?** `--llm-model`, `--mode` and `--quality` (and their environment variables) are removed there;
-> see `docs/UPGRADING-5.0.md`. The 4.x tables below describe what changed in each 4.x release; the dual timelines,
-> ranges remap and silence-scan rebuild shipped after 4.0.1 and are tracked in `../CHANGELOG.md` under `[Unreleased]`.
+> **Upgrading to 4.0.2?** `--llm-model`, `--mode` and `--quality` (and their environment variables) were removed;
+> see `docs/UPGRADING-4.0.2.md`. The 4.x tables below describe what changed in each 4.x release; the dual timelines,
+> ranges remap and silence-scan rebuild shipped in 4.0.2 and are tracked in `../CHANGELOG.md`.
 
-> Documentation target: the main branch. Version 4.0.1 is the last published release; the 4.x tables below
+> Documentation target: the main branch. Version 4.0.2 is the current release; the 4.x tables below
 > are the released-line reference. See `../CHANGELOG.md` for the full release history.
 > `UPGRADING-3.0.md` covers the 2.x → 3.0 changes and is kept as history.
 
@@ -58,8 +58,8 @@ A removed key no longer exists in the file. When you set it, autoclip prints
 | Removed | Replacement |
 |---|---|
 | `output_dir` | `--output-dir DIR`, `AUTOCLIP_OUTPUT_DIR`, or the folder control in the app |
-| `mode` | `--mode performance\|resources\|balance` (`AUTOCLIP_MODE`) — flag removed in 5.0, see `UPGRADING-5.0.md` |
-| `quality` | `--quality highest\|high\|medium\|low\|lowest` (`AUTOCLIP_QUALITY`) — flag removed in 5.0, see `UPGRADING-5.0.md` |
+| `mode` | `--mode performance\|resources\|balance` (`AUTOCLIP_MODE`) — flag removed in 4.0.2, see `UPGRADING-4.0.2.md` |
+| `quality` | `--quality highest\|high\|medium\|low\|lowest` (`AUTOCLIP_QUALITY`) — flag removed in 4.0.2, see `UPGRADING-4.0.2.md` |
 | `logging` | logging is internal: DEBUG in debug mode (`AUTOCLIP_DEBUG=1`), INFO otherwise |
 | `clips.mode` | `clips.preset` for shorts/long/both; `clips.ranges` for exact cuts; `--split` for equal parts |
 | `clips.kinds`, `clips.short`, `clips.long` | `clips.preset` (the short and long profiles are built in) |
@@ -68,7 +68,7 @@ A removed key no longer exists in the file. When you set it, autoclip prints
 | `clips.snap_to_cuts` | shot-change snapping is automatic |
 | `clips.split_seconds` | `--split` |
 | `transcript` (file/consent/language) | a sidecar `.json`/`.srt` next to the video is used automatically; then a downloaded subtitle, the disk cache, then Whisper |
-| `llm` (everything but `llm.system_prompt`) | `--llm-model MODEL` (`AUTOCLIP_LLM_MODEL`/`AUTOCLIP_LLM_URL`); a local Ollama is detected automatically — flag removed in 5.0, see `UPGRADING-5.0.md` |
+| `llm` (everything but `llm.system_prompt`) | `--llm-model MODEL` (`AUTOCLIP_LLM_MODEL`/`AUTOCLIP_LLM_URL`); a local Ollama is detected automatically — flag removed in 4.0.2, see `UPGRADING-4.0.2.md` |
 | `compute`, `device` | the GPU is probed automatically and used when it works (there is no `--device` flag) |
 | `offline` | `--skip llm` controls the local LLM; Whisper model downloads are automatic |
 | `video` | the output stack (layout, background, codec, fps) is chosen automatically |
@@ -98,10 +98,10 @@ Every option that used to live in the file is now a runtime override:
 | `--output-dir DIR` | `AUTOCLIP_OUTPUT_DIR` | output folder |
 | `--cookies BROWSER\|FILE` | `AUTOCLIP_COOKIES` | cookies for downloads |
 | `--skip NAME` | `AUTOCLIP_SKIP` | skip pipeline steps (comma separated) |
-| `--llm-model MODEL` | `AUTOCLIP_LLM_MODEL` / `AUTOCLIP_LLM_URL` | local LLM model / URL — removed in 5.0, see `UPGRADING-5.0.md` |
+| `--llm-model MODEL` | `AUTOCLIP_LLM_MODEL` / `AUTOCLIP_LLM_URL` | local LLM model / URL — removed in 4.0.2, see `UPGRADING-4.0.2.md` |
 | `--split` | — | cut the video into equal 600 s parts |
-| `--mode …` | `AUTOCLIP_MODE` | performance/resources/balance — removed in 5.0, see `UPGRADING-5.0.md` |
-| `--quality …` | `AUTOCLIP_QUALITY` | output quality tier — removed in 5.0, see `UPGRADING-5.0.md` |
+| `--mode …` | `AUTOCLIP_MODE` | performance/resources/balance — removed in 4.0.2, see `UPGRADING-4.0.2.md` |
+| `--quality …` | `AUTOCLIP_QUALITY` | output quality tier — removed in 4.0.2, see `UPGRADING-4.0.2.md` |
 
 Env values apply first; an explicit flag always wins. The desktop app keeps the same overrides in its controls.
 
@@ -140,6 +140,6 @@ backend is logged and skipped, never fatal.
 - `--init` writes a seven-key starter; `--init-full` writes every option with its default (it was briefly true that both wrote the same file; they differ by design).
 - The desktop app has four config tabs now: *Videos*, *Clips*, *Download*, *AI* (plus a runtime output-folder control that is
   never written to the config file).
-- Version string: 4.0.1 (`pyproject.toml`, `autoclip/__init__.py`, `snapcraft.yaml`).
+- Version string: 4.0.2 (`pyproject.toml`, `autoclip/__init__.py`, `snapcraft.yaml`).
 
 See also: `docs/options-reference.md` for the generated reference of the nine keys.

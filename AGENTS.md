@@ -17,7 +17,7 @@ render (enhance audio, cut pauses/fillers, layout, burn captions, encode on GPU 
 * Runs on Linux, macOS and Windows, Python >= 3.11 (developed and verified on 3.12). No system ffmpeg required.
 * Four parts: `core` (the engine), `cli` (the command line), `app` (the desktop app, Tk) and `server` (the optional
   FastAPI/WebSocket service).
-* Version 4.0.1 (see `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml`). ~12,000 lines of
+* Version 4.0.2 (see `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml`). ~12,000 lines of
   package code across `core`/`cli`/`app`/`server`, ~14,400 lines of tests (100% statement + branch coverage).
 
 ## 2. Commands
@@ -165,7 +165,7 @@ tools/            frozen_entry.py - the frozen build's entry point: freeze_suppo
                   verify_output.py - development aid: checks a finished output directory
 docs/             stt-comparison.md - the measured comparison of transcription models and denoisers
                  memory-regression.md - the memory suite: budgets, recalibration rules, known limits
-                 UPGRADING-4.0.md - the 3.x -> 4.0 migration; UPGRADING-5.0.md - the 4.0 -> 5.0 one (engine-derived quality/mode/LLM)
+                 UPGRADING-4.0.md - the 3.x -> 4.0 migration; UPGRADING-4.0.2.md - the 4.0.1 → 4.0.2 one (engine-derived quality/mode/LLM)
 AGENTS.md        this file (guidance for coding agents)
 pyproject.toml    deps, ruff, mypy(strict), pytest(+coverage gate, `network` marker), coverage(multiprocessing)
 .github/workflows/ci.yml       ubuntu/macos/windows x py3.11/3.12/3.13 (reusable for build.yml on main; standalone for other branches), then re-run with Pillow>=12.3

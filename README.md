@@ -307,7 +307,7 @@ autoclip measures the machine once per run (cores, free RAM) and picks the encod
 | `medium` | 60% | capped at 30 fps | 128 kbps AAC |
 | `low` | 40% | capped at 24 fps | 96 kbps AAC |
 
-`high` (the 4.0/4.0.1 default) is used by any normal desktop (4+ cores and ≥ 3 GiB free RAM); weaker machines are stepped
+`high` (the default since 4.0) is used by any normal desktop (4+ cores and ≥ 3 GiB free RAM); weaker machines are stepped
 down to `medium` (2 cores, ≥ 2 GiB) and then `low`. A GPU only affects speed, never the tier or the picture. The chosen
 level also selects CPU/GPU encoder arguments; there are no knobs for CRF, FFmpeg presets, bitrates or frame rates.
 Dimensions are rounded to even numbers and the source is never enlarged.
@@ -521,8 +521,8 @@ See `docs/options-reference.md` for every option and its explanation (this is th
 ## Upgrading from 3.x
 
 See `docs/UPGRADING-4.0.md` for the nine-key schema, the removed-key → runtime replacement table, the
-`--flag` / `AUTOCLIP_*` equivalents, and the behaviour that is automatic now; `docs/UPGRADING-5.0.md` covers the
-4.0 → 5.0 release (the last machine-policy knobs are removed; the engine chooses them). `UPGRADING-3.0.md` covers the
+`--flag` / `AUTOCLIP_*` equivalents, and the behaviour that is automatic now; `docs/UPGRADING-4.0.2.md` covers the
+4.0.1 → 4.0.2 release (the last machine-policy knobs are removed; the engine chooses them). `UPGRADING-3.0.md` covers the
 2.x → 3.0 changes and is kept as history. 4.0 was a breaking config-schema release: old config files still load
 (removed keys warn and are ignored), but their replacements moved to flags, environment variables or - for the machine
 settings - to nothing at all, because the engine chooses them.
@@ -552,7 +552,7 @@ command. Metadata files (`.info.json`, thumbnail, description) are written next 
 
 ## Changelog
 
-See [`CHANGELOG.md`](CHANGELOG.md) for release-by-release notes. The current code is version `4.0.1`.
+See [`CHANGELOG.md`](CHANGELOG.md) for release-by-release notes. The current code is version `4.0.2`.
 
 ## Development
 
