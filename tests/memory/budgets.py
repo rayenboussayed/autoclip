@@ -9,8 +9,8 @@ Measured on 2026-11-13 and 2026-11-18 on a 16-core Linux 3.14/3.13 machine; M1/M
 
 from __future__ import annotations
 
-# M1: in-process process_video on the 40 s fixture (short-clips preset, ranges mode)
-PROCESS_VIDEO_PEAK_MB = 900.0  # measured 534 MB -> x1.7 headroom
+# M1: in-process process_video on the 40 s fixture (short-clips preset, ranges mode, quality pinned "low")
+PROCESS_VIDEO_PEAK_MB = 1500.0  # measured 837 MB locally / 1027 MB on CI, 2026-11-19 (the lowest internal tier since 5.0; recalibrated)
 
 # M2: prepare_source on a 120 s many-parts source; FFmpeg segments replace MoviePy assembly
 OPTIMIZER_MANY_PARTS_PEAK_MB = 400.0  # measured 2026-11-18: 246 MB  # measured ~93 MB; regression guard, any order above this is wrong
