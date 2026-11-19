@@ -245,9 +245,12 @@ def test_source_mtime_change_invalidates_the_reuse(media: Media, tmp_path: Path,
     cfg = make_cfg(media, tmp_path, None)
     info = probe(media.video)
     monkeypatch.setattr(optimizer, "UNSILENCE_MIN_TOTAL_SECONDS", 0.0)
-    first = prepare_source(media.video, cfg, info, tmp_path / "work")
-    os.utime(media.video, (first.path.stat().st_atime_ns, first.path.stat().st_mtime_ns + 1_000_000))
-    assert optimizer._load_reused_assembly(media.video, cfg, tmp_path / "work", info) is None
+    other = tmp_path / "stale-copy.mp4"
+    other.write_bytes(media.video.read_bytes())
+    prepare_source(other, cfg, probe(other), tmp_path / "work")
+    st = other.stat()
+    os.utime(other, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    assert optimizer._load_reused_assembly(other, cfg, tmp_path / "work", info) is None
 
 
 def test_corrupt_reuse_manifests_rebuild_the_assembly(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
