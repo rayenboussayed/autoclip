@@ -30,7 +30,7 @@ from .resources import RESOURCES
 from .runner import render_all
 from .scenes import detect_scenes
 from .store import Cache, ClipRow, Store
-from .transcript import get_transcript
+from .transcript import FusedStt, get_transcript, transcript_model
 
 log = logging.getLogger("autoclip")
 
@@ -192,7 +192,18 @@ def process_video(
     work = root / ".work" / stem
     work.mkdir(parents=True, exist_ok=True)
     log.info("system health before the optimizer: %s", health_check("optimizer"))
-    prepared = prepare_source(original_source, cfg, original_info, work, cancel=cancel)
+    want_text = needs_text(cfg) and not cfg.skip.stt and original_info.has_audio
+    # Choose the Whisper model once: both the fused pass and get_transcript must key the same cache.
+    selected_model = transcript_model() if want_text else ""
+    fused = FusedStt(original_source, cfg, work, stem, want_text, selected_model, subtitle=subtitle) if want_text else None
+    prepared = prepare_source(
+        original_source,
+        cfg,
+        original_info,
+        work,
+        cancel=cancel,
+        stt_factory=fused.plan if fused is not None else None,
+    )
     src, info, cutmap = prepared.path, prepared.info, prepared.cutmap
     db = prepared.energy_db
     if prepared.path != original_source:
@@ -216,6 +227,8 @@ def process_video(
             name=stem,
             cutmap=cutmap,
             cache_source=original_source,
+            model_name_override=selected_model or None,
+            stt_failed=prepared.stt_failed,
             cancel=cancel,
         )
         if needs_text(cfg):

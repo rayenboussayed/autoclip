@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import subprocess
 import tempfile
 import time
 import wave
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -20,7 +22,8 @@ from .audio import enhance_audio
 from .config import Config
 from .cutmap import CutMap
 from .errors import AutoclipError
-from .events import CancelToken
+from .events import Cancelled, CancelToken
+from .internal import CHUNK_MINUTES
 from .internal.automation import UNSILENCE_MIN_TOTAL_SECONDS
 from .internal.quality import quality_profile
 from .log import traced
@@ -28,6 +31,8 @@ from .media import AUDIO_SR, FRAME, atomic_write_json, external_env, ffmpeg_exe,
 from .models import MediaInfo
 from .resources import RESOURCES
 from .speech import scan_audio
+
+log = logging.getLogger("autoclip")
 
 _SCHEMA = 1
 _SCANNER_SCHEMA = 1
@@ -184,11 +189,33 @@ class PreparedSource:
     cutmap: CutMap
     energy_db: Any
     audio_ready: bool
+    stt_failed: bool = False  # the fused Whisper pass failed; the run degrades to audio-only selection
+
+
+class SttPass(Protocol):
+    """The slice of a resident Whisper session the assembly drives (avoids an optimizer→transcript import)."""
+
+    failed: bool
+
+    def transcribe_chunk(self, k: int, pieces: Sequence[tuple[float, float, float]], cancel: CancelToken | None = None) -> None: ...
+    def close(self) -> None: ...
 
 
 @traced("prepare_source")
-def prepare_source(src: Path, cfg: Config, info: MediaInfo, work: Path, cancel: CancelToken | None = None) -> PreparedSource:
-    """Detect speech once, keep it when it is worthwhile, and reuse the optimized file on a clean re-run."""
+def prepare_source(
+    src: Path,
+    cfg: Config,
+    info: MediaInfo,
+    work: Path,
+    cancel: CancelToken | None = None,
+    stt_factory: Callable[[CutMap], SttPass | None] | None = None,
+) -> PreparedSource:
+    """Detect speech once, keep it when it is worthwhile, and reuse the optimized file on a clean re-run.
+
+    ``stt_factory`` optionally arms transcription inside the assembly: it is called with the cut map
+    after the speech scan, once the cheaper transcript sources (sidecar, subtitle, disk cache) have
+    been ruled out. Callers that only need the optimized video pass nothing and never load Whisper.
+    """
     reused = _load_reused_assembly(src, cfg, work, info)
     if reused is not None:
         target, cut = reused
@@ -202,16 +229,36 @@ def prepare_source(src: Path, cfg: Config, info: MediaInfo, work: Path, cancel: 
     if not scan.intervals or removable < threshold:
         return PreparedSource(src, info, CutMap.identity(info.duration), scan.energy_db, audio_ready=False)
     cut = CutMap.from_intervals(info.duration, scan.intervals)
-    target = assemble_optimized(src, info, cfg, work, cut, cancel=cancel)
+    stt_failed = False
+    stt: SttPass | None = None
+    if stt_factory is not None:
+        try:
+            stt = stt_factory(cut)
+        except Exception as e:  # arming is an optimization: never abort the assembly over it
+            log.warning("could not arm transcription (%s: %s); selecting on audio only", type(e).__name__, e)
+            stt_failed = True
+    try:
+        target = assemble_optimized(src, info, cfg, work, cut, cancel=cancel, stt=stt)
+    finally:
+        if stt is not None:
+            stt.close()
     prepared_info = probe(target)
     zeros = np.zeros(int(prepared_info.duration / FRAME) + 1, dtype=np.float32)
     energy_db = frame_energy_db(target) if prepared_info.has_audio else zeros
-    return PreparedSource(target, prepared_info, cut, energy_db, audio_ready=True)
+    return PreparedSource(target, prepared_info, cut, energy_db, audio_ready=True, stt_failed=stt_failed or bool(stt and stt.failed))
 
 
 @traced("assemble_optimized")
-def assemble_optimized(src: Path, info: MediaInfo, cfg: Config, work: Path, cut: CutMap, cancel: CancelToken | None = None) -> Path:
-    """Encode the kept intervals and concatenate them into ``.work/optimized_<stem>.mp4``."""
+def assemble_optimized(
+    src: Path,
+    info: MediaInfo,
+    cfg: Config,
+    work: Path,
+    cut: CutMap,
+    cancel: CancelToken | None = None,
+    stt: SttPass | None = None,
+) -> Path:
+    """Encode the kept intervals, transcribe each finished chunk, and concatenate into ``optimized_<stem>.mp4``."""
     work.mkdir(parents=True, exist_ok=True)
     manifest_path = work / "optimizer.json"
     segment_root = work / "optimizer"
@@ -235,7 +282,8 @@ def assemble_optimized(src: Path, info: MediaInfo, cfg: Config, work: Path, cut:
         atomic_write_json(manifest_path, manifest)
 
     segment_root.mkdir(parents=True, exist_ok=True)
-    pieces = [piece for chunk in cut.chunked_pieces(300.0) for piece in chunk]
+    chunks = cut.chunked_pieces(CHUNK_MINUTES * 60.0)
+    pieces = [piece for chunk in chunks for piece in chunk]
     expected_duration = cut.total_kept
     done: dict[int, dict[str, Any]] = {}
     for chunk in manifest.get("chunks", []):
@@ -244,50 +292,67 @@ def assemble_optimized(src: Path, info: MediaInfo, cfg: Config, work: Path, cut:
             done[index] = chunk
         except (KeyError, TypeError, ValueError):
             continue
-    for index, (source_start, source_end, optimized_start) in enumerate(pieces):
-        interval = (source_start, source_end)
-        relative = f"optimizer/{index:06d}.mp4"
-        target = work / relative
-        meta = done.get(index)
-        if (
-            meta is not None
-            and meta.get("committed")
-            and target.is_file()
-            and target.stat().st_size > 0
-            and abs(float(meta.get("source_start", -1.0)) - interval[0]) < 1e-6
-            and abs(float(meta.get("source_end", -1.0)) - interval[1]) < 1e-6
-        ):
-            continue
-        part = target.with_suffix(_STALE_PATCH)
-        part.unlink(missing_ok=True)
-        wav: Path | None = None
-        try:
-            if cfg.skip.audio or not info.has_audio or (cfg.skip.audio_enhance and cfg.skip.denoise):
-                _run(_segment_command(src, None, interval, info, cfg, part), cancel=cancel)
-            else:
-                wav = _wav_path(work, index)
-                _write_enhanced_wav(src, source_start, source_end, RESOURCES.encoding_thread_budget(), cfg, wav)
-                _run(_segment_command(src, wav, interval, info, cfg, part), cancel=cancel)
-            os.replace(part, target)
-            done[index] = {
-                "index": index,
-                "source_start": interval[0],
-                "source_end": interval[1],
-                "optimized_start": optimized_start,
-                "committed": True,
-            }
-            payload = {
-                "schema": _SCHEMA,
-                "source_fingerprint": assembly_key,
-                "scanner": _SCANNER_SCHEMA,
-                "cut_fingerprint": cut.fingerprint,
-                "chunks": [done[i] for i in sorted(done)],
-            }
-            atomic_write_json(manifest_path, payload)
-        finally:
-            if wav is not None:
-                wav.unlink(missing_ok=True)
+    base = 0
+    for chunk_number, chunk_pieces in enumerate(chunks, 1):
+        for offset, (source_start, source_end, optimized_start) in enumerate(chunk_pieces):
+            index = base + offset  # flat index: matches the manifest's piece numbering
+            interval = (source_start, source_end)
+            relative = f"optimizer/{index:06d}.mp4"
+            target = work / relative
+            meta = done.get(index)
+            if (
+                meta is not None
+                and meta.get("committed")
+                and target.is_file()
+                and target.stat().st_size > 0
+                and abs(float(meta.get("source_start", -1.0)) - interval[0]) < 1e-6
+                and abs(float(meta.get("source_end", -1.0)) - interval[1]) < 1e-6
+            ):
+                continue
+            part = target.with_suffix(_STALE_PATCH)
             part.unlink(missing_ok=True)
+            wav: Path | None = None
+            try:
+                if cfg.skip.audio or not info.has_audio or (cfg.skip.audio_enhance and cfg.skip.denoise):
+                    _run(_segment_command(src, None, interval, info, cfg, part), cancel=cancel)
+                else:
+                    wav = _wav_path(work, index)
+                    _write_enhanced_wav(src, source_start, source_end, RESOURCES.encoding_thread_budget(), cfg, wav)
+                    _run(_segment_command(src, wav, interval, info, cfg, part), cancel=cancel)
+                os.replace(part, target)
+                done[index] = {
+                    "index": index,
+                    "source_start": interval[0],
+                    "source_end": interval[1],
+                    "optimized_start": optimized_start,
+                    "committed": True,
+                }
+                payload = {
+                    "schema": _SCHEMA,
+                    "source_fingerprint": assembly_key,
+                    "scanner": _SCANNER_SCHEMA,
+                    "cut_fingerprint": cut.fingerprint,
+                    "chunks": [done[i] for i in sorted(done)],
+                }
+                atomic_write_json(manifest_path, payload)
+            finally:
+                if wav is not None:
+                    wav.unlink(missing_ok=True)
+                part.unlink(missing_ok=True)
+        base += len(chunk_pieces)
+        if stt is not None and not stt.failed:
+            # Outside the per-piece resume check: a chunk whose pieces were already committed
+            # still needs its transcript row, e.g. after a crash between encode and STT.
+            # After a failure we stop transcribing so `done` stays a contiguous prefix.
+            if cancel is not None:
+                cancel.check()
+            try:
+                stt.transcribe_chunk(chunk_number, chunk_pieces, cancel=cancel)
+            except Cancelled:
+                raise
+            except Exception as e:
+                log.warning("transcription skipped (%s: %s): selecting on audio only", type(e).__name__, e)
+                stt.failed = True
 
     list_file = segment_root / "list.txt"
     # Fixed names, relative paths, and cwd below make the manifest immune to hostile source names.

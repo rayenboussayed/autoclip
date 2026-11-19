@@ -4,6 +4,12 @@ All notable changes to autoclip, newest first. Release timestamps come from
 Git tags (and commit metadata for untagged but version-stamped commits). Each
 release mentions the source tag/commit for traceability.
 
+## [Unreleased]
+
+- feat: Whisper now runs inside the silence-removal assembly when that stage rebuilds the source: each bounded 5-minute chunk is transcribed as soon as its FFmpeg segments are committed, with per-chunk playback/source offsets and one resumable `.transcript.partial.jsonl` ledger; a reused assembly, a cached/sidecar/subtitle transcript or a short file keeps the standalone pass. Both paths share one `WhisperSession` implementation and load at most one Whisper model per run; a fused STT failure never aborts the assembly (the run selects on audio only). When a cheaper transcript source wins, the non-fused path in `get_transcript` handles it (it may never reach `transcribe`). No config, cache-format or CLI change.
+- test: unit and end-to-end coverage for the fused path, its arming rules, crash/cancel/failure behaviour and complete-partial replay; all new branches covered (the CI matrix's 100 % gate remains authoritative).
+- fix: cancellation during transcription now propagates to the caller instead of being swallowed as an audio-only fallback.
+
 ## [4.0.2] — 2026-11-19 11:35:00 UTC (tag `v4.0.2`)
 
 - feat: **breaking**: the last machine-policy knobs are gone — the `--quality`, `--mode` and `--llm-model` flags, the `AUTOCLIP_QUALITY` / `AUTOCLIP_MODE` / `AUTOCLIP_LLM_MODEL` / `AUTOCLIP_LLM_URL` environment variables, the server's `MAX_CONCURRENT_JOBS` environment variable, and the `RuntimeOverrides.quality` / `.mode` / `.llm_base_url` / `.llm_model` fields in the Python API; the resource-aware engine now measures the machine per run (cores, free RAM) and picks the encode tier (`high`/`medium`/`low`), the performance profile (`performance`/`resources`/`balance`), the local Ollama model (the largest installed model whose on-disk size fits inside half of the free RAM, falling back to the smallest known one; an unreachable server disables the AI helpers) and the server's job ceiling (`min(4, cpus // 2, free_ram / 1.5 GiB)` with a floor of one, derived once per process at the first job and logged as `automation max_concurrent_jobs=N`); the nine config-file keys are unchanged (see `docs/UPGRADING-4.0.2.md`)

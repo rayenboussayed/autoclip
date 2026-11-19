@@ -8,6 +8,7 @@ import os
 import re
 import time
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,7 @@ from .config import Config
 from .cutmap import CutMap
 from .denoise import SpeechEnhancer, default_models_dir
 from .errors import AutoclipError
-from .events import CancelToken
+from .events import Cancelled, CancelToken
 from .internal import CHUNK_MINUTES as _CHUNK_MINUTES
 from .internal.automation import ENHANCE_ATTENUATION_DB, ENHANCE_SNR_THRESHOLD_DB, transcription_beam_size
 from .internal.runtime import whisper_model_for
@@ -265,14 +266,27 @@ def _device_failure(attempts: list[tuple[str, Exception]]) -> str:
 
 
 def _partial_append(path: Path, header: dict[str, Any], row: dict[str, Any]) -> None:
-    """Append one resumable chunk record; a stale partial is replaced wholesale first."""
+    """Append one resumable chunk record; a stale or torn partial is repaired first."""
     header_line = json.dumps(header, ensure_ascii=False, separators=(",", ":")) + "\n"
     stale = False
     if path.exists():
         try:
-            stale = path.read_text(encoding="utf-8").splitlines()[0] != header_line.rstrip("\n")
-        except (OSError, IndexError):
-            stale = True
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines, stale = [], True
+        stale = True if not lines else lines[0] != header_line.rstrip("\n")
+        if not stale:
+            good = [lines[0]]
+            for line in lines[1:]:
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError:
+                    break  # a crash mid-write left a torn line: keep the valid prefix
+                if not isinstance(parsed, dict) or parsed.get("type") != "chunk" or not isinstance(parsed.get("rows"), list):
+                    break
+                good.append(line)
+            if len(good) != len(lines):
+                path.write_text("\n".join(good) + "\n", encoding="utf-8")
     if not path.exists() or stale:
         path.write_text(header_line, encoding="utf-8")
     with path.open("a", encoding="utf-8") as part:
@@ -343,6 +357,201 @@ def _map_local_time(t: float, pieces: Sequence[tuple[float, float, float]]) -> t
     return 0.0, 0.0
 
 
+class WhisperSession:
+    """One resident Whisper model for a whole transcription pass (standalone or fused into the assembly).
+
+    The model is loaded lazily on the first chunk: when the partial cache already holds every
+    chunk, the transcript is replayed without touching ``faster_whisper`` at all.
+    """
+
+    def __init__(
+        self,
+        src: Path,
+        *,
+        enhancer: SpeechEnhancer | None = None,
+        model_name_override: str | None = None,
+        partial_path: Path | None = None,
+        partial_meta: Mapping[str, Any] | None = None,
+        chunk_count: int = 0,
+    ) -> None:
+        self.src = src
+        self.enhancer = enhancer
+        self.model_name_override = model_name_override
+        self.partial_path, self.partial_meta = partial_path, partial_meta
+        self.chunk_count = chunk_count
+        self.raw, self.language, self.start_chunk = (
+            _partial_load(partial_path, partial_meta, chunk_count)
+            if partial_path is not None and partial_meta is not None
+            else ([], None, 0)
+        )
+        self._model: Any = None
+        self._device = ""
+        self._model_name = ""
+        self._attempts: list[tuple[str, Exception]] = []
+        self._vad = True
+        self.failed = False  # set by the assembly if a fused chunk fails; the run then degrades to audio-only
+        if self.start_chunk:
+            log.info("resuming transcript from partial cache after chunk %d", self.start_chunk)
+
+    @property
+    def complete(self) -> bool:
+        """Whether the partial cache already holds every chunk (no model needed)."""
+        return self.chunk_count > 0 and self.start_chunk >= self.chunk_count
+
+    def _load(self, dev: str) -> Any:
+        from faster_whisper import WhisperModel
+
+        return WhisperModel(
+            self._model_name,
+            device=dev,
+            compute_type="float16" if dev == "cuda" else "int8",
+            cpu_threads=RESOURCES.cpu_budget(),
+            local_files_only=True,
+        )
+
+    def _load_cpu(self) -> None:
+        try:
+            self._model = self._load("cpu")
+        except Exception as ce:
+            self._attempts.append(("cpu", ce))
+            raise AutoclipError(f"Whisper failed on every available device ({_device_failure(self._attempts)})") from ce
+
+    def ensure_model(self) -> None:
+        if self._model is not None:
+            return
+        device = asr_device()
+        # The override is already the model chosen for this run; re-fitting it here would let a
+        # transient RAM reading produce rows under a different key than the one we record.
+        self._model_name = self.model_name_override or transcript_model()
+        # Whisper models download automatically on first use (consent is not a configuration option)
+        if not _model_is_cached(self._model_name):
+            _download_model(self._model_name)
+        if device == "cuda":
+            try:
+                self._model = self._load(device)
+                _warmup_model(self._model)
+            except Exception as e:
+                log.warning("the CUDA runtime cannot run Whisper (%s): using the CPU", e)
+                self._attempts.append(("cuda", e))
+                _release_whisper(self._model)
+                device = "cpu"
+                self._model_name = fit_whisper_model(self._model_name, device)  # a GPU-sized pick is re-fit for the CPU
+                self._load_cpu()
+        else:
+            try:
+                self._model = self._load(device)
+            except Exception as e:
+                self._attempts.append(("cpu", e))
+                raise AutoclipError(f"Whisper failed on every available device ({_device_failure(self._attempts)})") from e
+        self._device = device
+        log.info(
+            "whisper model=%s device=%s%s cpu_threads=%d",
+            self._model_name,
+            device,
+            " (GPU)" if device == "cuda" else "",
+            RESOURCES.cpu_budget(),
+        )
+
+    def transcribe_chunk(
+        self,
+        k: int,
+        pieces: Sequence[tuple[float, float, float]],
+        cancel: CancelToken | None = None,
+    ) -> None:
+        """Transcribe one already-decoded chunk and append its rows to the partial cache."""
+        if k <= self.start_chunk or not pieces:
+            return
+        self.ensure_model()
+        if cancel is not None:
+            cancel.check()
+        audio = np.concatenate([decode_audio(self.src, start, end - start, WHISPER_SR) for start, end, _ in pieces])
+        if self.enhancer is not None:
+            audio = self.enhancer(audio)
+        while True:
+            try:
+                stream, found = self._model.transcribe(
+                    audio,
+                    vad_filter=self._vad,
+                    word_timestamps=True,
+                    language=self.language,
+                    condition_on_previous_text=False,
+                    beam_size=transcription_beam_size(self._device),
+                    multilingual=True,
+                )
+                chunk_rows: list[dict[str, Any]] = []
+                for seg in stream:
+                    word_rows = []
+                    for word in seg.words or []:
+                        playback_start, source_start = _map_local_time(float(word.start), pieces)
+                        playback_end, source_end = _map_local_time(float(word.end), pieces)
+                        word_rows.append(
+                            {
+                                "start": playback_start,
+                                "end": playback_end,
+                                "word": word.word,
+                                "source_start": source_start,
+                                "source_end": source_end,
+                            }
+                        )
+                    playback_start, source_start = _map_local_time(float(seg.start), pieces)
+                    playback_end, source_end = _map_local_time(float(seg.end), pieces)
+                    chunk_rows.append(
+                        {
+                            "start": playback_start,
+                            "end": playback_end,
+                            "text": seg.text,
+                            "source_start": source_start,
+                            "source_end": source_end,
+                            "words": word_rows,
+                        }
+                    )
+                if cancel is not None:
+                    cancel.check()
+                self.raw.extend(chunk_rows)
+                self.language = self.language or found.language
+                if self.partial_path is not None and self.partial_meta is not None:
+                    _partial_append(
+                        self.partial_path,
+                        {"type": "meta", "meta": dict(self.partial_meta), "format": TRANSCRIPT_CACHE_FORMAT},
+                        {"type": "chunk", "done": k, "language": self.language, "rows": chunk_rows},
+                    )
+                del audio
+                log.info(
+                    "  transcribed chunk %d/%d (%.0f-%.0fs): %d segments so far",
+                    k,
+                    self.chunk_count,
+                    pieces[0][0],
+                    sum(end - start for start, end, _ in pieces),
+                    len(self.raw),
+                )
+                break
+            except Cancelled:
+                raise
+            except Exception as e:
+                if self._vad and _vad_failure(e):
+                    log.warning("VAD failed on %s (%s); retrying this chunk without VAD", _device_label(self._device), e)
+                    self._vad = False
+                    continue
+                if self._device == "cuda":
+                    log.warning("Whisper failed on the GPU for this chunk (%s); retrying on the CPU", e)
+                    self._attempts.append(("cuda", e))
+                    self._device = "cpu"
+                    _release_whisper(self._model)
+                    self._model = None
+                    self._load_cpu()  # no re-fit here: the same model name is used on the CPU
+                    continue
+                self._attempts.append(("cpu", e))
+                raise AutoclipError(f"Whisper failed on every available device ({_device_failure(self._attempts)})") from e
+
+    def close(self) -> None:
+        """Release the native model and enhancer (idempotent)."""
+        _release_whisper(self._model)
+        self._model = None
+        if self.enhancer is not None:
+            self.enhancer.close()
+            self.enhancer = None
+
+
 @traced("transcribe")
 def transcribe(
     src: Path,
@@ -357,164 +566,76 @@ def transcribe(
     partial_meta: Mapping[str, Any] | None = None,
     cancel: CancelToken | None = None,
 ) -> list[Segment]:
-    from faster_whisper import WhisperModel
-
+    """Transcribe one source, chunk by chunk, reusing a single resident Whisper model."""
     cutmap = cutmap or CutMap.identity(info.duration)
     chunks = list(chunks) if chunks is not None else cutmap.chunked_pieces(_CHUNK_MINUTES * 60.0)
-    device = asr_device()
-    model_name = model_name_override or transcript_model()
-    model_name = fit_whisper_model(model_name, device)
-    threads = RESOURCES.cpu_budget()
-    # Whisper models download automatically on first use (consent is not a configuration option)
-    if not _model_is_cached(model_name):
-        _download_model(model_name)
-
-    attempts: list[tuple[str, Exception]] = []
-
-    def load(dev: str) -> Any:
-        return WhisperModel(
-            model_name,
-            device=dev,
-            compute_type="float16" if dev == "cuda" else "int8",
-            cpu_threads=threads,
-            local_files_only=True,
-        )
-
-    model: Any = None
-    if device == "cuda":
-        try:
-            model = load(device)
-            _warmup_model(model)
-        except Exception as e:
-            log.warning("the CUDA runtime cannot run Whisper (%s): using the CPU", e)
-            attempts.append(("cuda", e))
-            _release_whisper(model)
-            device = "cpu"
-            model_name = fit_whisper_model(model_name, device)  # a GPU-sized pick is re-fit for the CPU
-            try:
-                model = load(device)
-            except Exception as ce:
-                attempts.append(("cpu", ce))
-                raise AutoclipError(f"Whisper failed on every available device ({_device_failure(attempts)})") from ce
-    else:
-        try:
-            model = load(device)
-        except Exception as e:
-            attempts.append(("cpu", e))
-            raise AutoclipError(f"Whisper failed on every available device ({_device_failure(attempts)})") from e
-
-    log.info("whisper model=%s device=%s%s cpu_threads=%d", model_name, device, " (GPU)" if device == "cuda" else "", threads)
-    language, t0 = None, time.perf_counter()
-    raw, language, start_chunk = (
-        _partial_load(partial_path, partial_meta, len(chunks)) if partial_path is not None and partial_meta is not None else ([], None, 0)
+    t0 = time.perf_counter()
+    session = WhisperSession(
+        src,
+        enhancer=enhancer,
+        model_name_override=model_name_override,
+        partial_path=partial_path,
+        partial_meta=partial_meta,
+        chunk_count=len(chunks),
     )
-    if start_chunk:
-        log.info("resuming transcript from partial cache after chunk %d", start_chunk)
-    vad = True
+    language = session.language
     try:
-        for k, pieces in enumerate(chunks, 1):
-            if cancel is not None:
-                cancel.check()
-            if k <= start_chunk:
-                continue
-            if not pieces:
-                continue
-            audio = np.concatenate([decode_audio(src, start, end - start, WHISPER_SR) for start, end, _ in pieces])
-            if enhancer is not None:
-                audio = enhancer(audio)
-            while True:
-                options: dict[str, Any] = {"multilingual": True}
-                try:
-                    stream, found = model.transcribe(
-                        audio,
-                        vad_filter=vad,
-                        word_timestamps=True,
-                        language=language,
-                        condition_on_previous_text=False,
-                        beam_size=transcription_beam_size(device),
-                        **options,
-                    )
-                    chunk_rows: list[dict[str, Any]] = []
-                    for seg in stream:
-                        word_rows = []
-                        for word in seg.words or []:
-                            playback_start, source_start = _map_local_time(float(word.start), pieces)
-                            playback_end, source_end = _map_local_time(float(word.end), pieces)
-                            word_rows.append(
-                                {
-                                    "start": playback_start,
-                                    "end": playback_end,
-                                    "word": word.word,
-                                    "source_start": source_start,
-                                    "source_end": source_end,
-                                }
-                            )
-                        playback_start, source_start = _map_local_time(float(seg.start), pieces)
-                        playback_end, source_end = _map_local_time(float(seg.end), pieces)
-                        chunk_rows.append(
-                            {
-                                "start": playback_start,
-                                "end": playback_end,
-                                "text": seg.text,
-                                "source_start": source_start,
-                                "source_end": source_end,
-                                "words": word_rows,
-                            }
-                        )
-                    old_count = len(raw)
-                    if cancel is not None:
-                        cancel.check()
-                    raw.extend(chunk_rows)
-                    language = language or found.language
-                    if partial_path is not None and partial_meta is not None:
-                        new_rows = raw[old_count:]
-                        _partial_append(
-                            partial_path,
-                            {"type": "meta", "meta": dict(partial_meta), "format": TRANSCRIPT_CACHE_FORMAT},
-                            {"type": "chunk", "done": k, "language": language, "rows": new_rows},
-                        )
-                    del audio
-
-                    log.info(
-                        "  transcribed chunk %d/%d (%.0f-%.0fs): %d segments so far, %.0fs elapsed",
-                        k,
-                        len(chunks),
-                        pieces[0][0],
-                        sum(end - start for start, end, _ in pieces),
-                        len(raw),
-                        time.perf_counter() - t0,
-                    )
-                    break
-                except Exception as e:
-                    if vad and _vad_failure(e):
-                        log.warning("VAD failed on %s (%s); retrying this chunk without VAD", _device_label(device), e)
-                        vad = False
-                        continue
-                    if device == "cuda":
-                        log.warning("Whisper failed on the GPU for this chunk (%s); retrying on the CPU", e)
-                        attempts.append(("cuda", e))
-                        device = "cpu"
-                        _release_whisper(model)
-                        try:
-                            model = load(device)
-                        except Exception as ce:
-                            attempts.append(("cpu", ce))
-                            raise AutoclipError(f"Whisper failed on every available device ({_device_failure(attempts)})") from ce
-                        continue
-                    attempts.append(("cpu", e))
-                    raise AutoclipError(f"Whisper failed on every available device ({_device_failure(attempts)})") from e
+        if not session.complete:
+            session.ensure_model()  # standalone transcription always loads once, even for empty chunks
+            for k, pieces in enumerate(chunks, 1):
+                if cancel is not None:
+                    cancel.check()
+                session.transcribe_chunk(k, pieces, cancel=cancel)
+            language = session.language
     finally:
-        _release_whisper(model)
-        if enhancer is not None:
-            enhancer.close()
+        session.close()
     log.info(
         "  language %s, %d segments in %.1fs (%s)",
         language,
-        len(raw),
+        len(session.raw),
         time.perf_counter() - t0,
         speed_text(info.duration, time.perf_counter() - t0),
     )
-    return to_segments(raw)
+    return to_segments(session.raw)
+
+
+@dataclass(frozen=True, slots=True)
+class FusedStt:
+    """Arm the in-assembly Whisper pass only when the standalone pass would have run anyway.
+
+    The cut map is only available after the speech scan, so the decision is a factory called by
+    ``prepare_source`` once the kept intervals are known.
+    """
+
+    src: Path
+    cfg: Config
+    work: Path
+    stem: str
+    want: bool
+    model_name: str
+    subtitle: Path | None = None
+
+    def plan(self, cut: CutMap) -> WhisperSession | None:
+        """Return a ready session, or ``None`` when a cheaper transcript source wins."""
+        if not self.want or self.subtitle is not None or _sidecar_transcript(self.src) is not None:
+            return None
+        key = _cache_key(self.src, self.model_name, cut, enhance=not self.cfg.skip.denoise)
+        if _load_cached_transcript(self.work / f"{self.stem}.transcript.json", key):
+            return None
+        chunks = cut.chunked_pieces(_CHUNK_MINUTES * 60.0)
+        session = WhisperSession(
+            self.src,
+            model_name_override=self.model_name,
+            partial_path=self.work / f"{self.stem}.transcript.partial.jsonl",
+            partial_meta=key,
+            chunk_count=len(chunks),
+        )
+        if session.complete:
+            session.close()  # nothing to do: get_transcript will replay the completed partial
+            return None
+        if not self.cfg.skip.denoise:
+            session.enhancer = SpeechEnhancer(True, default_models_dir())
+        return session
 
 
 TRANSCRIPT_CACHE_FORMAT = 2
@@ -538,6 +659,24 @@ def _cache_key(src: Path, model: str, cutmap: CutMap, *, enhance: bool = True) -
         ),
         "chunk_minutes": _CHUNK_MINUTES,
     }
+
+
+def _load_cached_transcript(cache_file: Path, key: Mapping[str, Any]) -> list[Segment]:
+    """The cached segments when the cache matches ``key``; an empty list otherwise."""
+    if not cache_file.exists():
+        return []
+    try:
+        data = json.loads(cache_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
+            raise ValueError("the cached transcript does not contain a segment list")
+        if data.get("meta") == key and data.get("format") == TRANSCRIPT_CACHE_FORMAT:
+            segments = to_segments(data["segments"])
+            log.info("reusing cached transcript %s (%d segments)", cache_file.name, len(segments))
+            return segments
+        log.warning("cached transcript is stale (input, model, language or optimized timeline changed): transcribing again")
+    except (OSError, json.JSONDecodeError, TypeError, KeyError, ValueError) as exc:
+        log.warning("cached transcript '%s' is unreadable (%s): transcribing again", cache_file.name, exc)
+    return []
 
 
 def _sidecar_transcript(src: Path) -> Path | None:
@@ -584,6 +723,8 @@ def get_transcript(
     name: str | None = None,
     cutmap: CutMap | None = None,
     cache_source: Path | None = None,
+    model_name_override: str | None = None,
+    stt_failed: bool = False,
     cancel: CancelToken | None = None,
 ) -> bool:
     """Put the transcript of ``src`` into ``store`` (sidecar file, downloaded subtitles, disk cache or Whisper).
@@ -607,24 +748,14 @@ def get_transcript(
         if downloaded:
             store.put_segments(downloaded)
             return True
-    selected_model = transcript_model()
+    selected_model = model_name_override or transcript_model()
     cache_file, key = work_dir / f"{stem}.transcript.json", _cache_key(cache_src, selected_model, cutmap, enhance=not cfg.skip.denoise)
     partial = work_dir / f"{stem}.transcript.partial.jsonl"
-    cached_segments: list[Segment] = []
-    if cache_file.exists():
-        try:
-            data = json.loads(cache_file.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
-                raise ValueError("the cached transcript does not contain a segment list")
-            if data.get("meta") == key and data.get("format") == TRANSCRIPT_CACHE_FORMAT:
-                cached_segments = to_segments(data["segments"])
-                log.info("reusing cached transcript %s (%d segments)", cache_file.name, len(cached_segments))
-            else:
-                log.warning("cached transcript is stale (input, model, language or optimized timeline changed): transcribing again")
-        except (OSError, json.JSONDecodeError, TypeError, KeyError, ValueError) as exc:
-            log.warning("cached transcript '%s' is unreadable (%s): transcribing again", cache_file.name, exc)
-    segments = cached_segments
+    segments = _load_cached_transcript(cache_file, key)
     if not segments:
+        if stt_failed:
+            log.warning("transcription was disabled after a failure while assembling; selecting on audio only")
+            return False  # the partial is kept so a later run can resume it
         if cfg.skip.stt:
             log.info("skip.stt is set: no cached transcript or subtitle is available")
             partial.unlink(missing_ok=True)
@@ -646,6 +777,8 @@ def get_transcript(
                 partial_meta=key,
                 cancel=cancel,
             )
+        except Cancelled:
+            raise
         except Exception as e:
             detail = str(e) if isinstance(e, AutoclipError) else f"{type(e).__name__}: {e}"
             log.warning("transcription skipped (%s): selecting on audio only; captions and titles need a transcript", detail)

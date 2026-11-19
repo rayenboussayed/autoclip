@@ -113,7 +113,8 @@ autoclip/
     optimizer.py    crash-safe assembly of optimized_<stem>.mp4 from bounded FFmpeg segments
     model_engine.py automatic resource-aware model selection and phase-end release
     scenes.py       PySceneDetect cut boundaries used to snap selected clip edges
-    transcript.py   parse srt/json, downloaded subtitles, faster-whisper (chunked), disk cache, get_transcript
+    transcript.py   parse srt/json, downloaded subtitles, faster-whisper (resident WhisperSession; chunked standalone or
+                    fused into the assembly), disk cache, get_transcript
     denoise.py      speech enhancement before transcription: SpeechEnhancer (sherpa-onnx ONNX | noisereduce)
     moments.py      candidates, vectorised features, per-scene scoring, pick(), LLM re-rank, select_moments
     hardware.py     GPU/CPU encoder choice: probe by really encoding; Encoder builders; HW_MAX_WORKERS
@@ -222,9 +223,11 @@ main()
       mode == "split": ffmpeg stream-copy parts -> {out}/long/{video}/   (done)
       Store(.work/{video}/autoclip.db, fresh=True) + Cache      ({video} = name or src.stem)
       scan_audio -> optimized source if silence is worth removing (`optimizer.py`)
+                    (fresh assembly: each 5-min chunk transcribed after its segments commit, partial saved in
+                     {stem}.transcript.partial.jsonl; reused assembly: no fused STT)
       detect_scenes (the cut boundaries feed moment selection; nothing is stored)
       get_transcript(..., needs_text(cfg))        sidecar file | downloaded subtitle | disk cache | faster-whisper
-                                             (5 min chunks) -> SQLite (each chunk enhanced by `SpeechEnhancer` first);
+                                             (5 min chunks, or the fused pass replayed from the partial) -> SQLite;
                                              subtitles follow the video's original language; consent is always auto;
                                              `skip.stt` stops before Whisper, `skip.denoise` skips the enhancer
       for kind in cfg.clips.kinds ("short", "long"):
@@ -325,10 +328,12 @@ step, percent, outputs); nothing else is persisted except the job folder and the
    worker never finished and is reported as failed.
 3. **`render_job` never raises** (except `KeyboardInterrupt`): a failed clip must not stop the batch. `process_video`
    exceptions are caught per video in `main` (`AutoclipError` is logged without a traceback, anything else with one).
-4. **Global selection, segmented transcription only.** The transcript is produced in chunks of
-   fixed 5-minute chunks (internal constant) - never more audio in memory than that, and the same chunks are enhanced and
-   transcribed. Selection stays global so clips never cut at a chunk edge and a long clip may exceed a chunk. Do not
-   "simplify" this into physically splitting the file.
+4. **Global selection, segmented transcription only.** The transcript is produced in fixed 5-minute chunks
+   (internal constant) - never more audio in memory than that, and the same chunks are enhanced and transcribed. A
+   fresh silence-removal assembly transcribes each chunk as its segments commit (driven by `optimizer.assemble_optimized`
+   through the `SttPass` protocol); a reused assembly, a cached/sidecar/subtitle transcript or a short file uses the
+   non-fused path in `get_transcript` (which may return from the cache/sidecar/subtitle before calling `transcribe`). Selection stays global so clips never cut at a chunk edge and a long clip may exceed
+   a chunk. Do not "simplify" this into physically splitting the file, and do not let a fused failure abort the assembly.
 5. **`RESOURCES` is a process-wide singleton** that is *reconfigured*, never rebound (`RESOURCES.configure(cfg)`);
    modules import the object once. Memory/CPU balancing happens in `traced` operations (`after_operation`), during the render
    batch, and inside `Cache.trim`. `mode` (`performance`/`resources`/`balance`) selects the policy; the adaptive tuner
@@ -512,8 +517,8 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
   * `_restore_logger` (autouse): `setup_logging` sets `propagate=False`; this resets it so `caplog` works.
 * Patterns already in use - reuse them:
   * Whisper: `install_stub_whisper` in `tests/support.py` (real call signatures; returns the fixture transcript,
-    or one chunk-relative segment per call when given an ndarray). Used by `unit/test_transcript.py` and
-    `unit/test_runner_cli.py`.
+    or one chunk-relative segment per call when given an ndarray). Used by `unit/test_transcript.py`,
+    `unit/test_fused_stt.py` (assembly-fused path) and `unit/test_runner_cli.py`.
   * Process pool: `ThreadPool(ThreadPoolExecutor)` monkeypatched over `runner.ProcessPoolExecutor` so scheduling logic runs
     (and is measured) in-process; one test uses real `spawn` workers.
   * LLM: the `llm_server` fixture is a real local `http.server` speaking Ollama and OpenAI-compatible formats.
@@ -597,8 +602,9 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 4. **MoviePy pins `pillow<12`**, but the suite passes on Pillow 12.3 (security fixes) - CI runs both; README tells users to upgrade.
 5. **PySceneDetect >= 0.7:** use `scene[0].seconds` (`get_seconds()` is deprecated). `scenedetect-headless` is the required implementation; PySceneDetect failures are a filtered warning and must never stop the pipeline.
 6. **The transcription audio is always decoded by us** (`media.decode_audio`, 16 kHz), never handed to Whisper as a
-   file path: the chunks have to be enhanced first. The whisper stub in `tests/support.py` tells a chunk from the
-   whole file by its length.
+   file path: the chunks have to be enhanced first. Both the standalone pass and the assembly-fused pass use the same
+   `WhisperSession` implementation (different instances); they differ in who drives the chunk loop. The whisper stub in `tests/support.py` tells a chunk
+   from the whole file by its length.
 7. **The sherpa-onnx wheel is CPU-only** (compiled without `SHERPA_ONNX_ENABLE_GPU`): the "cuda" provider silently falls
    back to the CPU. The denoiser is small, so *more* threads make it slower (RTF 0.21 at 4 threads, 0.30 at 16).
    `gtcrn` is ~4x faster than `dpdfnet8` at the same quality class - measure before changing the default.
@@ -771,11 +777,11 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 * One CPU core: use the thread fake (or monkeypatch `RESOURCES.cpus` — see `tests/unit/test_runner_cli.py`) to force the parallel code path; for the engine's quality/mode choice, tests monkeypatch `detect_cpu_count` / `free_ram_mb` on `autoclip.core.config` (see `test_to_config_derives_quality_and_mode_from_the_machine`).
 * Long-running commands (e.g. 30+ minute media) must be detached (`setsid nohup ... &`) and polled.
 * A 35-minute synthetic video with a chunk-aware Whisper stub is the reference for chunking behaviour (7 chunks, ~19 MB
-  of audio each, ~30 s end to end on one core, peak RSS ~435 MB).
+  of audio each, ~30 s end to end on one core, peak RSS ~435 MB); the same stub covers the fused path (unit/test_fused_stt.py).
 
 ### What is verified vs not
-* Verified here: Linux; real ffmpeg encode/decode; spawned workers; GPU *detection and CPU fallback*; chunked
-  transcription with a stub; per-OS logic through injected platforms; 100% branch coverage.
+* Verified here: Linux; real ffmpeg encode/decode; spawned workers; GPU *detection and CPU fallback*; chunked and
+  assembly-fused transcription with a stub; per-OS logic through injected platforms; 100% branch coverage.
 * Downloader: the yt-dlp **Python API** was exercised here with the installed version against a small YouTube
   video (format listing/choice, extractor filtering, subtitle attachment, sidecars, imageio-ffmpeg merge, range
   trimming and the originals cache) - no in-repo record of a live platform run exists; the repo's guarantee is the unit suite against the installed yt-dlp, nothing more. Every other platform, real
@@ -822,8 +828,8 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 * **scene (type)** - the style a moment is chosen for (`best`, `funny`, ...); defined by feature weights in `STYLES`.
 * **moment** - a selected window (`Moment`) before rendering; **clip** - the rendered file.
 * **candidate** - a possible window (run of sentences) considered during selection.
-* **chunk** - a ~5-minute piece of audio given to Whisper and to the denoiser (not a file on disk).
-* **energy track** - per-0.5 s loudness (dB) of the whole file, used for scoring and chunk boundaries.
+* **chunk** - a ~5-minute group of kept pieces fed to Whisper (standalone or fused), not a file on disk.
+* **energy track** - per-0.5 s loudness (dB) of the whole file, used for scoring and the silence scan.
 * **sprite** - a pre-rendered RGBA caption image cached compressed and blitted by `CaptionTrack`.
 * **work dir** - `{output_dir}/.work/{video}/`: database and transcript cache for one video.
 * **originals cache** - `{output_dir}/.work/downloads/`: the downloaded files and their

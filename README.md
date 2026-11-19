@@ -47,7 +47,7 @@ is exactly what `python -m autoclip config.json` would run.
   short/{video}/   {video}_{scene}_{nn}_{start}s.mp4 + .jpg cover + .srt, clips.json     (9:16, 20-60 s by default)
   long/{video}/    same, for the long clips                                               (16:9, 3-10 min by default)
   logs/            autoclip_<timestamp>.log
-  .work/{video}/   autoclip.db (recreated empty on every start), the transcript cache, the optimized source
+  .work/{video}/   autoclip.db (recreated empty on every start), the transcript cache and its .partial.jsonl resume file, the optimized source
   .work/downloads/ originals downloaded from URLs (reused by later runs)
 ```
 
@@ -326,12 +326,7 @@ encoders such as `h264_nvenc` even on computers without that GPU); otherwise lib
 
 ## Very long videos
 
-The transcript is produced in **5-minute chunks of the audio that is kept** after silence removal; the language is
-detected once and reused. Neither the denoiser nor Whisper ever holds more than one chunk in memory, so a 3-hour file
-does not need 3 hours of audio at once. The pipeline scans audio once to find loudness and kept spans, uses those
-same spans for the voice pipeline, and concatenates bounded optimized segments without a Python clip list. Selection
-stays **global**, so a clip is never cut at a chunk edge and a long clip may be longer than a chunk. Very short
-videos are transcribed in a single chunk; chunking is not user-tunable.
+The transcript is produced in **5-minute chunks of the audio that is kept** after silence removal. When silence removal actually rebuilds the source, Whisper runs **inside that assembly**: each chunk is transcribed as soon as its bounded FFmpeg segments are committed, using the same ≤300 s grouping as the standalone pass and the same per-chunk playback/source offsets. Otherwise (a short video, a reused optimized file, or a cached/sidecar/subtitle transcript) the standalone pass produces the same result. The language is detected once and reused. Neither the denoiser nor Whisper ever holds more than one chunk in memory, so a 3-hour file does not need 3 hours of audio at once. Selection stays **global**, so a clip is never cut at a chunk edge and a long clip may be longer than a chunk. Very short videos are transcribed in a single pass; chunking is not user-tunable.
 
 ## Silence removal and scene boundaries (automatic)
 
@@ -340,7 +335,9 @@ Silence removal is always attempted before processing. The audio is scanned once
 encoded through the voice pipeline and concatenated to `{output}/.work/{stem}/optimized_{stem}.mp4`; if the source has too
 little silence to be worth another encode, the original remains the source. The optimizer can resume committed video
 segments after a crash and publishes both source and optimized timestamps in `clips.json`, the transcript cache and the
-SQLite rows. Sidecar and downloaded subtitles are remapped to the playback timeline instead of being discarded.
+SQLite rows. When the assembly runs, it also transcribes each finished 5-minute chunk and records progress in a
+`<stem>.transcript.partial.jsonl` next to the cache; a crash resumes both the committed segments and the unfinished
+transcript chunks. Sidecar and downloaded subtitles are remapped to the playback timeline instead of being discarded.
 
 After the optimized video exists, visible cuts are detected with PySceneDetect. A selected clip edge may move to a cut
 within 2 seconds when the length contract remains valid; the ordinary caption, timing and rendering paths otherwise
@@ -357,7 +354,8 @@ keyboard clicks or hum. Enhancement is automatic:
   the untouched audio instead. The clip audio, when it is denoised at all, uses `noisereduce` (spectral gating, no model).
 * **Denoising only helps when there is noise.** A clean recording is damaged by it and the ASR model then drifts into
   the wrong language, so every chunk is measured first and left alone when it is clean enough.
-* Enhancement is part of the transcript cache key: changing it re-transcribes the video.
+* Enhancement is part of the transcript cache key: changing it re-transcribes the video. The cache format is unchanged,
+  so transcripts written by 4.0.2 remain valid.
 * `--skip denoise` transcribes the untouched audio (and changes the cache key).
 * `--skip audio_enhance` leaves the clip audio untouched (no high-pass, loudness or limiter).
 
@@ -365,8 +363,10 @@ keyboard clicks or hum. Enhancement is automatic:
 
 * The model follows the machine: `large-v3` on CUDA, `small` on the CPU; a model that does not fit into the free RAM
   is replaced by a smaller one. The beam size follows the device as well (5 on CUDA, 3 on the CPU).
-* The audio is transcribed in fixed 5-minute chunks: neither the denoiser nor Whisper ever holds more than that,
-  and the language is detected once and reused for the remaining chunks.
+* The audio is transcribed in 5-minute chunks: neither the denoiser nor Whisper ever holds more than that. On a fresh
+  silence-removal assembly the chunks are transcribed inside the assembly as their segments are committed; on a reused
+  assembly, a cached/sidecar/subtitle transcript, or a short file, the standalone pass does the same work. The language
+  is detected once and reused for the remaining chunks.
 * A sidecar transcript (`<video-stem>.json` preferred, `.srt` otherwise) next to the video is used; `--skip stt` stops
   before Whisper (a sidecar, downloaded or cached transcript is still used). The language is always auto-detected.
 
