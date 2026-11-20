@@ -29,10 +29,11 @@ done) — nothing is silently ignored.
 - **Performance mode**: `resources` for ≤ 2 cores or < 1.5 GiB free RAM, `performance` for ≥ 8 cores and
   ≥ 8 GiB free RAM, `balance` otherwise. The adaptive CPU tuner refines the budget inside the chosen profile during
   the run, exactly as before.
-- **Transcription model**: `large-v3` on CUDA, `small` on the CPU (no longer tied to the quality tier, so a CPU run
-  at the old `lowest`/`low` no longer gets `tiny`/`base`); a model that does not fit the free RAM is replaced by a
-  smaller one — but the shrink is CPU-only: a CUDA pick is used as-is, since GPU memory is separate. A GPU that fails
-  at load time re-enters the CPU path and the CPU pick *is* re-fitted there. Beam size: 5 on CUDA, 3 on the CPU.
+- **Transcription model**: `large-v3` on CUDA; on the CPU `medium` on performance-class machines (8+ cores and 8+ GiB
+  free) and `small` otherwise (no longer tied to the quality tier, and `base` is never an engine pick). A model that does
+  not fit the free RAM is replaced by a smaller one — but the shrink is CPU-only: a CUDA pick is used as-is, since GPU
+  memory is separate. On a CUDA load failure the pick is capped to the CPU default before the RAM fit, so a GPU-sized
+  model is never loaded on the CPU for hours. Beam size: 5 on CUDA, 3 on the CPU.
 - **Ollama model**: once per process, at the first AI call, autoclip asks the local server for its model list
   (`/api/tags`, cached for the process). It
   uses the largest installed model whose on-disk size (`size`) fits inside half of the free RAM (binary units), falling back to the
@@ -54,7 +55,9 @@ done) — nothing is silently ignored.
 - The transcript disk cache format was bumped (`format: 2`) when the streaming rework landed — entries written by
   older builds never match and re-transcribe once, on every such machine (there is no in-place migration, by design).
   Because CPU runs now also use `small` instead of `tiny`/`base`, a machine that previously ran at `lowest`/`low`
-  re-transcribes for that reason too.
+  re-transcribes for that reason too. Unreleased engine changes recorded under `CHANGELOG.md` → `[Unreleased]`
+  (detect-once decoding with a hallucination guard, a new cache key, bundled fonts and the CPU `medium` pick) cause one
+  further re-transcribe on affected machines while the version string remains `4.0.2`.
 - Whisper model downloads remain automatic; `--skip stt` still avoids Whisper entirely.
 - With effectively no usable free RAM the engine names the smallest known model, and Whisper itself refuses to load
   anything below its minimum; the video is then skipped with a clear error instead of swapping into oblivion. The rest

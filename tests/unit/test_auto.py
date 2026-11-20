@@ -10,6 +10,7 @@ from autoclip.core.internal.auto import (
     auto_mode,
     auto_ollama_model,
     auto_quality,
+    auto_whisper_model,
 )
 
 
@@ -102,3 +103,21 @@ def test_auto_rules_survive_nan_and_infinity_readings() -> None:
     assert auto_max_concurrent_jobs(cpus=2, free_ram_mb=float("nan")) == 1
     assert auto_ollama_model({"a": 0, "b": 0}, float("nan")) == "a"  # all-unknown path under nonsense RAM
     assert auto_ollama_model({"a": 1024**3}, float("nan")) == "a"  # nothing fits : fall back to the smallest known
+
+
+@pytest.mark.parametrize(
+    ("device", "cpus", "ram", "expected"),
+    [
+        ("cuda", 4, 1024.0, "large-v3"),
+        ("cuda", 16, 32768.0, "large-v3"),
+        ("cpu", 16, 16384.0, "medium"),
+        ("cpu", 8, 8192.0, "medium"),
+        ("cpu", 7, 8192.0, "small"),
+        ("cpu", 8, 8191.0, "small"),
+        ("cpu", 4, 4096.0, "small"),
+        ("cpu", 16, float("nan"), "small"),
+    ],
+)
+def test_auto_whisper_model(device: str, cpus: int, ram: float, expected: str) -> None:
+    """CPU medium is capped to performance-class machines; CUDA always keeps large-v3."""
+    assert auto_whisper_model(device=device, cpus=cpus, free_ram_mb=ram) == expected

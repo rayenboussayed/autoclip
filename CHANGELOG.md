@@ -10,6 +10,19 @@ release mentions the source tag/commit for traceability.
 - test: unit and end-to-end coverage for the fused path, its arming rules, crash/cancel/failure behaviour and complete-partial replay; all new branches covered (the CI matrix's 100 % gate remains authoritative).
 - fix: cancellation during transcription now propagates to the caller instead of being swallowed as an audio-only fallback.
 
+- fix: mixed Arabic+Latin captions and titles no longer render as empty boxes. Font lookup now considers every script in
+  the text and the whole installed font index; when no single font covers a line, it falls back to a covering font per
+  token, drawn in bidi visual order when a covering font is installed (CJK is not bundled). The Docker image and snap
+  install DejaVu + Noto fonts; other artifacts use OS fonts, and Windows/macOS rendering was not verified here.
+- fix: stop passing `multilingual=True` to faster-whisper, which makes it detect the language on every internal window and
+  can drift into another language; the language detected on the first chunk is now reused, with a 2 s silence
+  hallucination guard. Verified at the call level with stubbed transcription only: no real Whisper inference was run.
+- fix: on CPU the engine prefers `medium` only on performance-class machines (8+ cores, 8+ GiB free), otherwise `small`;
+  `base` is excluded (measured 0% Arabic), and a CUDA→CPU fallback can no longer silently load a multi-hour CPU model.
+  Selection is unit-tested with injected measurements; no model download, GPU or accuracy measurement was performed.
+- note: the transcript cache key records the decoding change, so 4.0.2-era transcripts are re-transcribed once; the cache
+  format stays 2. The nine config-file keys, CLI and version (4.0.2) are unchanged.
+
 ## [4.0.2] — 2026-11-19 11:35:00 UTC (tag `v4.0.2`)
 
 - feat: **breaking**: the last machine-policy knobs are gone — the `--quality`, `--mode` and `--llm-model` flags, the `AUTOCLIP_QUALITY` / `AUTOCLIP_MODE` / `AUTOCLIP_LLM_MODEL` / `AUTOCLIP_LLM_URL` environment variables, the server's `MAX_CONCURRENT_JOBS` environment variable, and the `RuntimeOverrides.quality` / `.mode` / `.llm_base_url` / `.llm_model` fields in the Python API; the resource-aware engine now measures the machine per run (cores, free RAM) and picks the encode tier (`high`/`medium`/`low`), the performance profile (`performance`/`resources`/`balance`), the local Ollama model (the largest installed model whose on-disk size fits inside half of the free RAM, falling back to the smallest known one; an unreachable server disables the AI helpers) and the server's job ceiling (`min(4, cpus // 2, free_ram / 1.5 GiB)` with a floor of one, derived once per process at the first job and logged as `automation max_concurrent_jobs=N`); the nine config-file keys are unchanged (see `docs/UPGRADING-4.0.2.md`)

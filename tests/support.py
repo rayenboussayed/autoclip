@@ -152,6 +152,7 @@ def install_stub_whisper(
         def transcribe(self, audio: Any, **options: Any) -> tuple[Any, Any]:
             record.setdefault("calls", []).append((self.device, bool(options.get("vad_filter", True))))
             record["options"] = options
+            record.setdefault("all_options", []).append(dict(options))
             if cuda_fails and self.device == "cuda":
                 raise RuntimeError("CUDA driver/runtime mismatch")
             if vad_fails and bool(options.get("vad_filter", False)):

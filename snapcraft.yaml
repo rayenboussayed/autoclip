@@ -34,6 +34,16 @@ apps:
       - audio-playback
 
 parts:
+  # strict confinement hides the host's and gnome-platform's fonts from fonts.font_dirs(); stage our own
+  fonts:
+    plugin: nil
+    stage-packages:
+      - fonts-dejavu-core
+      - fonts-noto-core
+    prime:
+      - usr/share/fonts
+      - usr/share/doc/*/copyright
+
   # the standalone program (built by PyInstaller before snapcraft runs)
   autoclip:
     plugin: dump

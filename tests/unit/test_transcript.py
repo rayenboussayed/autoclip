@@ -19,6 +19,7 @@ from autoclip.core.cutmap import CutMap
 from autoclip.core.denoise import SpeechEnhancer, default_models_dir
 from autoclip.core.errors import AutoclipError
 from autoclip.core.hardware import pick_encoder
+from autoclip.core.internal.automation import HALLUCINATION_SILENCE_THRESHOLD
 from autoclip.core.media import F32, decode_audio, probe
 from autoclip.core.models import MediaInfo, Segment
 from autoclip.core.resources import MB, RESOURCES
@@ -162,25 +163,27 @@ def asr_cfg(media: Media, tmp_path: Path, **sections: Any) -> Config:
 
 def test_transcribe_cpu_with_stub(media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path) -> None:
     monkeypatch.setattr("autoclip.core.transcript.RESOURCES.usable_memory", lambda: 10 * 1024 * 1024 * 1024)
+    monkeypatch.setattr("autoclip.core.internal.runtime.detect_cpu_count", lambda: 4)
+    monkeypatch.setattr("autoclip.core.internal.runtime.free_ram_mb", lambda: 4096.0)
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
     cfg = asr_cfg(media, tmp_path)
     segs = transcribe(media.video, cfg, info)
     name, device, compute, threads = rec["init"]
     assert (name, device, compute) == ("small", "cpu", "int8") and threads == RESOURCES.cpu_budget()
-    assert rec["options"]["beam_size"] == 3 and rec["options"]["language"] is None and rec["options"]["multilingual"] is True
+    options = rec["options"]
+    assert options["beam_size"] == 3 and options["language"] is None and options["multilingual"] is False
+    assert options["hallucination_silence_threshold"] == HALLUCINATION_SILENCE_THRESHOLD
     assert [s.text for s in segs] == SENTENCES and not segs[0].pseudo and segs[0].words[0].text == "Welcome"
 
 
-def test_transcribe_gpu_multilingual_without_downgrade(
-    media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path
-) -> None:
+def test_transcribe_gpu_model_without_downgrade(media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path) -> None:
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec, cuda=1)
     cfg = asr_cfg(media, tmp_path)
     monkeypatch.setattr("autoclip.core.transcript.RESOURCES.usable_memory", lambda: 100000)
     transcribe(media.video, cfg, info)
-    assert rec["init"][1:3] == ("cuda", "float16") and rec["options"]["multilingual"] is True
+    assert rec["init"][:3] == ("large-v3", "cuda", "float16") and rec["options"]["multilingual"] is False
 
 
 def test_a_broken_cuda_runtime_falls_back_to_the_cpu(
@@ -190,13 +193,16 @@ def test_a_broken_cuda_runtime_falls_back_to_the_cpu(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A GPU that loads but cannot run must not fail the run: the CPU model takes over."""
+    """A GPU that loads but cannot run must not fail the run: a capped CPU model takes over."""
+    monkeypatch.setattr("autoclip.core.transcript.RESOURCES.usable_memory", lambda: 10 * 1024 * 1024 * 1024)
+    monkeypatch.setattr("autoclip.core.internal.runtime.detect_cpu_count", lambda: 4)
+    monkeypatch.setattr("autoclip.core.internal.runtime.free_ram_mb", lambda: 4096.0)
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec, cuda=1, cuda_fails=True)
     cfg = asr_cfg(media, tmp_path)
     with caplog.at_level(logging.WARNING, logger="autoclip"):
         segs = transcribe(media.video, cfg, info)
-    assert rec["init"][1:3] == ("cpu", "int8")  # the CPU model replaced the GPU one
+    assert rec["init"] == ("small", "cpu", "int8", rec["init"][3])  # capped: no large-v3 on CPU
     assert "CUDA runtime" in caplog.text
     assert [s.text for s in segs] == SENTENCES
 
@@ -414,12 +420,15 @@ def test_vad_failure_retries_without_vad(
 def test_gpu_chunk_failure_retries_on_cpu(
     media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
+    monkeypatch.setattr("autoclip.core.transcript.RESOURCES.usable_memory", lambda: 10 * 1024 * 1024 * 1024)
+    monkeypatch.setattr("autoclip.core.internal.runtime.detect_cpu_count", lambda: 4)
+    monkeypatch.setattr("autoclip.core.internal.runtime.free_ram_mb", lambda: 4096.0)
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec, cuda=1, gpu_chunk_fails=True)
     cfg = asr_cfg(media, tmp_path)
     with caplog.at_level(logging.WARNING, logger="autoclip"):
         segs = transcribe(media.video, cfg, info)
-    assert rec["inits"][0][1] == "cuda" and rec["inits"][1][1] == "cpu"
+    assert rec["inits"][0][1] == "cuda" and rec["inits"][1] == ("small", "cpu", "int8", rec["inits"][1][3])
     assert "Whisper failed on the GPU for this chunk" in caplog.text
     assert [s.text for s in segs] == SENTENCES
 
@@ -1026,3 +1035,94 @@ def test_release_whisper_is_a_no_op_for_no_model() -> None:
 def test_map_local_time_advances_across_pieces() -> None:
     pieces = [(10.0, 20.0, 0.0), (30.0, 40.0, 10.0)]
     assert transcript._map_local_time(15.0, pieces) == (15.0, 35.0)
+
+
+def test_language_is_detected_once_and_reused_across_chunks(
+    media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path
+) -> None:
+    """No per-window language re-detection: the first detected language is passed to every later chunk."""
+    from ..support import bare_media
+
+    src = bare_media(media, tmp_path)
+    monkeypatch.setattr("autoclip.core.transcript.RESOURCES.usable_memory", lambda: 10 * 1024 * 1024 * 1024)
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec)
+    cfg = asr_cfg(media, tmp_path, source=src)
+    chunks = [[(0.0, 10.0, 0.0)], [(10.0, 20.0, 10.0)], [(20.0, 30.0, 20.0)]]
+    transcribe(src, cfg, info, chunks=chunks)
+    seen = rec["all_options"]
+    assert len(seen) == 3
+    assert [o["language"] for o in seen] == [None, "en", "en"]  # detected once, then reused
+    assert all(o["multilingual"] is False for o in seen)
+    assert all(o["hallucination_silence_threshold"] == HALLUCINATION_SILENCE_THRESHOLD for o in seen)
+
+
+def test_language_from_a_partial_is_reused_without_redetection(
+    media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path
+) -> None:
+    """A resumed session keeps the language recorded in the partial instead of detecting again."""
+    from ..support import bare_media
+
+    src = bare_media(media, tmp_path)
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec)
+    cfg = asr_cfg(media, tmp_path, source=src)
+    cut = CutMap.identity(info.duration)
+    key = transcript._cache_key(src, "small", cut)
+    partial = tmp_path / "resume.partial.jsonl"
+    row = {"start": 0.5, "end": 2.5, "text": " hi", "source_start": 0.5, "source_end": 2.5, "words": []}
+    header = {"type": "meta", "meta": key, "format": TRANSCRIPT_CACHE_FORMAT}
+    partial.write_text(json.dumps(header) + "\n" + json.dumps({"type": "chunk", "done": 1, "language": "ar", "rows": [row]}) + "\n")
+    chunks = cut.chunked_pieces(300.0)
+    assert len(chunks) == 1
+    # make the resumed chunk pending by claiming two chunks with a smaller size
+    monkeypatch.setattr(transcript, "_CHUNK_MINUTES", 0.2)
+    chunks = cut.chunked_pieces(0.2 * 60)
+    assert len(chunks) > 1
+    transcript.transcribe(src, cfg, info, chunks=chunks, partial_path=partial, partial_meta=key)
+    seen = [o for o in rec["all_options"] if o.get("language") is not None]
+    assert seen and all(o["language"] == "ar" for o in seen)
+
+
+def test_fit_whisper_model_never_picks_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``base`` is documented but excluded: measured 0% Arabic and CER 0.97 on the reference scene."""
+    monkeypatch.setattr(RESOURCES, "usable_memory", lambda: 800 * MB)
+    assert fit_whisper_model("large-v3", "cpu") == "tiny"
+    monkeypatch.setattr(RESOURCES, "usable_memory", lambda: 500 * MB)
+    assert fit_whisper_model("small", "cpu") == "tiny"
+
+
+def test_transcript_cache_key_records_the_decoding_change() -> None:
+    """Flipping the multilingual field invalidates old transcripts without a format bump."""
+    key = transcript._cache_key(Path(__file__), "small", CutMap.identity(10.0))
+    assert key["multilingual"] is False
+    assert key["hallucination_silence_threshold"] == HALLUCINATION_SILENCE_THRESHOLD
+    legacy = {**key, "multilingual": True}
+    legacy.pop("hallucination_silence_threshold")
+    assert legacy != key  # a 4.0.2 transcript cannot be replayed under the new decoding contract
+    assert TRANSCRIPT_CACHE_FORMAT == 2
+
+
+def test_a_large_cpu_model_logs_the_slow_warning(
+    media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr("autoclip.core.transcript.RESOURCES.usable_memory", lambda: 10 * 1024 * 1024 * 1024)
+    monkeypatch.setattr(transcript, "transcript_model", lambda: "medium")
+    rec: dict[str, Any] = {}
+    install_stub_whisper(monkeypatch, media, rec)
+    cfg = asr_cfg(media, tmp_path)
+    with caplog.at_level(logging.WARNING, logger="autoclip"):
+        transcribe(media.video, cfg, info)
+    assert "on the CPU is much slower" in caplog.text
+    assert rec["init"][0] == "medium"
+
+
+def test_cap_cpu_model_keeps_custom_names_and_small_picks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("autoclip.core.internal.runtime.detect_cpu_count", lambda: 4)
+    monkeypatch.setattr("autoclip.core.internal.runtime.free_ram_mb", lambda: 4096.0)
+    assert transcript._cap_cpu_model("custom/path") == "custom/path"
+    assert transcript._cap_cpu_model("tiny") == "tiny"
+    assert transcript._cap_cpu_model("large-v3") == "small"
+    monkeypatch.setattr("autoclip.core.internal.runtime.detect_cpu_count", lambda: 16)
+    monkeypatch.setattr("autoclip.core.internal.runtime.free_ram_mb", lambda: 16384.0)
+    assert transcript._cap_cpu_model("large-v3") == "small"  # even on an ample host, a GPU fallback stays cheap

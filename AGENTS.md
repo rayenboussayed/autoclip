@@ -155,7 +155,7 @@ tests/            support.py - pure helpers shared by both suites; conftest.py -
   results/        per-run configs, logs and outputs (ignored by git)
 autoclip.spec     the PyInstaller spec: a standalone build (engine + command line + desktop app + yt-dlp/EJS)
 snapcraft.yaml    the snap: the same build as a snap (linux, amd64 + arm64)
-Dockerfile        the server image (python:3.12-slim + ffmpeg + the `server` extra)
+Dockerfile        the server image (python:3.12-slim + ffmpeg + DejaVu/Noto fonts + the `server` extra)
 docker-compose.yml  the same image with volumes and the environment variables
 assets/           the icon and the desktop file of the AppImage and the snap
 tools/            frozen_entry.py - the frozen build's entry point: freeze_support, then autoclip.frozen.main
@@ -321,7 +321,7 @@ step, percent, outputs); nothing else is persisted except the job folder and the
 
 1. **Fresh database per video, every run.** `Store(..., fresh=True)` deletes the DB and its `-wal/-shm/-journal`.
    The only things persisted between runs are `{video}.transcript.json` (keyed by source name/size/mtime, model,
-   language, multilingual, word_timestamps and the enhancement settings; a mismatch re-transcribes) and the downloaded
+   language, multilingual, hallucination guard, word_timestamps and the enhancement settings; a mismatch re-transcribes) and the downloaded
    originals under `.work/downloads` (reused when the name prefix - title, id, format id, range - matches).
 2. **Results flow through SQLite, not return values.** `render_job` returns a bool but the truth is the `clips` row
    (`pending` -> `done`/`failed`). `clips.json` is built from rows. A row still `pending` after `render_all` means the
@@ -597,8 +597,11 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
    Pillow's *built-in* font (`ImageFont.load_default`) is always `Layout.BASIC` and raises
    `KeyError: setting text direction, language or font features is not supported without libraqm` when a
    `direction` is passed - so `Face` may only ask for a direction for a real font file. One font must cover
-   95% of the letters *and* digits of a caption, so a mixed Arabic+Latin line finds no font at all
-   (per-word fallback does not exist yet).
+   95% of the letters *and* digits of a caption, so a mixed Arabic+Latin line found no font at all.
+   ``find_font`` still accepts a font with >=95% coverage and now tries every script in the text and the whole
+   installed index; ``render_text_image`` keeps the whole-line path only when that font covers every glyph of
+   every token, otherwise it draws per token with covering fonts in bidi visual order.
+   This does not change the libraqm rules above or guarantee glyphs on Windows/macOS (not verified here).
 4. **MoviePy pins `pillow<12`**, but the suite passes on Pillow 12.3 (security fixes) - CI runs both; README tells users to upgrade.
 5. **PySceneDetect >= 0.7:** use `scene[0].seconds` (`get_seconds()` is deprecated). `scenedetect-headless` is the required implementation; PySceneDetect failures are a filtered warning and must never stop the pipeline.
 6. **The transcription audio is always decoded by us** (`media.decode_audio`, 16 kHz), never handed to Whisper as a
@@ -780,6 +783,7 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
   of audio each, ~30 s end to end on one core, peak RSS ~435 MB); the same stub covers the fused path (unit/test_fused_stt.py).
 
 ### What is verified vs not
+* The opt-in e2e ladder runs real subprocesses with no model override, so an ample host (8+ cores, 8+ GiB free) selects CPU ``medium`` rather than ``small``; unit tests patch the measurements explicitly.
 * Verified here: Linux; real ffmpeg encode/decode; spawned workers; GPU *detection and CPU fallback*; chunked and
   assembly-fused transcription with a stub; per-OS logic through injected platforms; 100% branch coverage.
 * Downloader: the yt-dlp **Python API** was exercised here with the installed version against a small YouTube

@@ -27,6 +27,7 @@ __all__ = [
     "DOWNLOAD_SOCKET_TIMEOUT",
     "ENHANCE_ATTENUATION_DB",
     "ENHANCE_SNR_THRESHOLD_DB",
+    "HALLUCINATION_SILENCE_THRESHOLD",
     "JS_RUNTIME_ORDER",
     "LLM_NUM_CTX",
     "LLM_TIMEOUT",
@@ -158,6 +159,9 @@ ENHANCE_SNR_THRESHOLD_DB = 20.0
 
 ENHANCE_ATTENUATION_DB = 12.0
 """Denoiser attenuation limit for the models that support it."""
+
+HALLUCINATION_SILENCE_THRESHOLD = 2.0
+"""Drop a low-confidence segment surrounded by silence (Whisper hallucination guard, seconds)."""
 
 LLM_TOP_K = 12
 """How many candidates the local LLM is asked to choose from."""

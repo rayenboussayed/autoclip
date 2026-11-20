@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 import pytest
 from numpy.typing import NDArray
-from PIL import features
+from PIL import ImageDraw, features
 
 from autoclip.core import captions, fonts
 from autoclip.core.audio import Timeline
@@ -29,7 +29,7 @@ from autoclip.core.captions import (
     without_fillers,
 )
 from autoclip.core.config import CaptionsCfg, Config, parse
-from autoclip.core.fonts import covers, dominant_script, find_font, font_dirs, font_index, has_rtl
+from autoclip.core.fonts import _codepoints, covers, covers_all, dominant_script, find_font, font_dirs, font_index, has_rtl
 from autoclip.core.models import Span, Word
 from autoclip.core.resources import RESOURCES
 from autoclip.core.store import Cache, Store
@@ -52,6 +52,8 @@ def test_font_dirs_per_platform(tmp_path: Path) -> None:
     assert Path("/System/Library/Fonts") in mac and tmp_path / "Library" / "Fonts" in mac
     linux = font_dirs("Linux", {}, tmp_path)
     assert Path("/usr/share/fonts") in linux and tmp_path / ".fonts" in linux
+    snap = Path("/snap/autoclip/current")
+    assert font_dirs("Linux", {"SNAP": str(snap)}, tmp_path)[-1] == snap / "usr/share/fonts"
 
 
 def test_font_index_walks_folders_case_insensitively(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -341,3 +343,179 @@ def test_plain_text_with_outline_and_skipped_highlight_sprites(cache: Cache, rea
     ws = words(("alpha", 0.0, 0.5), ("beta", 0.5, 1.0), ("gamma", 1.0, 1.5))
     clip, lines = build_captions(ws, Timeline([(0.0, 0.5), (1.0, 1.5)]), config(), cache, (360, 640), 1.0)  # "beta" lies in a removed part
     assert clip is not None and len(lines) == 1
+
+
+# ---- mixed-script fallback ------------------------------------------------------------------------
+def _synthetic_font(path: Path, codepoints: list[int]) -> Path:
+    """A real, Pillow-loadable TTF covering exactly ``codepoints`` (no system fonts needed)."""
+    from fontTools.fontBuilder import FontBuilder
+    from fontTools.pens.ttGlyphPen import TTGlyphPen
+
+    cmap = {cp: f"g{cp:04X}" for cp in codepoints}
+    fb = FontBuilder(1000, isTTF=True)
+    fb.setupGlyphOrder([".notdef", *cmap.values()])
+    fb.setupCharacterMap(cmap)
+    glyphs: dict[str, Any] = {}
+    for name in [".notdef", *cmap.values()]:
+        pen = TTGlyphPen(None)
+        if name != ".notdef":
+            pen.moveTo((0, 0))
+            pen.lineTo((600, 0))
+            pen.lineTo((600, 700))
+            pen.lineTo((0, 700))
+            pen.closePath()
+        glyphs[name] = pen.glyph()
+    fb.setupGlyf(glyphs)
+    fb.setupHorizontalMetrics({name: (700, 0) for name in glyphs})
+    fb.setupHorizontalHeader(ascent=800, descent=-200)
+    fb.setupNameTable({"familyName": "Test", "styleName": "Bold"})
+    fb.setupOS2()
+    fb.setupPost(formatType=3.0)
+    fb.setupMaxp()
+    fb.setupHead(unitsPerEm=1000)
+    fb.save(path)
+    return path
+
+
+def _fake_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **fonts_by_name: Path) -> None:
+    monkeypatch.setattr(fonts, "font_index", lambda: {name: path for name, path in fonts_by_name.items()})
+    fonts._codepoints.cache_clear()
+
+
+def test_find_font_scans_the_whole_index_for_a_mixed_script_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A single font covering every script wins even when its filename is not on any allowlist."""
+    both = _synthetic_font(tmp_path / "zz-custom.ttf", [ord(c) for c in "abc 123 مرحبا"])
+    _fake_index(tmp_path, monkeypatch, **{"zz-custom.ttf": both})
+    assert find_font("مرحبا 123") == both
+
+
+def test_find_font_uses_all_scripts_not_only_the_dominant_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An Arabic-only font is rejected for a Latin-dominant mixed title; a dual-script one is found."""
+    arabic = _synthetic_font(tmp_path / "NotoSansArabic-Bold.ttf", [ord(c) for c in "مرحبا"])
+    latin = _synthetic_font(tmp_path / "DejaVuSans-Bold.ttf", [ord(c) for c in "const cache key 123"])
+    both = _synthetic_font(tmp_path / "dual.ttf", [ord(c) for c in "const cache key 123 مرحبا"])
+    _fake_index(tmp_path, monkeypatch, **{"notosansarabic-bold.ttf": arabic, "dejavusans-bold.ttf": latin})
+    assert find_font("const cache key مرحبا") is None
+    _fake_index(tmp_path, monkeypatch, **{"notosansarabic-bold.ttf": arabic, "dejavusans-bold.ttf": latin, "dual.ttf": both})
+    assert find_font("const cache key مرحبا") == both
+
+
+def test_covers_all_and_its_error_branch(tmp_path: Path) -> None:
+    font = _synthetic_font(tmp_path / "tiny.ttf", [ord("a")])
+    assert covers_all(font, "a") and not covers_all(font, "ab")
+    junk = tmp_path / "junk.ttf"
+    junk.write_bytes(b"not a font")
+    assert not covers_all(junk, "a")
+
+
+def test_drawn_glyphs_are_all_covered_in_a_mixed_caption(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fallback never hands a glyph to a font that cannot draw it (the tofu regression)."""
+    arabic = _synthetic_font(tmp_path / "NotoSansArabic-Bold.ttf", list(range(0x600, 0x700)) + list(range(0xFB50, 0xFF00)))
+    latin = _synthetic_font(tmp_path / "DejaVuSans-Bold.ttf", [ord(c) for c in "abc 123"])
+    _fake_index(tmp_path, monkeypatch, **{"notosansarabic-bold.ttf": arabic, "dejavusans-bold.ttf": latin})
+    drawn: list[tuple[str, str | None]] = []
+    real_text = ImageDraw.ImageDraw.text
+
+    def recording_text(self: Any, xy: Any, text: str, font: Any = None, **kwargs: Any) -> None:
+        drawn.append((text, getattr(font, "path", None)))
+        return real_text(self, xy, text, font=font, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", recording_text)
+    art = render_text_image("abc مرحبا 123", None, 30, STYLE, 600)
+    assert np.count_nonzero(art[..., 3]) > 0
+    assert any(path and "arabic" in path.lower() for _text, path in drawn)
+    assert any(path and "dejavu" in path.lower() for _text, path in drawn)
+    for _text, path in drawn:
+        assert path  # no Pillow built-in font for this mixed caption
+        font = _codepoints(Path(path))
+        assert all(ord(c) in font or c.isspace() for c in _text)
+
+
+def test_visual_order_and_its_fallbacks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bidi visual ordering matches a whole-line resolution; ambiguity degrades to logical order."""
+    assert captions._visual_order(["one"], raqm=False) == [0]
+    assert captions._visual_order(["one", "two"], raqm=False) == [0, 1]
+    assert captions._visual_order(["مرحبا", "بكم"], raqm=False) == [1, 0]
+    assert captions._visual_order(["const", "key", "أو", "نقوم"], raqm=False) == [0, 1, 3, 2]
+    # with libraqm the single-font path forces RTL, so the fallback must use the same base direction
+    assert captions._visual_order(["const", "key", "أو", "نقوم"], raqm=True) == [3, 2, 0, 1]
+    assert captions._visual_order(["a"] * 30 + ["ا"] * 20, raqm=False) == list(range(50))  # marker pool exhausted
+    monkeypatch.setattr("bidi.algorithm.get_display", lambda _s: "broken")
+    assert captions._visual_order(["مرحبا", "بكم"], raqm=False) == [0, 1]
+
+
+def test_visual_order_fallbacks_for_long_and_separator_saturated_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert captions._visual_order(["ا"] * 22 + ["a"], raqm=False) == list(range(23))
+    assert captions._visual_order(["مرحبا|x~y#z", "بكم"], raqm=False) == [0, 1]
+
+    def explode(_s: str) -> str:
+        raise RuntimeError("bidi unavailable")
+
+    monkeypatch.setattr("bidi.algorithm.get_display", explode)
+    assert captions._visual_order(["مرحبا", "بكم"], raqm=False) == [0, 1]
+
+
+def test_find_font_scan_is_deterministic_with_two_covering_fonts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    one = _synthetic_font(tmp_path / "zzz-font.ttf", [ord(c) for c in "abc مرحبا"])
+    two = _synthetic_font(tmp_path / "NotoSansX-Bold.ttf", [ord(c) for c in "abc مرحبا"])
+    _fake_index(tmp_path, monkeypatch, **{"zzz-font.ttf": one, "notosansx-bold.ttf": two})
+    assert find_font("abc مرحبا") == two  # Noto wins the rank; repeated runs agree
+    assert find_font("abc مرحبا") == two
+
+
+def test_mixed_caption_with_a_stroke_uses_the_multi_font_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    arabic = _synthetic_font(tmp_path / "NotoSansArabic-Bold.ttf", list(range(0x600, 0x700)) + list(range(0xFB50, 0xFF00)))
+    latin = _synthetic_font(tmp_path / "DejaVuSans-Bold.ttf", [ord(c) for c in "abc 123"])
+    _fake_index(tmp_path, monkeypatch, **{"notosansarabic-bold.ttf": arabic, "dejavusans-bold.ttf": latin})
+    style = CaptionsCfg(theme="outline")
+    assert style.stroke_width > 0
+    drawn: list[tuple[str, str | None, int]] = []
+    real_text = ImageDraw.ImageDraw.text
+
+    def recording_text(self: Any, xy: Any, text: str, font: Any = None, stroke_width: int = 0, **kwargs: Any) -> None:
+        drawn.append((text, getattr(font, "path", None), stroke_width))
+        return real_text(self, xy, text, font=font, stroke_width=stroke_width, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", recording_text)
+    art = render_text_image("abc مرحبا", None, 30, style, 600)
+    assert np.count_nonzero(art[..., 3]) > 0
+    assert any("arabic" in (path or "").lower() for _t, path, _sw in drawn)
+    assert any((path or "").lower().endswith("dejavusans-bold.ttf") for _t, path, _sw in drawn)
+    assert any(sw > 0 for _t, _path, sw in drawn)  # the stroke layer really draws
+
+
+def test_visual_order_mismatched_parts_fall_back_to_logical(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("bidi.algorithm.get_display", lambda _s: "broken")
+    assert captions._visual_order(["مرحبا", "بكم"], raqm=False) == [0, 1]
+
+
+def test_mixed_caption_with_a_supplied_partial_font(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A preferred font covering only some scripts still routes through the per-token fallback."""
+    latin = _synthetic_font(tmp_path / "LatinOnly.ttf", [ord(c) for c in "abc 123"])
+    arabic = _synthetic_font(tmp_path / "NotoSansArabic-Bold.ttf", list(range(0x600, 0x700)) + list(range(0xFB50, 0xFF00)))
+    _fake_index(tmp_path, monkeypatch, **{"notosansarabic-bold.ttf": arabic})
+    art = render_text_image("abc مرحبا", latin, 30, STYLE, 600)
+    assert np.count_nonzero(art[..., 3]) > 0
+
+
+def test_visual_order_rejects_a_mangled_bidi_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("bidi.algorithm.get_display", lambda _s, _base_dir=None: "a")
+    assert captions._visual_order(["مرحبا", "بكم"], raqm=False) == [0, 1]
+
+
+def test_preferred_font_is_kept_for_tokens_it_covers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A preferred Latin font is not discarded just because another script needs a fallback."""
+    latin = _synthetic_font(tmp_path / "DejaVuSans-Bold.ttf", [ord(c) for c in "abc 123"])
+    arabic = _synthetic_font(tmp_path / "NotoSansArabic-Bold.ttf", list(range(0x600, 0x700)) + list(range(0xFB50, 0xFF00)))
+    _fake_index(tmp_path, monkeypatch, **{"notosansarabic-bold.ttf": arabic})
+    drawn: list[tuple[str, str | None]] = []
+    real_text = ImageDraw.ImageDraw.text
+
+    def recording_text(self: Any, xy: Any, text: str, font: Any = None, **kwargs: Any) -> None:
+        drawn.append((text, getattr(font, "path", None)))
+        return real_text(self, xy, text, font=font, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", recording_text)
+    assert render_text_image("abc مرحبا", latin, 30, STYLE, 600).shape[1] > 0
+    assert any("dejavu" in (path or "").lower() for _t, path in drawn)
+    assert any("arabic" in (path or "").lower() for _t, path in drawn)

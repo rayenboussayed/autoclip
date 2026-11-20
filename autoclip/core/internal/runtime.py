@@ -6,7 +6,7 @@ import math
 import os
 from dataclasses import dataclass
 
-from . import modes
+from . import auto, modes
 from .automation import denoiser_threads, transcription_beam_size
 from .quality import download_quality_for
 
@@ -38,9 +38,17 @@ def free_ram_mb() -> float:
     return float(available) / float(1 << 20)
 
 
-def whisper_model_for(device: str = "cpu") -> str:
-    """The Whisper model for a machine: ``large-v3`` on CUDA, else ``small`` (the CPU pick can shrink in ``fit_whisper_model``)."""
-    return "large-v3" if device == "cuda" else "small"
+def whisper_model_for(device: str = "cpu", *, cpus: int | None = None, ram_mb: float | None = None) -> str:
+    """The Whisper model for a machine: ``large-v3`` on CUDA; on CPU ``medium`` only on ample hardware.
+
+    ``cpus``/``ram_mb`` let tests pass exact measurements; production uses this process's readings.
+    The RAM fit in ``transcript.fit_whisper_model`` is the final arbiter.
+    """
+    return auto.auto_whisper_model(
+        device=device,
+        cpus=detect_cpu_count() if cpus is None else cpus,
+        free_ram_mb=free_ram_mb() if ram_mb is None else ram_mb,
+    )
 
 
 @dataclass(frozen=True)

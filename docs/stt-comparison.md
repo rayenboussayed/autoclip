@@ -1,12 +1,19 @@
 # STT models x speech enhancement - measured on one scene
 
 > Generated with `tools/compare_stt.py`; the raw numbers are in `runs/stt-compare/results.json`.
-> Reproduce: `python tools/compare_stt.py VIDEO --start 4956 --duration 120`
+> Re-run with the current decode config: `python tools/compare_stt.py VIDEO --start 4956 --duration 120`
+> (the numbers below were measured with an older decode config; see the historical note).
 >
 > The settings referenced below (`transcript.enhance`, `transcript.model`, `compute.device`,
 > `processing.chunk_minutes`) are 3.x-era names; in 4.0 they are runtime overrides (`--skip denoise`) or automatic.
 > Since 4.0.2 the remaining machine-policy overrides are gone — the engine derives them (see `docs/UPGRADING-4.0.2.md`).
-> The measured results still apply.
+> The measured results are a historical snapshot — see the note below.
+>
+> **Historical measurement.** This file records a 3.x-era `tools/compare_stt.py` run. The setting names, the model
+> policy and the cost figures below reflect that point in time, not current defaults: the engine now derives the Whisper
+> model from the machine (see README "Transcription" and CHANGELOG `[Unreleased]`), never picks `base`, and decodes with
+> detect-once language and a hallucination guard. The CER/RTF numbers have not been re-measured after those changes and
+> are not claims about current behaviour.
 
 
 **Scene:** `jutilities-package.mp4`, 4956-5076 s (120 s), Moroccan-dialect Arabic tech talk.

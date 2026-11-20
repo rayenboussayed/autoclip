@@ -7,6 +7,7 @@ import functools
 import hashlib
 import logging
 import re
+import string
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from itertools import pairwise
@@ -19,7 +20,7 @@ from PIL import Image, ImageColor, ImageDraw, ImageFont, features
 
 from .audio import Timeline, is_filler
 from .config import CaptionsCfg, Config
-from .fonts import dominant_script, find_font, has_rtl
+from .fonts import covers, covers_all, dominant_script, find_font, has_rtl
 from .internal.automation import CAPTION_MAX_SECONDS, CAPTION_SAFE_BOTTOM, CAPTION_SAFE_TOP, DEFAULT_FILLERS
 from .log import traced
 from .media import F32
@@ -165,30 +166,99 @@ class Face:
 
     def prepare(self, s: str) -> str:
         """``s`` in the form the renderer needs (reshaped and reordered when Raqm is missing)."""
-        if not self.reshape:
-            return s
-        import arabic_reshaper
-        from bidi.algorithm import get_display
-
-        return str(get_display(arabic_reshaper.reshape(s)))
+        return _reshape(s) if self.reshape else s
 
     def width(self, s: str) -> float:
         """Pixel width of ``s``."""
         return float(self.font.getlength(self.prepare(s), direction=self.direction))
 
 
-def render_text_image(text: str, font: Path | None, size: int, style: CaptionsCfg, max_w: int, active: int | None = None) -> U8:
-    """Render ``text`` (any script, wrapped to ``max_w``) as an RGBA array with clean anti-aliased edges.
+@dataclass(frozen=True, slots=True)
+class _Run:
+    """One token drawn with its own font, already shaped into visual glyph order."""
 
-    Text, outline and highlight are drawn on separate transparent layers pre-filled with their own colour and
-    then alpha-composited - drawing straight onto RGBA leaves dark fringes.
+    index: int  # original token index, so word highlighting survives bidi reordering
+    shown: str
+    font: Any
+    width: float
+    ascent: int
 
-    Args:
-        active: Index of the word to colour with ``style.highlight_color`` (``None`` = no highlight).
+
+def _reshape(text: str) -> str:
+    """Arabic/Hebrew text in visual glyph order (one shaper for both rendering paths)."""
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+
+    return str(get_display(arabic_reshaper.reshape(text)))
+
+
+def _visual_order(tokens: Sequence[str], *, raqm: bool) -> list[int]:
+    """Token indices in visual paint order; mirrors the whole-line bidi resolution used by :class:`Face`.
+
+    Bidi is resolved once on unique one-character markers (Arabic vs Latin) rather than on the shaped
+    tokens, so the per-token drawing order matches what a single whole-line ``text()`` call would paint.
+    Ambiguity falls back to logical order; on RTL lines this is a known degradation for captions longer
+    than the marker pools (rare: the caption width limit keeps well under 21 Arabic words per line).
     """
+    if len(tokens) < 2 or not any(has_rtl(t) for t in tokens):
+        return list(range(len(tokens)))
+    arabic, latin = "ابتثجحخدذرزسشصضطظعغ", string.ascii_lowercase
+    markers, ai, li = [], 0, 0
+    for token in tokens:
+        if has_rtl(token):
+            if ai >= len(arabic):
+                return list(range(len(tokens)))
+            markers.append(arabic[ai])
+            ai += 1
+        else:
+            if li >= len(latin):
+                return list(range(len(tokens)))
+            markers.append(latin[li])
+            li += 1
+    sep = next((c for c in ("|", "~", "#") if c not in "".join(tokens)), None)
+    if sep is None:
+        return list(range(len(tokens)))
+    try:
+        from bidi.algorithm import get_display
+
+        # The single-font path forces direction="rtl" with libraqm; auto detection would paint
+        # Latin-first mixed lines in the opposite order, so use the same base direction here.
+        base = "R" if raqm else None
+        parts = get_display(sep.join(markers), base_dir=base).split(sep)
+        if len(parts) != len(tokens) or any(part not in markers for part in parts):
+            return list(range(len(tokens)))
+        return [markers.index(part) for part in parts]
+    except Exception:  # a bidi failure must never cost the caption
+        return list(range(len(tokens)))
+
+
+def _new_canvas(w_px: int, h_px: int, size: int, style: CaptionsCfg) -> tuple[Any, dict[str, Any], dict[str, tuple[int, int, int]]]:
+    """The transparent canvas and the pre-coloured stroke/text/active layers (gotcha 10)."""
+    canvas = Image.new("RGBA", (w_px, h_px), (0, 0, 0, 0))
+    if style.bg_opacity > 0:
+        box = (*ImageColor.getrgb(style.bg_color)[:3], int(255 * style.bg_opacity))
+        ImageDraw.Draw(canvas).rounded_rectangle([0, 0, w_px - 1, h_px - 1], radius=int(size * 0.3), fill=box)
+    colors = {
+        name: ImageColor.getrgb(color)[:3]
+        for name, color in (("stroke", style.stroke_color), ("text", style.color), ("active", style.highlight_color))
+    }
+    layers = {name: Image.new("RGBA", (w_px, h_px), (*rgb, 0)) for name, rgb in colors.items()}
+    return canvas, layers, colors
+
+
+def _compose(canvas: Any, layers: dict[str, Any], highlight: bool, sw: int) -> U8:
+    """Alpha-composite the used layers in stroke -> text -> active order."""
+    for name, used in (("stroke", bool(sw)), ("text", True), ("active", highlight)):
+        if used:
+            canvas = Image.alpha_composite(canvas, layers[name])
+    return np.array(canvas, dtype=np.uint8)
+
+
+def _render_single(
+    text: str, font: Path | None, size: int, style: CaptionsCfg, max_w: int, active: int | None, tokens: list[str], sep: str
+) -> U8:
+    """The original whole-line drawing: one font, one shaping pass, Raqm in charge of bidi."""
     face = Face(font, size, text)
-    spaced = " " in text.strip()
-    tokens, sep = (text.split(), " ") if spaced else (list(text), "")
     pad, sw = int(size * 0.28), style.stroke_width
     sep_w = face.width(sep) if sep else 0.0
     lines = balanced_lines([face.width(t) for t in tokens], sep_w, max(50, max_w - 2 * pad - 2 * sw))
@@ -200,16 +270,7 @@ def render_text_image(text: str, font: Path | None, size: int, style: CaptionsCf
     ascent, descent = face.font.getmetrics()
     line_h = ascent + descent + int(size * 0.12)
     w_px, h_px = int(max(line_w)) + 2 * (pad + sw), line_h * len(lines) + 2 * pad
-
-    canvas = Image.new("RGBA", (w_px, h_px), (0, 0, 0, 0))
-    if style.bg_opacity > 0:
-        box = (*ImageColor.getrgb(style.bg_color)[:3], int(255 * style.bg_opacity))
-        ImageDraw.Draw(canvas).rounded_rectangle([0, 0, w_px - 1, h_px - 1], radius=int(size * 0.3), fill=box)
-    colors = {
-        name: ImageColor.getrgb(color)[:3]
-        for name, color in (("stroke", style.stroke_color), ("text", style.color), ("active", style.highlight_color))
-    }
-    layers = {name: Image.new("RGBA", (w_px, h_px), (*rgb, 0)) for name, rgb in colors.items()}
+    canvas, layers, colors = _new_canvas(w_px, h_px, size, style)
 
     def draw(layer: str, xy: tuple[float, float], s: str, stroke: int = 0) -> None:
         ink = (*colors[layer], 255)
@@ -229,10 +290,71 @@ def render_text_image(text: str, font: Path | None, size: int, style: CaptionsCf
             if sw:
                 draw("stroke", (x, y), sep.join(tokens[k] for k in ln), sw)
             draw("text", (x, y), sep.join(tokens[k] for k in ln))
-    for name, used in (("stroke", bool(sw)), ("text", True), ("active", highlight)):
-        if used:
-            canvas = Image.alpha_composite(canvas, layers[name])
-    return np.array(canvas, dtype=np.uint8)
+    return _compose(canvas, layers, highlight, sw)
+
+
+def _render_runs(
+    text: str, font: Path | None, size: int, style: CaptionsCfg, max_w: int, active: int | None, tokens: list[str], sep: str
+) -> U8:
+    """Fallback: one covering font per token, drawn in bidi visual order with a shared baseline."""
+    pad, sw = int(size * 0.28), style.stroke_width
+    if font is None:  # one lookup for the whole line, not one warning per token
+        font = find_font(text)
+    native_raqm = bool(features.check("raqm"))
+    runs: list[_Run] = []
+    for index in _visual_order(tokens, raqm=native_raqm):
+        token = tokens[index]
+        shown = _reshape(token) if has_rtl(token) else token
+        # Check the glyphs actually drawn: reshaping produces presentation forms that a base-Arabic
+        # font may not have. A covering font is chosen for the reshaped string when needed.
+        path = font if font is not None and covers_all(font, shown) else find_font(shown)
+        raqm = native_raqm and path is not None and not has_rtl(token)
+        pil = _load_font(path, size, raqm)
+        runs.append(_Run(index, shown, pil, float(pil.getlength(shown)), pil.getmetrics()[0]))
+    sep_font = _load_font(font, size, bool(features.check("raqm")) and font is not None)
+    sep_w = float(sep_font.getlength(sep)) if sep else 0.0
+    lines = balanced_lines([r.width for r in runs], sep_w, max(50, max_w - 2 * pad - 2 * sw))
+    line_w = [sum(runs[k].width for k in ln) + sep_w * (len(ln) - 1) for ln in lines]
+    ascent = max((r.ascent for r in runs), default=sep_font.getmetrics()[0])
+    descent = max((r.font.getmetrics()[1] for r in runs), default=sep_font.getmetrics()[1])
+    line_h = ascent + descent + int(size * 0.12)
+    w_px, h_px = int(max(line_w, default=0)) + 2 * (pad + sw) + 2, line_h * len(lines) + 2 * pad
+    canvas, layers, colors = _new_canvas(w_px, h_px, size, style)
+    highlight = active is not None and can_highlight(text)
+
+    def draw(layer: str, xy: tuple[float, float], run: _Run, stroke: int = 0) -> None:
+        ink = (*colors[layer], 255)
+        ImageDraw.Draw(layers[layer]).text(xy, run.shown, font=run.font, fill=ink, stroke_width=stroke, stroke_fill=ink)
+
+    for row, ln in enumerate(lines):
+        x, y = (w_px - line_w[row]) / 2, pad + row * line_h
+        for pos in ln:
+            run = runs[pos]
+            baseline = y + ascent - run.ascent  # different fonts share one baseline
+            if sw:
+                draw("stroke", (x, baseline), run, sw)
+            draw("active" if highlight and run.index == active else "text", (x, baseline), run)
+            x += run.width + sep_w
+    return _compose(canvas, layers, highlight, sw)
+
+
+def render_text_image(text: str, font: Path | None, size: int, style: CaptionsCfg, max_w: int, active: int | None = None) -> U8:
+    """Render ``text`` (any script, wrapped to ``max_w``) as an RGBA array with clean anti-aliased edges.
+
+    A single font that covers every glyph keeps the original whole-line shaping and bidi path. Mixed-script
+    text with no such font falls back to a covering font per token, drawn in the same visual order.
+
+    Args:
+        active: Index of the word to colour with ``style.highlight_color`` (``None`` = no highlight).
+    """
+    spaced = " " in text.strip()
+    # Unspaced cursive text must be shaped as one run or Arabic letters stop joining.
+    tokens, sep = (text.split(), " ") if spaced else (([text], "") if has_rtl(text) else (list(text), ""))
+    # Same criterion as find_font: a font it accepted must keep the original single-line renderer,
+    # even when it lacks a punctuation or emoji glyph (per-token fallback cannot supply those either).
+    if font is not None and covers(font, text):
+        return _render_single(text, font, size, style, max_w, active, tokens, sep)
+    return _render_runs(text, font, size, style, max_w, active, tokens, sep)
 
 
 @dataclass
@@ -294,7 +416,7 @@ def safe_top(centre: float, H: int, W: int, cfg: CaptionsCfg, band_h: int) -> in
 
 
 def sprite_key(*parts: object) -> str:
-    """Stable cache key for a sprite's rendering parameters."""
+    """Stable cache key for a sprite's rendering parameters (the DB is fresh per run, so chosen fonts need no key)."""
     return "cap:" + hashlib.sha256(repr(parts).encode()).hexdigest()
 
 

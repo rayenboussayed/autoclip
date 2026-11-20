@@ -295,7 +295,8 @@ The GPU is used automatically when there is one and it really works (probed by e
 transcriber with CUDA). Otherwise everything runs on the CPU and the log says so. A `GPU` you cannot really use is never selected.
 
 On the CPU the transcriber is much slower: `large-v3` needs roughly ten times the time of `small`, so the engine uses
-`large-v3` only on CUDA and `small` on the CPU (a model that does not fit into the free RAM is replaced by a smaller one).
+`large-v3` on CUDA and, on the CPU, `medium` only on an ample machine (at least 8 cores and 8 GiB free), otherwise `small`.
+A model that does not fit into the free RAM is replaced by a smaller one; the broken `base` model is never picked.
 
 ## Media quality (chosen by the engine)
 
@@ -355,18 +356,20 @@ keyboard clicks or hum. Enhancement is automatic:
 * **Denoising only helps when there is noise.** A clean recording is damaged by it and the ASR model then drifts into
   the wrong language, so every chunk is measured first and left alone when it is clean enough.
 * Enhancement is part of the transcript cache key: changing it re-transcribes the video. The cache format is unchanged,
-  so transcripts written by 4.0.2 remain valid.
+  but the key now records detect-once decoding and the hallucination guard, so 4.0.2 transcripts are re-transcribed once.
 * `--skip denoise` transcribes the untouched audio (and changes the cache key).
 * `--skip audio_enhance` leaves the clip audio untouched (no high-pass, loudness or limiter).
 
 ## Transcription
 
-* The model follows the machine: `large-v3` on CUDA, `small` on the CPU; a model that does not fit into the free RAM
-  is replaced by a smaller one. The beam size follows the device as well (5 on CUDA, 3 on the CPU).
+* The model follows the machine: `large-v3` on CUDA; on the CPU `medium` only on an ample machine (8+ cores, 8+ GiB free),
+  otherwise `small`. A model that does not fit into the free RAM is replaced by a smaller one (never `base`). The beam
+  size follows the device as well (5 on CUDA, 3 on the CPU).
 * The audio is transcribed in 5-minute chunks: neither the denoiser nor Whisper ever holds more than that. On a fresh
   silence-removal assembly the chunks are transcribed inside the assembly as their segments are committed; on a reused
   assembly, a cached/sidecar/subtitle transcript, or a short file, the standalone pass does the same work. The language
-  is detected once and reused for the remaining chunks.
+  is detected on the first chunk and reused for the remaining ones (no per-window re-detection), and a low-confidence
+  segment surrounded by silence is dropped.
 * A sidecar transcript (`<video-stem>.json` preferred, `.srt` otherwise) next to the video is used; `--skip stt` stops
   before Whisper (a sidecar, downloaded or cached transcript is still used). The language is always auto-detected.
 
@@ -422,7 +425,8 @@ next run starts close to the learned optimum.
 * Before and after every operation the script re-reads CPU count (affinity + container quota) and *free* RAM. The number
   of parallel renders, encoder threads, cache size and CPU budget are derived automatically from these readings and the
   engine-derived performance profile; they shrink under memory pressure and recover when memory is available again. A smaller Whisper
-  model is chosen when the CPU one does not fit in free RAM (the shrink is CPU-only; a GPU model is used as-is).
+  model is chosen when the CPU one does not fit in free RAM (the shrink is CPU-only; a GPU model is used as-is); the
+  larger CPU pick is reserved for performance-class machines and logged with a slow-run warning.
 * One SQLite database (WAL) per video, recreated empty at every start. Only the transcript JSON is kept between runs.
 * Every production function is wrapped with `traced`: callers get `[START]` / `[END]` output, `START` /
   `END` / `FAIL` log records with machine state, and post-operation memory rebalancing. Nested calls are
@@ -511,7 +515,11 @@ line - so `./autoclip-x86_64.AppImage config.json` still cuts clips.
 * **ffmpeg**: decoding uses the one on `PATH` if present, otherwise the binary bundled with `imageio-ffmpeg`. Encoding goes
   through MoviePy, which uses `FFMPEG_BINARY` if you set it, else its bundled binary - and the encoder is probed with that
   same binary, so a GPU encoder is only chosen when the build that will really encode can use it.
-* **Fonts**: each OS's font folders are searched for a bold font that covers the caption's script; install a Noto font for scripts your OS lacks.
+* **Fonts**: each OS's font folders are searched for a font covering every script in the caption; mixed Arabic+Latin text
+  falls back to a covering font per token when no single font has all the glyphs (Arabic is shaped and ordered as a whole
+  line). Install a Noto font for scripts your OS lacks. The server Docker image and snap include DejaVu and Noto fonts
+  (no CJK); host installs, the standalone bundle and the AppImage rely on OS fonts. Glyph rendering on Windows/macOS was
+  not verified here.
 * **Arabic / Hebrew** captions are shaped in pure Python when Pillow has no libraqm (typical for Windows / macOS wheels).
   **Hindi / Thai / Khmer** need Pillow built with libraqm; a warning is logged when it is missing.
 * Worker processes use `spawn` everywhere, so behaviour is identical on all three systems.
@@ -522,7 +530,10 @@ See `docs/options-reference.md` for every option and its explanation (this is th
 
 See `docs/UPGRADING-4.0.md` for the nine-key schema, the removed-key → runtime replacement table, the
 `--flag` / `AUTOCLIP_*` equivalents, and the behaviour that is automatic now; `docs/UPGRADING-4.0.2.md` covers the
-4.0.1 → 4.0.2 release (the last machine-policy knobs are removed; the engine chooses them). `UPGRADING-3.0.md` covers the
+4.0.1 → 4.0.2 release (the last machine-policy knobs are removed; the engine chooses them). The current tree also carries
+unreleased engine changes (CPU `medium` pick, detect-once decoding, a hallucination guard, a one-time cache-key change
+and bundled fonts), documented under `CHANGELOG.md` → `[Unreleased]`; the version string remains `4.0.2`.
+`UPGRADING-3.0.md` covers the
 2.x → 3.0 changes and is kept as history. 4.0 was a breaking config-schema release: old config files still load
 (removed keys warn and are ignored), but their replacements moved to flags, environment variables or - for the machine
 settings - to nothing at all, because the engine chooses them.

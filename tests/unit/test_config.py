@@ -390,7 +390,8 @@ def test_whisper_model_for_cuda_and_cpu(monkeypatch: pytest.MonkeyPatch) -> None
 
     assert detect_device() == "cuda"
     assert whisper_model_for("cuda") == "large-v3"
-    assert whisper_model_for("cpu") == "small"
+    assert whisper_model_for("cpu", cpus=4, ram_mb=4096) == "small"
+    assert whisper_model_for("cpu", cpus=16, ram_mb=16384) == "medium"
 
 
 def test_the_download_allow_deny_keys_are_read_directly(tmp_path: Path) -> None:

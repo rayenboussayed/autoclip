@@ -23,6 +23,7 @@ __all__ = [
     "auto_mode",
     "auto_ollama_model",
     "auto_quality",
+    "auto_whisper_model",
 ]
 
 #: RAM one server job needs at peak (Whisper + render + Python overhead), in MB.
@@ -63,6 +64,18 @@ def auto_mode(*, cpus: int, free_ram_mb: float) -> Literal["performance", "resou
     if cpus >= 8 and free >= 8192:
         return "performance"
     return "balance"
+
+
+def auto_whisper_model(*, device: str, cpus: int, free_ram_mb: float) -> str:
+    """CUDA: ``large-v3``. CPU: ``medium`` only on a performance-class machine, else ``small``.
+
+    CPU ``medium`` is about five times slower than ``small`` and ``large-v3`` takes hours on a long
+    video, so the larger pick is gated by the same ample-machine rule as the resource profile. The
+    RAM fit in ``transcript.fit_whisper_model`` still shrinks the result when memory is tight.
+    """
+    if device == "cuda":
+        return "large-v3"
+    return "medium" if auto_mode(cpus=cpus, free_ram_mb=free_ram_mb) == "performance" else "small"
 
 
 def auto_max_concurrent_jobs(*, cpus: int, free_ram_mb: float) -> int:

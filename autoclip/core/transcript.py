@@ -20,7 +20,12 @@ from .denoise import SpeechEnhancer, default_models_dir
 from .errors import AutoclipError
 from .events import Cancelled, CancelToken
 from .internal import CHUNK_MINUTES as _CHUNK_MINUTES
-from .internal.automation import ENHANCE_ATTENUATION_DB, ENHANCE_SNR_THRESHOLD_DB, transcription_beam_size
+from .internal.automation import (
+    ENHANCE_ATTENUATION_DB,
+    ENHANCE_SNR_THRESHOLD_DB,
+    HALLUCINATION_SILENCE_THRESHOLD,
+    transcription_beam_size,
+)
 from .internal.runtime import whisper_model_for
 from .log import speed_text, traced
 from .media import atomic_write_text, decode_audio
@@ -36,6 +41,16 @@ CJK = "\u3040-\u30ff\u3400-\u9fff\u0e00-\u0e7f"  # scripts written without space
 SRT_TIME = re.compile(r"(\d+):(\d\d):(\d\d)[,.](\d{1,3})\s*-->\s*(\d+):(\d\d):(\d\d)[,.](\d{1,3})")
 #: Approximate RAM (MB, int8 on CPU) of faster-whisper models, smallest first.
 WHISPER_RAM_MB = {"tiny": 400, "base": 500, "small": 1100, "medium": 2600, "large-v3": 4200}
+#: ``base`` is documented for its RAM cost but is never an engine pick: measured 0% Arabic and CER 0.97.
+WHISPER_NEVER_FIT = frozenset({"base"})
+
+
+def _cap_cpu_model(name: str) -> str:
+    """A GPU failure never loads a CUDA-sized model on the CPU: cap at ``small`` (``medium`` is already ~5x slower)."""
+    order = ("tiny", "base", "small", "medium", "large-v3")
+    if name not in order:  # custom model names/paths are never downgraded
+        return name
+    return name if order.index(name) <= order.index("small") else "small"
 
 
 def _strip_rolling(text: str, previous: str) -> str:
@@ -189,7 +204,7 @@ def fit_whisper_model(name: str, device: str) -> str:
     if device == "cuda" or name not in WHISPER_RAM_MB:
         return name
     usable = RESOURCES.usable_memory() // MB
-    fitting = [m for m, mb in WHISPER_RAM_MB.items() if mb <= min(usable, WHISPER_RAM_MB[name])]
+    fitting = [m for m, mb in WHISPER_RAM_MB.items() if m not in WHISPER_NEVER_FIT and mb <= min(usable, WHISPER_RAM_MB[name])]
     chosen = fitting[-1] if fitting else next(iter(WHISPER_RAM_MB))
     if not fitting:
         raise AutoclipError(f"less than {WHISPER_RAM_MB['tiny']}MB of RAM is usable; refusing to load a Whisper model")
@@ -435,7 +450,7 @@ class WhisperSession:
                 self._attempts.append(("cuda", e))
                 _release_whisper(self._model)
                 device = "cpu"
-                self._model_name = fit_whisper_model(self._model_name, device)  # a GPU-sized pick is re-fit for the CPU
+                self._model_name = fit_whisper_model(_cap_cpu_model(self._model_name), device)  # no multi-hour CPU fallback
                 self._load_cpu()
         else:
             try:
@@ -444,6 +459,7 @@ class WhisperSession:
                 self._attempts.append(("cpu", e))
                 raise AutoclipError(f"Whisper failed on every available device ({_device_failure(self._attempts)})") from e
         self._device = device
+        self._warn_slow_cpu()
         log.info(
             "whisper model=%s device=%s%s cpu_threads=%d",
             self._model_name,
@@ -476,7 +492,8 @@ class WhisperSession:
                     language=self.language,
                     condition_on_previous_text=False,
                     beam_size=transcription_beam_size(self._device),
-                    multilingual=True,
+                    multilingual=False,  # detect once, then reuse: per-window detection drifts into other languages
+                    hallucination_silence_threshold=HALLUCINATION_SILENCE_THRESHOLD,
                 )
                 chunk_rows: list[dict[str, Any]] = []
                 for seg in stream:
@@ -538,10 +555,20 @@ class WhisperSession:
                     self._device = "cpu"
                     _release_whisper(self._model)
                     self._model = None
-                    self._load_cpu()  # no re-fit here: the same model name is used on the CPU
+                    # A mid-file GPU failure must not silently load a CUDA-sized model on the CPU either.
+                    self._model_name = fit_whisper_model(_cap_cpu_model(self._model_name), "cpu")
+                    self._warn_slow_cpu()
+                    self._load_cpu()
                     continue
                 self._attempts.append(("cpu", e))
                 raise AutoclipError(f"Whisper failed on every available device ({_device_failure(self._attempts)})") from e
+
+    def _warn_slow_cpu(self) -> None:
+        if self._device == "cpu" and self._model_name in ("medium", "large-v3"):
+            log.warning(
+                "whisper '%s' on the CPU is much slower than 'small' (about 5x); a long video can take hours",
+                self._model_name,
+            )
 
     def close(self) -> None:
         """Release the native model and enhancer (idempotent)."""
@@ -648,7 +675,8 @@ def _cache_key(src: Path, model: str, cutmap: CutMap, *, enhance: bool = True) -
         "source": f"{src.name}:{st.st_size}:{st.st_mtime_ns}",
         "model": model,
         "language": None,
-        "multilingual": True,
+        "multilingual": False,
+        "hallucination_silence_threshold": HALLUCINATION_SILENCE_THRESHOLD,
         "word_timestamps": True,
         "format": TRANSCRIPT_CACHE_FORMAT,
         "cut_map": cutmap.fingerprint,

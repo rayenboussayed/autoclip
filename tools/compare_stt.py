@@ -35,6 +35,7 @@ from numpy.typing import NDArray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from autoclip.core.internal.automation import HALLUCINATION_SILENCE_THRESHOLD
 from autoclip.core.media import decode_audio
 
 F32 = NDArray[np.float32]
@@ -197,6 +198,8 @@ def transcribe(audio: F32, model_name: str, device: str = "cuda", beam_size: int
         language=None,  # auto-detect, like the production config
         condition_on_previous_text=False,
         beam_size=beam_size,
+        multilingual=False,  # keep the benchmark's decode identical to production
+        hallucination_silence_threshold=HALLUCINATION_SILENCE_THRESHOLD,
     )
     segments = list(stream)
     seconds = time.perf_counter() - started

@@ -5,8 +5,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=8000
 
+# DejaVu covers Latin + Arabic in one face; Noto supplies most other scripts (no CJK: a separate, large package).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system app && useradd --system --no-create-home --gid app app

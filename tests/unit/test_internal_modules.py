@@ -83,7 +83,8 @@ def test_runtime_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = types.ModuleType("ctranslate2")
     fake.get_cuda_device_count = lambda: 0  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "ctranslate2", fake)
-    assert runtime.whisper_model_for("cpu") == "small"
+    assert runtime.whisper_model_for("cpu", cpus=4, ram_mb=4096) == "small"
+    assert runtime.whisper_model_for("cpu", cpus=16, ram_mb=16384) == "medium"
     assert runtime.whisper_model_for("cuda") == "large-v3"
     assert runtime.detect_device() in ("cpu", "cuda")
     # detect_cpu_count must survive a broken probe (falls back to the raw affinity/cpu count)
