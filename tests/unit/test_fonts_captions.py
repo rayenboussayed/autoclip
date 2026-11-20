@@ -499,7 +499,7 @@ def test_mixed_caption_with_a_supplied_partial_font(tmp_path: Path, monkeypatch:
 
 
 def test_visual_order_rejects_a_mangled_bidi_result(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("bidi.algorithm.get_display", lambda _s, _base_dir=None: "a")
+    monkeypatch.setattr("bidi.algorithm.get_display", lambda *_a, **_kw: "a")
     assert captions._visual_order(["مرحبا", "بكم"], raqm=False) == [0, 1]
 
 
