@@ -26,7 +26,7 @@ dev = ["pytest>=9,<10", "pytest-cov>=7,<8", "mypy>=2.4.0,<2.4.1", "ruff>=0.17.3,
 autoclip = "autoclip.cli:main"
 
 [tool.setuptools]
-packages = ["autoclip", "autoclip.core", "autoclip.core.derive", "autoclip.cli", "autoclip.app", "autoclip.server", "autoclip.server.routers"]
+packages = ["autoclip", "autoclip.core", "autoclip.core.derive", "autoclip.core.download", "autoclip.cli", "autoclip.app", "autoclip.server", "autoclip.server.routers"]
 
 [tool.setuptools.package-data]
 "autoclip.server" = ["templates/*.html"]

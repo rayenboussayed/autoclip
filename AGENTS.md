@@ -94,7 +94,12 @@ autoclip/
     config.py       typed config dataclasses (Pydantic validates them), strict loader, input globbing + URLs
     platforms.py    download policy: extractor families, built-in/user groups, allow/deny, per-platform settings
     formats.py      chooses one explicit yt-dlp format id (short-side quality, fps, codec, container, audio)
-    download.py     Downloader: yt-dlp parameters, originals cache, time ranges, subtitles, sidecars, naming
+    download/       Downloader and the download-only helpers (was one 1300-line module)
+      core.py       Downloader: platform policy, originals, subtitles and yt-dlp orchestration
+      naming.py     URL/title/range -> the stable originals-cache prefix
+      originals.py  find and validate cached originals
+      subtitles.py  subtitle discovery and SRT conversion
+      reporting.py  the --formats report; params.py yt-dlp logger/errors; extraction.py info-dict cleanup
     pipeline.py     process_video (probe -> transcript -> moments -> render; name/subtitle overrides), split_video, ranges_moments
     styles.py       DATA ONLY: STYLES (scene weights), STYLE_HELP, LEXICONS
     models.py       small slotted dataclasses: Span/Word/Segment/Moment, MediaInfo, Encoder, RenderJob, Downloaded
@@ -674,7 +679,7 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
     over the standard handles the Tcl channels depend on. `pyproject.toml` therefore sets `--capture=sys` (no test
     asserts on output written straight to a file descriptor). Do not "restore" the default.
 22. **Two different `DownloadError` classes exist.** yt-dlp has `yt_dlp.utils.DownloadError` (and it is *not* a
-    subclass of autoclip's), and importing it into `download.py` would shadow `errors.DownloadError`. The downloader
+    subclass of autoclip's), and importing it into `download/core.py` would shadow `errors.DownloadError`. The downloader
     keeps yt-dlp's base class as `self._ytdl_error = YoutubeDLError` and catches that; anything else would either
     miss yt-dlp's failures or swallow autoclip's own. Never `except DownloadError` around a yt-dlp call.
 23. **The bundled imageio-ffmpeg has no ffprobe.** `download.time_range` is handed to yt-dlp only when a *real*

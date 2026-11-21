@@ -20,6 +20,8 @@ import pytest
 from autoclip.core import download
 from autoclip.core.config import DownloadCfg, parse
 from autoclip.core.download import Downloader, FormatReport, FormatRow, format_report_text
+from autoclip.core.download import core as download_core
+from autoclip.core.download import originals as download_originals
 from autoclip.core.errors import AutoclipError, DownloadError
 from autoclip.core.formats import Choice
 from autoclip.core.io import read_json, srt_time
@@ -1174,8 +1176,8 @@ def test_a_playlist_sleeps_between_entries(
 
     slept: list[float] = []
     monkeypatch.setattr(time, "sleep", slept.append)
-    monkeypatch.setattr(download, "DOWNLOAD_PLAYLIST_PAUSE_MIN_SECONDS", 2.5)
-    monkeypatch.setattr(download, "DOWNLOAD_PLAYLIST_PAUSE_MAX_SECONDS", 2.5)
+    monkeypatch.setattr(download_core, "DOWNLOAD_PLAYLIST_PAUSE_MIN_SECONDS", 2.5)
+    monkeypatch.setattr(download_core, "DOWNLOAD_PLAYLIST_PAUSE_MAX_SECONDS", 2.5)
     dl._YoutubeDL = FakeYtDlp(handle)
     with caplog.at_level(logging.INFO, logger="autoclip"):
         dl.download(PLAYLIST_URL)
@@ -1341,7 +1343,7 @@ def test_a_failing_local_cut_is_an_error_and_removes_the_download(media: Media, 
     def broken(source: Path, target: Path, start: float, end: float) -> None:
         raise AutoclipError("no encoder")
 
-    monkeypatch.setattr(download, "trim_video", broken)
+    monkeypatch.setattr(download_core, "trim_video", broken)
     with pytest.raises(DownloadError, match="cannot cut 00:10-00:20"):
         dl.download(URL)
     assert not (dl.root / "Nice [v1] [137] [10-20s].mp4").exists()
@@ -1874,6 +1876,6 @@ def test_an_unreadable_cache_entry_is_a_miss_not_a_crash(media: Media, dl_factor
     def broken_probe(path: Any) -> Any:
         raise ValueError("cannot parse this file")
 
-    monkeypatch.setattr(download_module, "probe", broken_probe)
+    monkeypatch.setattr(download_originals, "probe", broken_probe)
     assert download_module._exact_media(dl.root, "Entry [u8] [137+140] [10-20s]", (10.0, 20.0)) is None
     assert not cached.exists()  # the unusable entry was removed
