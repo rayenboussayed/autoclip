@@ -235,7 +235,7 @@ def process_video(
     store = Store(work / "autoclip.db", fresh=True)
     cache = Cache(store, RESOURCES)
     try:
-        cuts = detect_scenes(src, info, cancel=cancel) if cc.mode != "ranges" and cc.kinds != ["raw"] else []
+        cuts = detect_scenes(src, info, cancel=cancel) if cc.mode != "ranges" and "raw" not in cc.kinds else []
         if cancel is not None:
             cancel.check()
         log.info("system health before transcript: %s", health_check("transcript"))
@@ -338,6 +338,7 @@ def process_video(
             if jobs:
                 render_all(jobs, needs, report=reporter, cancel=cancel)
             if raw_jobs:
+                reporter("render", len(jobs) / total, f"{len(jobs)}/{total} clips processed")
                 # One job: in-process, no pool. Keeps its duration-scaled estimate away from other clips.
                 render_all(raw_jobs, raw_needs, cancel=cancel)
         except Cancelled:

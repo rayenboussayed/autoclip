@@ -387,6 +387,7 @@ REMOVED_KEYS: dict[str, str] = {
     "clips.kinds": "use clips.preset",
     "clips.short": "use clips.preset (the short profile is built in)",
     "clips.long": "use clips.preset (the long profile is built in)",
+    "clips.raw": "use clips.preset (the raw profile is built in)",
     "clips.lexicon_file": "drop a lexicon.json next to the config file instead",
     "clips.skip_intro_seconds": "no longer configurable",
     "clips.snap_to_cuts": "shot-change snapping is automatic",

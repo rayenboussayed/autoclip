@@ -6,7 +6,8 @@ Guidance for AI coding agents (and humans) working on this repository. Read it f
 ## 1. What this project is
 
 `autoclip` turns long videos into the best **short** (default 9:16, 20-60 s) and **long** (default 16:9, 3-10 min)
-clips, per requested **scene type** (`best`, `funny`, `sad`, ... or `"all"`). One config file drives everything.
+clips, per requested **scene type** (`best`, `funny`, `sad`, ... or `"all"`), or exports the whole silence-removed
+video as one captioned **raw** clip at the original shape. One config file drives everything.
 Pipeline: download the http(s) URLs of `input` with yt-dlp (only when there are any) -> transcribe (faster-whisper,
 a downloaded subtitle or .srt/.json) -> score sentence-aligned windows per scene -> pick the best non-overlapping ones ->
 render (enhance audio, cut pauses/fillers, layout, burn captions, encode on GPU if one really works).
@@ -239,12 +240,14 @@ main()
                                              (5 min chunks, or the fused pass replayed from the partial) -> SQLite;
                                              subtitles follow the video's original language; consent is always auto;
                                              `skip.stt` stops before Whisper, `skip.denoise` skips the enhancer
-      for kind in cfg.clips.kinds ("short", "long"):
-        moments = ranges_moments(...)  if mode == "ranges"   (scene "custom")
+      for kind in cfg.clips.kinds ("short", "long", "raw"):
+        moments = [raw_moment(...)]  if kind == "raw"      (one full-length window on the measured clock)
+                  ranges_moments(...)  if mode == "ranges"   (scene "custom")
                   select_moments(...)  otherwise              (one pass per scene type)
         no moments -> warning, kind skipped (all kinds empty -> AutoclipError)
         Store.save_moment(...) -> clip_id ; build RenderJob (dst = {out}/{kind}/{video}/{video}_{scene}_{nn}_{start}s.mp4)
       render_all(jobs)                             adaptive pool; results land in the `clips` table
+      render_all(raw_jobs)                         separate single-job pass (its duration-scaled estimate must not serialise other clips)
       write {out}/{kind}/{video}/clips.json from the DB rows with status == "done"
 ```
 
@@ -354,7 +357,7 @@ step, percent, outputs); nothing else is persisted except the job folder and the
 7. **Config is strict, with a soft fallback for values.** Unknown keys and wrong JSON types raise `ConfigError` at
    load; invalid *values* warn and fall back to the field default (`_coerce_defaults`); `"_comment"` keys are
    ignored. All defaults live in the dataclass fields (single source of truth for `--init`/`--init-full`).
-8. **Outputs:** `{output_dir}/{short|long}/{video}/` holds only clips (+ `.jpg`, `.srt`, `clips.json`);
+8. **Outputs:** `{output_dir}/{short|long|raw}/{video}/` holds only clips (+ `.jpg`, `.srt`, `clips.json`);
    `{output_dir}/.work/{video}/` holds the DB and transcript cache; `{output_dir}/.work/downloads/` holds
    downloaded originals and their sidecars; `{output_dir}/logs/` holds run logs.
    File names: `{video}_{scene}_{nn:02d}_{int(start)}s.mp4` (`nn` counts per kind+scene). Two local inputs with the same
@@ -763,8 +766,9 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
   `tests/unit/test_moments.py::test_every_scene_type_prefers_its_own_window`.
 * **New GPU/CPU encoder:** add a builder to `hardware.HARDWARE` (and the OS to `PRIORITY`), add the literal to `VideoCfg.gpu`,
   test arguments in `tests/unit/test_hardware.py`. If it needs its own `-preset` names, put them in `params`.
-* **New clip kind:** add a `KindCfg` field on `ClipsCfg` with defaults, extend the `kinds` `Literal`, `ClipsCfg.kind()`, and
-  the output-folder logic in `cli.process_video`; update tests and README.
+* **New clip kind:** add a `KindCfg` field on `ClipsCfg` with defaults, extend `ClipKind`, `ClipsCfg.kind()`, and the kind
+  loop in `core/pipeline.py` (`process_video`); update tests and README. `raw` follows this recipe, adds a preset value and
+  renders in a separate single-job pass; `--split` and `clips.ranges` are rejected with it.
 * **New download option:** add a typed field to the right `download.*` dataclass (default included), use it in
   `Downloader._base_params` / `_media_params` / `formats`, add its entry to `app/fields.py` (the suite fails without it),
   document it in README's "Downloading URLs" and cover it in `tests/unit/test_config.py` (valid + invalid) and
@@ -837,7 +841,8 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 
 ## 13. Glossary
 
-* **kind** - `short` or `long`: a family of output clips with its own length range, count and aspect ratio.
+* **kind** - `short`, `long` or `raw`: a family of output clips with its own length range, count and aspect ratio;
+  `raw` has no selection bounds and keeps the source shape.
 * **scene (type)** - the style a moment is chosen for (`best`, `funny`, ...); defined by feature weights in `STYLES`.
 * **moment** - a selected window (`Moment`) before rendering; **clip** - the rendered file.
 * **candidate** - a possible window (run of sentences) considered during selection.

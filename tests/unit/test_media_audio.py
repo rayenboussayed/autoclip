@@ -239,6 +239,8 @@ def test_build_audio_pads_cuts_and_declicks() -> None:
     assert len(y) == round(2.5 * AUDIO_SR) and y[0] == 0.0 and y[AUDIO_SR // 2] == 1.0 and y[-1] == 0.0
     assert len(build_audio(x, [(0.0, 1.0)], 0.5)) == AUDIO_SR // 2
     assert build_audio(x, [(0.0, 1.0)], 1.0)[0] == 1.0  # a single range is not ramped
+    silent = build_audio(x, [], 1.0)  # nothing kept: a full-length silent buffer
+    assert len(silent) == AUDIO_SR and not silent.any()
 
 
 def test_ffmpeg_failure_is_loud(tmp_path: Path) -> None:

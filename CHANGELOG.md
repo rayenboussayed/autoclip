@@ -6,6 +6,8 @@ release mentions the source tag/commit for traceability.
 
 ## [Unreleased]
 
+- feat: a `raw` clip kind exports one full-length, captioned, audio-enhanced version of the silence-removed source at the original shape, into `raw/{video}/`. Select it with the additive `clips.preset: "raw"` value; the default `both`, all nine config keys, the CLI and the caches are unchanged. `raw` cannot be combined with `clips.ranges` or `--split`. Its duration-scaled memory estimate is kept in a separate single-job render pass, and audio decode/mixing now use one destination buffer instead of several full-length copies.
+
 - fix: captions, clip windows and exported `.srt` files now follow the real timeline of a silence-removed video. Encoded segments are longer than their nominal source spans (CFR frame rounding and AAC padding), so a 30-cut assembly could drift about 3.4 s; the assembler now measures each segment and publishes a monotone measured timeline that the transcript, selection and render stages share. The transcript cache stays nominal, so no cache format, config key, CLI or output layout changed. Old optimizer manifests are rebuilt once (internal schema 2).
 
 ## [4.0.3] — 2026-11-21 06:51:08 UTC (tag `v4.0.3`, commit `b5946ef`)

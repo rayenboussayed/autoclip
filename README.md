@@ -1,6 +1,6 @@
 # autoclip
 
-Cut long videos into the best **short** and **long** clips (TikTok / Reels / Shorts and YouTube-style highlights).
+Cut long videos into the best **short** and **long** clips (TikTok / Reels / Shorts and YouTube-style highlights), or export the whole silence-removed video as a captioned **raw** clip.
 Free, local, one command. Runs on **Linux, macOS and Windows** (Python 3.11+). No system ffmpeg needed.
 
 ```bash
@@ -46,13 +46,14 @@ is exactly what `python -m autoclip config.json` would run.
 {output_dir}/
   short/{video}/   {video}_{scene}_{nn}_{start}s.mp4 + .jpg cover + .srt, clips.json     (9:16, 20-60 s by default)
   long/{video}/    same, for the long clips                                               (16:9, 3-10 min by default)
+  raw/{video}/     one full-length captioned clip, silence removed                       (original shape)
   logs/            autoclip_<timestamp>.log
   .work/{video}/   autoclip.db (recreated empty on every start), the transcript cache and its .partial.jsonl resume file, the optimized source
   .work/downloads/ originals downloaded from URLs (reused by later runs)
 ```
 
 Every `clips.json` row carries `start`/`end` for the processed timeline and `source_start`/`source_end` for the
-original input file. `trimmed` remains the length after pause/filler cuts. A kind that is not requested (or finds nothing) gets no folder. Several videos share the same `short/` and `long/` folders. A *relative* `output_dir` is resolved against the current working
+original input file. `trimmed` remains the length after pause/filler cuts. A kind that is not requested (or finds nothing) gets no folder. Several videos share the same `short/`, `long/` and `raw/` folders. A *relative* `output_dir` is resolved against the current working
 directory - not against the config file - so the output folder is independent of where your config lives. An absolute `output_dir`
 (or the default `~/Videos/clips`) is used as-is.
 
@@ -94,7 +95,7 @@ variable) or derived automatically.
 | Key | What it controls |
 |---|---|
 | `input` | videos, globs or http(s) URLs |
-| `clips.preset` | `both`, `shorts` or `long` - which clip families to render |
+| `clips.preset` | `both`, `shorts`, `long` or `raw` - which clip families to render |
 | `clips.scenes` | `best`, a list, or `all` - the scene types to pick moments for |
 | `clips.keywords` | words or phrases that boost a moment |
 | `clips.ranges` | exact cuts (`"00:01:00-00:01:45"`) in original-source seconds, one per line (remapped through silence removal; missing spans are skipped with a warning) |
@@ -103,8 +104,10 @@ variable) or derived automatically.
 | `llm.system_prompt` | the system message of the local LLM (moment ranking, titles, captions); empty keeps the built-in editor messages |
 | `image.prompt` | the Stable Diffusion prompt of every AI thumbnail |
 
-The built-in clip profiles are fixed: **short** = 20-60 s at 9:16, **long** = 3-10 min at 16:9. Use `clips.ranges`
-or `--split` for other shapes. `clips.scenes` is `"all"`, one type, or a list: `best attractive exciting funny sad
+The built-in clip profiles are fixed: **short** = 20-60 s at 9:16, **long** = 3-10 min at 16:9, **raw** = one
+whole-source file at the original shape. Use `clips.ranges` or `--split` for other shapes. The `raw` preset is
+mutually exclusive with `clips.ranges` and `--split`; its window is the whole silence-removed source, and the
+global `skip.*` settings still apply within it. `clips.scenes` is `"all"`, one type, or a list: `best attractive exciting funny sad
 emotional inspiring calm educational controversial`.
 
 Runtime overrides (flags win over environment variables):
@@ -129,7 +132,7 @@ warn and are ignored (see `docs/UPGRADING-4.0.md`).
 
 See `docs/options-reference.md` for the generated reference of the nine keys.
 
-## Short and long clips, scene types
+## Short, long and raw clips, scene types
 
 ```json
 {
@@ -146,8 +149,9 @@ See `docs/options-reference.md` for the generated reference of the nine keys.
   If a video is too short for a kind (e.g. 2-minute video, long clips from 3 minutes) that kind is skipped with a warning.
 * **The length of a clip is `clip(minimum, maximum)`:** `min_seconds` is a hard floor (the pause removal gives cuts back
   rather than going below it), `max_seconds` is a hard ceiling (padding around the cut cannot push it over).
-* `clips.ranges` cuts your own ranges (scene type `custom`), applies to both kinds; `--split` cuts equal 600 s parts into
-  `long/{video}/` and cannot be combined with `clips.ranges`.
+* `clips.ranges` cuts your own ranges (scene type `custom`), applies to the `short` and `long` kinds; `--split` cuts equal
+  600 s parts into `long/{video}/` and cannot be combined with `clips.ranges`. The `raw` preset ignores both and instead
+  writes one full-length captioned file to `raw/{video}/`.
 * `input` is a path, a glob or a list. One broken video or clip never stops the batch. Exit status: `0` all done,
   `1` something failed, `2` bad configuration. A transcript is picked up from a sidecar `.json`/`.srt` next to each video.
 
@@ -535,7 +539,8 @@ See `docs/UPGRADING-4.0.md` for the nine-key schema, the removed-key → runtime
 `--flag` / `AUTOCLIP_*` equivalents, and the behaviour that is automatic now; `docs/UPGRADING-4.0.2.md` covers the
 4.0.1 → 4.0.2 release (the last machine-policy knobs are removed; the engine chooses them). The 4.0.3 release adds the
 fused per-chunk STT pass, the CPU `medium` pick, detect-once decoding, a hallucination guard, a one-time cache-key change
-and bundled fonts; see `CHANGELOG.md` → `[4.0.3]`.
+and bundled fonts; see `CHANGELOG.md` → `[4.0.3]`. The `raw` preset is additive: the nine config keys, the default
+`both` output and all existing caches are unchanged.
 `UPGRADING-3.0.md` covers the
 2.x → 3.0 changes and is kept as history. 4.0 was a breaking config-schema release: old config files still load
 (removed keys warn and are ignored), but their replacements moved to flags, environment variables or - for the machine
