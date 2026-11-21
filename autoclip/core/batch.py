@@ -15,6 +15,7 @@ from .config import Config, is_url
 from .download import Downloader
 from .errors import AutoclipError, ConfigError, RateLimitError
 from .events import CancelToken, Reporter
+from .io import unique_name as _unique_name
 from .log import health_check, traced
 from .models import Encoder
 from .pipeline import process_video
@@ -33,18 +34,6 @@ class BatchResult:
     @property
     def exit_code(self) -> int:
         return 1 if self.clips_failed else 0
-
-
-def _unique_name(candidate: str, used: set[str]) -> str:
-    """A name not clashing with ``used`` (case-insensitive); falls back to "Name (2)" etc."""
-    if candidate.casefold() not in used:
-        used.add(candidate.casefold())
-        return candidate
-    n = 2
-    while f"{candidate} ({n})".casefold() in used:
-        n += 1
-    used.add(f"{candidate} ({n})".casefold())
-    return f"{candidate} ({n})"
 
 
 def _db_peak_rss(root: Path) -> int:

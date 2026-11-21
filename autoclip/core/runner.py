@@ -16,6 +16,7 @@ from dataclasses import replace
 from .events import CancelToken, Reporter
 from .hardware import HW_MAX_WORKERS
 from .internal import modes
+from .io import srt_time as _srt_time
 from .log import default_level, safe_path_text, setup_logging, traced
 from .models import RenderJob
 from .render import render_clip
@@ -78,12 +79,6 @@ def render_job(job: RenderJob) -> bool:
         cache.close()
         store.close()
         gc.collect()
-
-
-def _srt_time(t: float) -> str:
-    """Seconds -> SubRip ``HH:MM:SS,mmm``."""
-    ms = round(max(t, 0.0) * 1000)
-    return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
 
 
 @traced("render_all")

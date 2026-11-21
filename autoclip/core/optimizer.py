@@ -26,6 +26,7 @@ from .events import Cancelled, CancelToken
 from .internal import CHUNK_MINUTES
 from .internal.automation import UNSILENCE_MIN_TOTAL_SECONDS
 from .internal.quality import quality_profile
+from .io import read_json
 from .log import traced
 from .media import AUDIO_SR, FRAME, atomic_write_json, external_env, ffmpeg_exe, frame_energy_db, probe
 from .models import MediaInfo
@@ -40,11 +41,11 @@ _STALE_PATCH = ".part.mp4"
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
+    """The assembly's tolerant variant: a missing or corrupt manifest means "start fresh"."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return read_json(path)
+    except (OSError, ValueError):  # JSONDecodeError and UnicodeDecodeError are ValueErrors
         return None
-    return data if isinstance(data, dict) else None
 
 
 def _source_fingerprint(src: Path, cfg: Config) -> str:

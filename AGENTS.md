@@ -99,6 +99,7 @@ autoclip/
     styles.py       DATA ONLY: STYLES (scene weights), STYLE_HELP, LEXICONS
     models.py       small slotted dataclasses: Span/Word/Segment/Moment, MediaInfo, Encoder, RenderJob, Downloaded
     errors.py       AutoclipError, ConfigError, DownloadError
+    io.py           shared leaf helpers: read_json, srt_time, unique_name (no duplicated copies in the front ends)
     resources.py    ResourceMonitor + RESOURCES singleton: CPU/RAM -> worker plan, cache budget, adaptive tuning
     internal/       derived runtime decisions and constants (the resource-aware engine: encode-quality / performance-mode /
                     LLM-model / server-concurrency selection, mode profiles, adaptive helpers, decision logs,

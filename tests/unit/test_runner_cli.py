@@ -22,10 +22,11 @@ from autoclip.cli import main
 from autoclip.core import runner
 from autoclip.core.config import Config, parse_hms
 from autoclip.core.hardware import HW_MAX_WORKERS, cpu_encoder
+from autoclip.core.io import srt_time
 from autoclip.core.models import Encoder, Moment, RenderJob
 from autoclip.core.pipeline import needs_text
 from autoclip.core.resources import RESOURCES, WorkerPlan
-from autoclip.core.runner import _srt_time, render_all, render_job
+from autoclip.core.runner import render_all, render_job
 from autoclip.core.store import Store
 from autoclip.core.transcript import load_transcript_file
 
@@ -80,7 +81,7 @@ def statuses(store: Store) -> list[str]:
 
 
 def test_srt_time_and_hms() -> None:
-    assert _srt_time(3723.5) == "01:02:03,500" and _srt_time(-1) == "00:00:00,000" and _srt_time(59.999) == "00:00:59,999"
+    assert srt_time(3723.5) == "01:02:03,500" and srt_time(-1) == "00:00:00,000" and srt_time(59.999) == "00:00:59,999"
     assert parse_hms("01:02:03.5") == 3723.5 and parse_hms("90") == 90
 
 

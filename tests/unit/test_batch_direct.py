@@ -64,7 +64,7 @@ def test_run_batch_skips_a_rate_limited_url(media: Any, tmp_path: Path) -> None:
 
 
 def test_unique_name_first_candidate() -> None:
-    from autoclip.core.batch import _unique_name
+    from autoclip.core.io import unique_name as _unique_name
 
     used: set[str] = set()
     assert _unique_name("foo", used) == "foo"

@@ -19,6 +19,7 @@ from autoclip.cli import main
 from autoclip.core.config import Config, parse
 from autoclip.core.download import FormatReport
 from autoclip.core.errors import ConfigError, DownloadError
+from autoclip.core.io import unique_name
 from autoclip.core.models import Downloaded
 from autoclip.core.resources import RESOURCES
 
@@ -133,9 +134,9 @@ def test_target_urls_uses_the_given_url_or_every_url_of_the_input() -> None:
 
 def test_unique_name_counts_collisions_case_insensitively() -> None:
     used = {"talk"}
-    assert cli._unique_name("Talk", used) == "Talk (2)"
-    assert cli._unique_name("TALK", used) == "TALK (3)"
-    assert cli._unique_name("other", used) == "other"
+    assert unique_name("Talk", used) == "Talk (2)"
+    assert unique_name("TALK", used) == "TALK (3)"
+    assert unique_name("other", used) == "other"
     assert used == {"talk", "talk (2)", "talk (3)", "other"}
 
 

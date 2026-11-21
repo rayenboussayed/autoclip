@@ -134,16 +134,6 @@ def _download_only(cfg: Config, downloader: Downloader) -> int:
     return 1 if failed else 0
 
 
-def _unique_name(name: str, used: set[str]) -> str:
-    """``name`` unless the batch already used it; then ``name (2)``, ``name (3)`` ... (case-insensitively)."""
-    candidate, n = name, 2
-    while candidate.casefold() in used:
-        candidate = f"{name} ({n})"
-        n += 1
-    used.add(candidate.casefold())
-    return candidate
-
-
 def _run_command(argv: Sequence[str] | None = None) -> int:
     """Entry point. Exit status: 0 all clips rendered, 1 some video or clip failed, 2 configuration error."""
     ap = argparse.ArgumentParser(

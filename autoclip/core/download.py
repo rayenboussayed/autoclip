@@ -41,6 +41,8 @@ from .internal.automation import (
     PLAYLIST_MAX_VIDEOS,
 )
 from .internal.quality import download_quality_for
+from .io import read_json as _read_json
+from .io import srt_time as _srt_time
 from .log import health_check, safe_path_text, traced
 from .media import bundled_ffmpeg_exe, external_env, ffmpeg_exe, probe, trim_video
 from .models import Downloaded
@@ -384,15 +386,6 @@ def _exact_media(directory: Path, prefix: str, rng: tuple[float, float] | None) 
     return None
 
 
-def _srt_time(seconds: float) -> str:
-    """Seconds -> ``HH:MM:SS,mmm``."""
-    millis = round(max(seconds, 0.0) * 1000)
-    hours, millis = divmod(millis, 3_600_000)
-    minutes, millis = divmod(millis, 60_000)
-    secs, millis = divmod(millis, 1000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
-
-
 def _srt_text(cues: list[dict[str, Any]]) -> str:
     """Cues back to SRT text (normalized: no rolling duplicates or overlaps)."""
     from .transcript import normalize_cues
@@ -460,14 +453,6 @@ def _subtitle_file(directory: Path, prefix: str, key: str) -> Path | None:
         if path.is_file():
             return path
     return None
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    """Read a small JSON object, raising on any failure."""
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError(f"{path} does not contain a JSON object")
-    return data
 
 
 def _valid_srt(path: Path) -> bool:

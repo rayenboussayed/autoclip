@@ -22,6 +22,7 @@ from autoclip.core.config import DownloadCfg, parse
 from autoclip.core.download import Downloader, FormatReport, FormatRow, format_report_text
 from autoclip.core.errors import AutoclipError, DownloadError
 from autoclip.core.formats import Choice
+from autoclip.core.io import read_json, srt_time
 from autoclip.core.media import ffmpeg_exe, probe, trim_video
 
 from ..support import Media, make_cfg
@@ -156,7 +157,7 @@ def simple_handler(media: Media, full: dict[str, Any], *, ranged: Path | None = 
 
 def srt(start: float, end: float, text: str = "hello") -> str:
     """A one-cue SRT."""
-    return f"1\n{download._srt_time(start)} --> {download._srt_time(end)}\n{text}\n"
+    return f"1\n{srt_time(start)} --> {srt_time(end)}\n{text}\n"
 
 
 def vtt(start: float, end: float, text: str = "hello") -> str:
@@ -293,9 +294,9 @@ def test_canonical_media_renames_and_survives_a_failure(tmp_path: Path, monkeypa
 
 
 def test_srt_time_and_text_round_trip() -> None:
-    assert download._srt_time(0) == "00:00:00,000"
-    assert download._srt_time(3661.5) == "01:01:01,500"
-    assert download._srt_time(-3) == "00:00:00,000"
+    assert srt_time(0) == "00:00:00,000"
+    assert srt_time(3661.5) == "01:01:01,500"
+    assert srt_time(-3) == "00:00:00,000"
     text = download._srt_text([{"start": 1.0, "end": 2.5, "text": " hello\n"}])
     assert text == "1\n00:00:01,000 --> 00:00:02,500\nhello\n"
 
@@ -636,8 +637,6 @@ def test_cache_load_rejects_corrupt_entries(dl_factory: Any) -> None:
 
 
 def test_cache_store_recovers_from_a_broken_cache_file(dl_factory: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    from autoclip.core.download import _read_json
-
     dl = dl_factory(download={})
     dl.root.mkdir(parents=True, exist_ok=True)
     cache_file = dl.root / "autoclip-cache.json"
@@ -647,7 +646,7 @@ def test_cache_store_recovers_from_a_broken_cache_file(dl_factory: Any, monkeypa
     bad = dl.root / "bad.json"
     bad.write_text("[1]", encoding="utf-8")
     with pytest.raises(ValueError, match="does not contain a JSON object"):
-        _read_json(bad)
+        read_json(bad)
     monkeypatch.setattr(Path, "replace", lambda self, other: (_ for _ in ()).throw(OSError("nope")))
     dl._cache_store("youtube", "https://example.com/v2", dl.cfg.download, [])  # a write failure is not fatal
 

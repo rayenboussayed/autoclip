@@ -140,7 +140,7 @@ def test_start_pipeline_shim(tmp_path: Path) -> None:
 
 
 def test_unique_name_duplicate() -> None:
-    from autoclip.cli import _unique_name
+    from autoclip.core.io import unique_name as _unique_name
 
     used = {"foo"}
     assert _unique_name("foo", used) == "foo (2)"
@@ -197,7 +197,7 @@ def test_detect_device_falls_back_to_cpu_on_cuda_errors(monkeypatch: pytest.Monk
 
 
 def test_unique_name_duplicate2() -> None:
-    from autoclip.cli import _unique_name
+    from autoclip.core.io import unique_name as _unique_name
 
     used = {"foo", "foo (2)"}
     assert _unique_name("foo", used) == "foo (3)"
@@ -264,7 +264,7 @@ def test_config_default_model_cpu_branch(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_unique_name_no_conflict() -> None:
-    from autoclip.cli import _unique_name
+    from autoclip.core.io import unique_name as _unique_name
 
     assert _unique_name("bar", set()) == "bar"
 
