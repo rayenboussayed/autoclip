@@ -86,9 +86,13 @@ def has_rtl(text: str) -> bool:
     return any(unicodedata.bidirectional(c) in ("R", "AL") for c in text)
 
 
-@functools.lru_cache(maxsize=256)
+@functools.lru_cache(maxsize=2048)
 def _codepoints(path: Path) -> frozenset[int]:
-    """Code points a font file can draw (first face of a collection)."""
+    """Code points a font file can draw (first face of a collection).
+
+    One entry per installed font: a whole-index scan re-checks every font for each mixed caption,
+    so a cache smaller than a typical font directory makes each repeat scan reparse most files.
+    """
     with TTFont(path, fontNumber=0, lazy=True) as font:
         return frozenset(font.getBestCmap())
 
@@ -109,12 +113,37 @@ def covers(path: Path, text: str) -> bool:
     return present >= 0.95 * total  # a punctuation-only string is trivially covered
 
 
+def covers_letters(path: Path, text: str) -> bool:
+    """Does the font contain every letter/digit/mark of ``text`` (punctuation and emoji ignored)?
+
+    Unlike :func:`covers`, one missing letter is enough to fail: in a mixed caption that letter can be
+    the whole of a script, and an aggregate percentage would silently paint it as tofu.
+    """
+    wanted = [c for c in text if unicodedata.category(c)[0] in "LMN"]
+    if not wanted:
+        return True
+    try:
+        have = _codepoints(path)
+    except Exception:  # unreadable / unsupported font file: treat as not covering
+        return False
+    return all(ord(c) in have for c in wanted)
+
+
+def covers_text(path: Path, text: str) -> bool:
+    """Font acceptance for ``text``: all letters when scripts are mixed, the 95% rule otherwise.
+
+    A near-complete font still renders a single-script line, but for mixed text it would omit an
+    entire script; such a font is rejected so the per-token fallback can supply a covering one.
+    """
+    return covers_letters(path, text) if len(scripts_in(text)) > 1 else covers(path, text)
+
+
 def covers_all(path: Path, text: str) -> bool:
     """Does the font contain every non-space glyph of ``text`` (the caption renderer's stricter check)?"""
     wanted = [c for c in text if not c.isspace()]
     try:
         have = _codepoints(path)
-    except Exception:
+    except Exception:  # unreadable / unsupported font file: treat as not covering
         return False
     return bool(wanted) and all(ord(c) in have for c in wanted)
 
@@ -127,7 +156,7 @@ def _scan_fonts(text: str) -> Path | None:
     for name in sorted(index):
         path = index[name]
         present, total = _coverage(path, text)
-        if not total or present < 0.95 * total:
+        if not total or not covers_text(path, text):
             continue
         key = (-present / total, 0 if name.startswith("noto") else 1, 0 if "bold" in name or name.endswith("bd.ttf") else 1, name)
         if best is None or key < best:
@@ -146,7 +175,7 @@ def find_font(text: str, preferred: str = "auto") -> Path | None:
         direct = Path(preferred).expanduser()
         named = index.get(preferred.lower()) or index.get(f"{preferred.lower()}.ttf")
         for candidate in (direct if direct.is_file() else None, named):
-            if candidate and covers(candidate, text):
+            if candidate and covers_text(candidate, text):
                 return candidate
         log.warning("font '%s' not found or lacks the glyphs for this text; using a system font", preferred)
     names: list[str] = []
@@ -155,7 +184,7 @@ def find_font(text: str, preferred: str = "auto") -> Path | None:
     names += [*UNIVERSAL, "arialuni.ttf", "tahoma.ttf", "NotoSansArabic-Bold.ttf", "NotoSansArabic-Regular.ttf"]
     for name in names:
         path = index.get(name.lower())
-        if path and covers(path, text):
+        if path and covers_text(path, text):
             return path
     chosen = _scan_fonts(text)
     if chosen is not None:

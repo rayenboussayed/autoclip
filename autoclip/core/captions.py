@@ -20,7 +20,7 @@ from PIL import Image, ImageColor, ImageDraw, ImageFont, features
 
 from .audio import Timeline, is_filler
 from .config import CaptionsCfg, Config
-from .fonts import covers, covers_all, dominant_script, find_font, has_rtl
+from .fonts import covers_all, covers_letters, dominant_script, find_font, has_rtl
 from .internal.automation import CAPTION_MAX_SECONDS, CAPTION_SAFE_BOTTOM, CAPTION_SAFE_TOP, DEFAULT_FILLERS
 from .log import traced
 from .media import F32
@@ -308,10 +308,10 @@ def _render_runs(
         # Check the glyphs actually drawn: reshaping produces presentation forms that a base-Arabic
         # font may not have. A covering font is chosen for the reshaped string when needed.
         path = font if font is not None and covers_all(font, shown) else find_font(shown)
-        raqm = native_raqm and path is not None and not has_rtl(token)
-        pil = _load_font(path, size, raqm)
+        use_raqm = native_raqm and path is not None and not has_rtl(token)
+        pil = _load_font(path, size, use_raqm)
         runs.append(_Run(index, shown, pil, float(pil.getlength(shown)), pil.getmetrics()[0]))
-    sep_font = _load_font(font, size, bool(features.check("raqm")) and font is not None)
+    sep_font = _load_font(font, size, native_raqm and font is not None)
     sep_w = float(sep_font.getlength(sep)) if sep else 0.0
     lines = balanced_lines([r.width for r in runs], sep_w, max(50, max_w - 2 * pad - 2 * sw))
     line_w = [sum(runs[k].width for k in ln) + sep_w * (len(ln) - 1) for ln in lines]
@@ -350,9 +350,9 @@ def render_text_image(text: str, font: Path | None, size: int, style: CaptionsCf
     spaced = " " in text.strip()
     # Unspaced cursive text must be shaped as one run or Arabic letters stop joining.
     tokens, sep = (text.split(), " ") if spaced else (([text], "") if has_rtl(text) else (list(text), ""))
-    # Same criterion as find_font: a font it accepted must keep the original single-line renderer,
-    # even when it lacks a punctuation or emoji glyph (per-token fallback cannot supply those either).
-    if font is not None and covers(font, text):
+    # Every letter must be present: a 95% aggregate accepts a Latin-only font for a caption with one
+    # Arabic word and paints that word as tofu. Punctuation/emoji are irrelevant (they are not LMN).
+    if font is not None and covers_letters(font, text):
         return _render_single(text, font, size, style, max_w, active, tokens, sep)
     return _render_runs(text, font, size, style, max_w, active, tokens, sep)
 

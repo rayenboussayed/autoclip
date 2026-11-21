@@ -35,8 +35,9 @@ from numpy.typing import NDArray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from autoclip.core.internal.automation import HALLUCINATION_SILENCE_THRESHOLD
+from autoclip.core.internal.automation import HALLUCINATION_SILENCE_THRESHOLD, transcription_beam_size
 from autoclip.core.media import decode_audio
+from autoclip.core.resources import RESOURCES
 
 F32 = NDArray[np.float32]
 SR = 16000  # what faster-whisper expects
@@ -180,7 +181,7 @@ class Run:
         return script_ratio(self.text)[1]
 
 
-def transcribe(audio: F32, model_name: str, device: str = "cuda", beam_size: int = 5) -> Run:
+def transcribe(audio: F32, model_name: str, device: str = "cuda") -> Run:
     """Transcribe 16 kHz audio exactly like ``autoclip.transcript.transcribe`` does."""
     from faster_whisper import WhisperModel
 
@@ -188,7 +189,7 @@ def transcribe(audio: F32, model_name: str, device: str = "cuda", beam_size: int
         model_name,
         device=device,
         compute_type="float16" if device == "cuda" else "int8",
-        cpu_threads=8,
+        cpu_threads=RESOURCES.cpu_budget(),
     )
     started = time.perf_counter()
     stream, info = whisper.transcribe(
@@ -197,7 +198,7 @@ def transcribe(audio: F32, model_name: str, device: str = "cuda", beam_size: int
         word_timestamps=True,
         language=None,  # auto-detect, like the production config
         condition_on_previous_text=False,
-        beam_size=beam_size,
+        beam_size=transcription_beam_size(device),
         multilingual=False,  # keep the benchmark's decode identical to production
         hallucination_silence_threshold=HALLUCINATION_SILENCE_THRESHOLD,
     )

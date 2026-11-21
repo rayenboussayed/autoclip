@@ -29,7 +29,18 @@ from autoclip.core.captions import (
     without_fillers,
 )
 from autoclip.core.config import CaptionsCfg, Config, parse
-from autoclip.core.fonts import _codepoints, covers, covers_all, dominant_script, find_font, font_dirs, font_index, has_rtl
+from autoclip.core.fonts import (
+    _codepoints,
+    covers,
+    covers_all,
+    covers_letters,
+    covers_text,
+    dominant_script,
+    find_font,
+    font_dirs,
+    font_index,
+    has_rtl,
+)
 from autoclip.core.models import Span, Word
 from autoclip.core.resources import RESOURCES
 from autoclip.core.store import Cache, Store
@@ -519,3 +530,47 @@ def test_preferred_font_is_kept_for_tokens_it_covers(tmp_path: Path, monkeypatch
     assert render_text_image("abc مرحبا", latin, 30, STYLE, 600).shape[1] > 0
     assert any("dejavu" in (path or "").lower() for _t, path in drawn)
     assert any("arabic" in (path or "").lower() for _t, path in drawn)
+
+
+def test_covers_letters_rejects_a_partial_font_for_mixed_text(tmp_path: Path) -> None:
+    """A 97%-covering Latin font misses a lone Arabic letter; the 95% rule alone would hide it."""
+    latin = _synthetic_font(tmp_path / "latin.ttf", [ord("a"), ord(" ")])
+    mixed = "a" * 39 + " م"
+    assert covers(latin, mixed)  # the old aggregate rule still accepts it
+    assert not covers_letters(latin, mixed)  # every letter is required
+    assert not covers_text(latin, mixed)  # mixed text uses the strict rule
+    assert covers_letters(latin, "!!!")  # no letters: trivially covered
+    assert covers_text(latin, "aaaa")  # single script keeps the 95% rule
+    junk = tmp_path / "junk.ttf"
+    junk.write_bytes(b"not a font")
+    assert not covers_letters(junk, "a")  # unreadable font
+
+
+def test_find_font_rejects_a_partial_font_for_mixed_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neither a Latin-only nor an Arabic-only font wins a mixed caption at 97% aggregate coverage."""
+    latin = _synthetic_font(tmp_path / "DejaVuSans-Bold.ttf", [ord("a"), ord(" ")])
+    arabic = _synthetic_font(tmp_path / "NotoSansArabic-Bold.ttf", list(range(0x600, 0x700)))
+    _fake_index(tmp_path, monkeypatch, **{"dejavusans-bold.ttf": latin, "notosansarabic-bold.ttf": arabic})
+    assert find_font("a" * 39 + " م") is None
+
+
+def test_latin_dominant_caption_falls_back_for_the_arabic_word(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: a single Arabic word in a Latin-dominant caption must not render as tofu."""
+    latin = _synthetic_font(tmp_path / "DejaVuSans-Bold.ttf", [ord("a"), ord("b"), ord("c"), ord(" ")])
+    arabic = _synthetic_font(tmp_path / "NotoSansArabic-Bold.ttf", list(range(0x600, 0x700)) + list(range(0xFB50, 0xFF00)))
+    _fake_index(tmp_path, monkeypatch, **{"notosansarabic-bold.ttf": arabic})
+    drawn: list[tuple[str, str | None]] = []
+    real_text = ImageDraw.ImageDraw.text
+
+    def recording_text(self: Any, xy: Any, text: str, font: Any = None, **kwargs: Any) -> None:
+        drawn.append((text, getattr(font, "path", None)))
+        return real_text(self, xy, text, font=font, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", recording_text)
+    art = render_text_image("abc " * 13 + "م", latin, 30, STYLE, 600)
+    assert np.count_nonzero(art[..., 3]) > 0
+    assert any("arabic" in (path or "").lower() for _t, path in drawn)
+    for _text, path in drawn:
+        assert path  # no Pillow built-in font for this mixed caption
+        cps = _codepoints(Path(path))
+        assert all(ord(c) in cps or c.isspace() for c in _text)

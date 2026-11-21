@@ -47,7 +47,7 @@ WHISPER_NEVER_FIT = frozenset({"base"})
 
 def _cap_cpu_model(name: str) -> str:
     """A GPU failure never loads a CUDA-sized model on the CPU: cap at ``small`` (``medium`` is already ~5x slower)."""
-    order = ("tiny", "base", "small", "medium", "large-v3")
+    order = tuple(WHISPER_RAM_MB)
     if name not in order:  # custom model names/paths are never downgraded
         return name
     return name if order.index(name) <= order.index("small") else "small"
@@ -432,6 +432,7 @@ class WhisperSession:
             raise AutoclipError(f"Whisper failed on every available device ({_device_failure(self._attempts)})") from ce
 
     def ensure_model(self) -> None:
+        """Load the resident model once, falling back from CUDA to a CPU-capped model."""
         if self._model is not None:
             return
         device = asr_device()
@@ -759,6 +760,9 @@ def get_transcript(
 
     All mapping is monotone and piecewise: ``start/end`` are playback times, while ``source_start/source_end`` retain
     the original source timeline. On a re-encoded source, every caller path maps through the one cut map.
+
+    ``model_name_override`` pins the cache key to the model already chosen for this run. ``stt_failed`` suppresses a
+    fresh Whisper pass after a fused failure; a complete partial is still replayed and kept for a later resume.
     """
     if not need_text:
         return False
