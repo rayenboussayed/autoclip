@@ -102,6 +102,29 @@ def ranges_moments(
     return out
 
 
+def raw_moment(
+    store: Store,
+    cutmap: CutMap,
+    timeline: MeasuredTimeline,
+    have_text: bool,
+) -> Moment:
+    """One moment spanning the whole silence-removed source, on its measured timeline.
+
+    Unlike selection, this is unconditional: a raw-only run always has exactly one job, even without a
+    transcript or when the video is shorter than any of the ordinary length ranges. Source bounds refer to
+    the original video, while playback bounds refer to the optimized file captions are burned into.
+    """
+    text = store.window_text(0.0, timeline.last) if have_text else ""
+    return Moment(
+        0.0,
+        timeline.last,
+        text,
+        scene="raw",
+        source_start=0.0,
+        source_end=cutmap.duration,
+    )
+
+
 def needs_text(cfg: Config) -> bool:
     """Whether the run needs a transcript: highlights select on text, captions and titles read it."""
     return cfg.clips.mode == "highlights" or cfg.captions.enabled or not cfg.skip.title
@@ -212,7 +235,7 @@ def process_video(
     store = Store(work / "autoclip.db", fresh=True)
     cache = Cache(store, RESOURCES)
     try:
-        cuts = detect_scenes(src, info, cancel=cancel) if cc.mode != "ranges" else []
+        cuts = detect_scenes(src, info, cancel=cancel) if cc.mode != "ranges" and cc.kinds != ["raw"] else []
         if cancel is not None:
             cancel.check()
         log.info("system health before transcript: %s", health_check("transcript"))
@@ -238,14 +261,31 @@ def process_video(
         else:
             reporter("transcribe", 1.0, "no transcript needed")
         jobs: list[RenderJob] = []
+        raw_jobs: list[RenderJob] = []
         needs = 0
+        raw_needs = 0
         for kind in cc.kinds:
             kcfg = cc.kind(kind)
             moments = (
-                ranges_moments(store, kcfg, info, cfg, have_text, kind=kind, cutmap=cutmap, timeline=timeline)
-                if cc.mode == "ranges"
-                else select_moments(
-                    src, info, store, cache, cfg, kind, db, have_text, config_dir=config_dir, cutmap=cutmap, timeline=timeline, shots=cuts
+                [raw_moment(store, cutmap, timeline, have_text)]
+                if kind == "raw"
+                else (
+                    ranges_moments(store, kcfg, info, cfg, have_text, kind=kind, cutmap=cutmap, timeline=timeline)
+                    if cc.mode == "ranges"
+                    else select_moments(
+                        src,
+                        info,
+                        store,
+                        cache,
+                        cfg,
+                        kind,
+                        db,
+                        have_text,
+                        config_dir=config_dir,
+                        cutmap=cutmap,
+                        timeline=timeline,
+                        shots=cuts,
+                    )
                 )
             )
             if not moments:
@@ -265,36 +305,45 @@ def process_video(
                 n = numbers[m.scene] = numbers.get(m.scene, 0) + 1
                 dst = out / f"{stem}_{m.scene}_{n:02d}_{int(m.start)}s.mp4"
                 clip_id = store.save_moment(kind, m.scene, n, m)
-                jobs.append(
-                    RenderJob(
-                        clip_id,
-                        m,
-                        src,
-                        dst,
-                        kind,
-                        kcfg.aspect,
-                        encoder,
-                        info.has_audio,
-                        cfg,
-                        store.path,
-                        log_file,
-                        os.getpid(),
-                        fillers=fillers,
-                        audio_ready=prepared.audio_ready,
-                    )
+                job = RenderJob(
+                    clip_id,
+                    m,
+                    src,
+                    dst,
+                    kind,
+                    kcfg.aspect,
+                    encoder,
+                    info.has_audio,
+                    cfg,
+                    store.path,
+                    log_file,
+                    os.getpid(),
+                    fillers=fillers,
+                    audio_ready=prepared.audio_ready,
                 )
-                needs = max(needs, estimate_render_bytes(size, m.end - m.start))
-        if not jobs:
+                estimate = estimate_render_bytes(size, m.end - m.start)
+                if kind == "raw":
+                    raw_jobs.append(job)  # a whole-source estimate would serialise every other clip
+                    raw_needs = max(raw_needs, estimate)
+                else:
+                    jobs.append(job)
+                    needs = max(needs, estimate)
+        if not jobs and not raw_jobs:
             raise AutoclipError("no clips found for any requested kind (is the video shorter than the length ranges?)")
-        reporter("select", 1.0, f"{len(jobs)} clips planned")
+        total = len(jobs) + len(raw_jobs)
+        reporter("select", 1.0, f"{total} clips planned")
         log.info("system health before render: %s", health_check("render"))
-        reporter("render", 0.0, f"0/{len(jobs)} clips to process")
+        reporter("render", 0.0, f"0/{total} clips to process")
         try:
-            render_all(jobs, needs, report=reporter, cancel=cancel)
+            if jobs:
+                render_all(jobs, needs, report=reporter, cancel=cancel)
+            if raw_jobs:
+                # One job: in-process, no pool. Keeps its duration-scaled estimate away from other clips.
+                render_all(raw_jobs, raw_needs, cancel=cancel)
         except Cancelled:
             _write_clip_summaries(root, stem, store.clips())  # keep what finished: a half-written run is still useful
             raise
-        reporter("render", 1.0, f"{len(jobs)}/{len(jobs)} clips processed")
+        reporter("render", 1.0, f"{total}/{total} clips processed")
         rows = store.clips()
         log.info(
             "output base: %s | clips=%d (failed=%d)",

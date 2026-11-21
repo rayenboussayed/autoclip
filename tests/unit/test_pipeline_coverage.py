@@ -393,6 +393,66 @@ def test_ranges_inside_a_removed_span_are_skipped(media: Any, tmp_path: Path) ->
     store.close()
 
 
+def test_raw_moment_spans_the_measured_source(media: Any, tmp_path: Path) -> None:
+    from autoclip.core.pipeline import raw_moment
+    from autoclip.core.store import Store
+
+    info = probe(media.video)
+    cut = CutMap.from_intervals(info.duration, [(0.0, 3.0), (4.0, info.duration)])
+    timeline = MeasuredTimeline.from_durations(cut.intervals, (3.3, info.duration - 1.0 + 0.4))
+    store = Store(tmp_path / "raw.db", fresh=True)
+    try:
+        m = raw_moment(store, cut, timeline, False)
+        assert (m.start, m.end) == (0.0, timeline.last)
+        assert (m.source_start, m.source_end) == (0.0, cut.duration)
+        assert m.scene == "raw" and m.text == ""
+    finally:
+        store.close()
+
+
+def test_process_video_raw_produces_one_full_length_job(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil
+
+    from autoclip.core import pipeline as pipeline_mod
+    from autoclip.core.hardware import cpu_encoder
+
+    install_stub_whisper(monkeypatch, media, {}, cuda=0)
+    out = tmp_path / "raw-out"
+    cfg = make_cfg(media, out, clips={"kinds": ["raw"]})
+    cfg.captions.enabled = False
+    cfg.skip.title = True
+    destination = out / ".work" / media.video.stem / f"optimized_{media.video.stem}.mp4"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(media.video, destination)
+    cut = CutMap.identity(probe(media.video).duration)
+    monkeypatch.setattr(
+        "autoclip.core.pipeline.prepare_source",
+        lambda src, cfg, info, work, **k: PreparedSource(
+            destination, probe(destination), cut, MeasuredTimeline.from_cutmap(cut), np.zeros(1, dtype=np.float32), False
+        ),
+    )
+    from autoclip.core.store import Store
+
+    batches: list[list[Any]] = []
+
+    def capture(jobs: list[Any], *a: Any, **k: Any) -> None:
+        batches.append(jobs)
+        for job in jobs:
+            store = Store(job.db_path)
+            store.finish_clip(job.clip_id, ok=True, file=job.dst.name, size=(320, 180), trimmed=job.moment.end)
+            store.close()
+
+    monkeypatch.setattr(pipeline_mod, "render_all", capture)
+    process_video(media.video, cfg, None, cpu_encoder(cfg.video, cfg.quality))
+    assert len(batches) == 1 and len(batches[0]) == 1
+    job = batches[0][0]
+    assert job.kind == "raw"
+    assert (job.moment.start, job.moment.end) == (0.0, probe(destination).duration)
+    assert (job.moment.source_start, job.moment.source_end) == (0.0, cut.duration)
+    assert job.dst == out / "raw" / media.video.stem / f"{media.video.stem}_raw_01_0s.mp4"
+    assert not (out / "short").exists() and not (out / "long").exists()
+
+
 def test_process_video_persists_both_timelines_in_clips_json(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import json as _json
 

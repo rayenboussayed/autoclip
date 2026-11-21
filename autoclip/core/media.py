@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import io
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
+from typing import cast
 
 import av
 import numpy as np
@@ -177,19 +179,33 @@ def decode_audio(src: Path, start: float, dur: float, sr: int, filters: Sequence
             with tempfile.TemporaryFile() as serr:
                 with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=serr, env=external_env()) as proc:
                     assert proc.stdout is not None
-                    chunks: list[bytes] = []
-                    while (raw := proc.stdout.read(block)) != b"":
+                    stdout = cast(io.BufferedIOBase, proc.stdout)
+                    # Read straight into one f32 buffer: no growing bytes list, no join, no extra copy.
+                    # A small tail absorbs ffmpeg's padded output; anything beyond it is drained so the
+                    # child never blocks on a full pipe.
+                    out = np.empty(total + (1 << 18), dtype=np.float32)
+                    view = memoryview(out).cast("B")
+                    filled = 0
+                    while filled < len(view):
+                        got = stdout.readinto(view[filled:])
+                        if not got:
+                            break
+                        filled += got
                         if time.monotonic() > deadline:
                             proc.kill()  # pragma: no cover
                             proc.wait()  # pragma: no cover
                             raise OSError("ffmpeg decode exceeded its time budget")  # pragma: no cover
-                        chunks.append(raw)
+                    if filled == len(view):
+                        while stdout.read(block):  # pragma: no cover - only for padded output
+                            if time.monotonic() > deadline:
+                                proc.kill()  # pragma: no cover
+                                proc.wait()  # pragma: no cover
+                                raise OSError("ffmpeg decode exceeded its time budget")  # pragma: no cover
                     rc = proc.wait()
                     if rc == 0:
-                        payload = np.frombuffer(b"".join(chunks), dtype=np.float32)
-                        if len(payload) >= total:
-                            return payload[:total].copy()  # one copy, not pad+copy into a 2x buffer
-                        return np.pad(payload, (0, total - len(payload)))
+                        samples = min(filled // 4, total)
+                        result = out[:samples]
+                        return result if samples == total else np.pad(result, (0, total - samples))
                 serr.seek(0)
                 last_detail = serr.read().decode("utf-8", "replace").strip()[-1000:]
         except OSError as e:  # pragma: no cover

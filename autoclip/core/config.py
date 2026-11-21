@@ -558,6 +558,8 @@ class FileConfig(Section):
         auto_mode_name = auto_mode(cpus=cpus, free_ram_mb=free)
         if ov.split and ranges:
             raise ConfigError("--split cannot be combined with clips.ranges")
+        if self.clips.preset == "raw" and (ov.split or ranges):
+            raise ConfigError("the raw preset cannot be combined with --split or clips.ranges")
         mode: Literal["highlights", "ranges", "split"] = "split" if ov.split else ("ranges" if ranges else "highlights")
         short = KindCfg(count=5, min_seconds=20, max_seconds=60, aspect="9:16", ranges=ranges)
         long = KindCfg(count=2, min_seconds=180, max_seconds=600, aspect="16:9", ranges=ranges)

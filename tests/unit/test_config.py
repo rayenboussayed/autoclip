@@ -175,6 +175,16 @@ def test_ranges_switch_to_exact_cuts_for_every_selected_kind() -> None:
     assert FileConfig(clips={"preset": "shorts"}).to_config().clips.mode == "highlights"  # type: ignore[arg-type]
 
 
+def test_raw_cannot_be_combined_with_split_or_ranges() -> None:
+    from autoclip.core.config import RuntimeOverrides
+
+    raw = FileConfig(clips={"preset": "raw", "ranges": ["00:00:01-00:00:02"]})  # type: ignore[arg-type]
+    with pytest.raises(ConfigError):
+        raw.to_config()
+    with pytest.raises(ConfigError):
+        FileConfig(clips={"preset": "raw"}).to_config(RuntimeOverrides(split=True))  # type: ignore[arg-type]
+
+
 def test_split_and_ranges_are_mutually_exclusive() -> None:
     cfg = FileConfig(clips={"ranges": ["0:04-0:10"]})  # type: ignore[arg-type]
     with pytest.raises(ConfigError, match="--split cannot be combined"):

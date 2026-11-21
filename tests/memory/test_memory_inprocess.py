@@ -56,6 +56,40 @@ print("done:", n, "failed:", bad)
 
 
 @pytest.mark.memory
+def test_raw_pipeline_stays_flat(media, tmp_path: Path, memory_results: Path) -> None:  # type: ignore[no-untyped-def]
+    """One whole-source raw render must stay inside the same bounded footprint as a short clip."""
+    _ensure_sidecar(media.video, [f"sentence number {i} is here." for i in range(10)])
+    workdir = memory_results / "raw-out"
+    snippet = """
+import sys
+from pathlib import Path
+from autoclip.core.config import FileConfig, RuntimeOverrides, parse
+from autoclip.core.models import Encoder
+from autoclip.core.pipeline import process_video
+from autoclip.core.log import setup_logging
+
+src, out = Path(sys.argv[1]), Path(sys.argv[2])
+out.mkdir(parents=True, exist_ok=True)
+setup_logging(out / "run.log", "INFO", None)
+file_cfg = parse(FileConfig, {"input": [str(src)], "clips": {"preset": "raw", "scenes": "best"}})
+cfg = file_cfg.to_config(RuntimeOverrides(output_dir=str(out)))
+cfg.quality = "low"
+encoder = Encoder("libx264", False, "ultrafast", ())
+n, bad = process_video(src, cfg, out / "run.log", encoder, name="task.mp4")
+print("done:", n, "failed:", bad)
+"""
+    code, samples = run_python(snippet, [str(media.video), str(workdir)], out_dir=tmp_path / "case-raw")
+    assert code == 0, f"the probe exited {code}"
+    assert list(workdir.glob("raw/*/clips.json")), "no raw clip was produced"
+    peak = peak_of(samples)
+    assert len(samples) >= budgets.MIN_SAMPLES
+    assert peak >= budgets.MIN_PEAK_MB * 1024 * 1024
+    assert peak / (1024 * 1024) <= budgets.PROCESS_VIDEO_PEAK_MB, (
+        f"tree peak {peak / (1024 * 1024):.1f} MB exceeded {budgets.PROCESS_VIDEO_PEAK_MB} MB"
+    )
+
+
+@pytest.mark.memory
 def test_optimizer_many_parts_stays_flat(many_parts_video: Path, tmp_path: Path, memory_results: Path) -> None:
     """The many-parts optimizer must remain below the same bounded-footprint budget as the old chain re-encode."""
     workdir = memory_results / "optimizer-out"

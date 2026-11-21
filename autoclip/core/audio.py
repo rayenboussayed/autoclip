@@ -184,10 +184,17 @@ def build_audio(x: F32, keep: Keep, total_out: float) -> F32:
     ramp = np.linspace(0, 1, fade, dtype=np.float32)
     pieces = []
     for a, b in keep:
-        piece = x[int(a * AUDIO_SR) : int(b * AUDIO_SR)].copy()
+        piece = x[int(a * AUDIO_SR) : int(b * AUDIO_SR)]
         if len(keep) > 1 and len(piece) > 2 * fade:
+            piece = piece.copy()  # a view would write the ramp back into the source audio
             piece[:fade] *= ramp
             piece[-fade:] *= ramp[::-1]
         pieces.append(piece)
     n = round(total_out * AUDIO_SR)
-    return np.pad(np.concatenate(pieces), (0, n))[:n].astype(np.float32)
+    out = np.zeros(n, dtype=np.float32)  # one destination buffer, not pad + slice + astype
+    if not pieces:
+        return out
+    joined = np.concatenate(pieces) if len(pieces) > 1 else pieces[0]
+    count = min(len(joined), n)
+    out[:count] = joined[:count]
+    return out

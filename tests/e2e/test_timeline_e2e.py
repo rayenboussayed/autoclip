@@ -40,3 +40,21 @@ def test_tail_cue_matches_the_rendered_clip(media: Media, e2e_run: E2ERun, tmp_p
     cues = parse_srt(sidecar.read_text(encoding="utf-8"))
     assert cues and " ".join(cue["text"] for cue in cues) == "LAST CUE"
     assert cues[-1]["end"] == pytest.approx(probe(clips[0]).duration, abs=0.1)
+
+
+def test_raw_clip_is_full_length_and_captioned(media: Media, e2e_run: E2ERun, tmp_path: Path) -> None:
+    """The raw preset produces one captioned file covering the whole silence-removed source."""
+    source = tmp_path / "raw.mp4"
+    source.write_bytes(media.video.read_bytes())
+    srt = tmp_path / "raw.srt"
+    srt.write_text("1\n00:00:01,000 --> 00:00:39,000\nRAW CAPTION\n", encoding="utf-8")
+    out = tmp_path / "out-raw"
+    config = pipeline_config(out, source, transcript=srt, clips={"preset": "raw", "kinds": ["raw"]})
+    e2e_run.execute("raw-caption", config).require_ok()
+
+    clips = sorted(out.glob("raw/*/*.mp4"))
+    assert len(clips) == 1
+    assert not (out / "short").exists() and not (out / "long").exists()
+    cues = parse_srt(clips[0].with_suffix(".srt").read_text(encoding="utf-8"))
+    assert cues and " ".join(cue["text"] for cue in cues) == "RAW CAPTION"
+    assert cues[-1]["end"] == pytest.approx(probe(clips[0]).duration, abs=0.3)

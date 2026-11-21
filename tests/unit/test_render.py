@@ -189,6 +189,31 @@ def test_render_full_featured_clip(media: Media, tmp_path: Path) -> None:
     assert cover.shape[:2] == (568, 320)
 
 
+def test_render_raw_keeps_the_source_shape_and_full_duration(media: Media, tmp_path: Path) -> None:
+    info = probe(media.video)
+    m = Moment(0.0, info.duration, "", scene="raw")
+    dst, size, lines = render(media, tmp_path, m, kind="raw", aspect="original", skip={"pauses": True})
+    assert size == (info.width, info.height)
+    assert probe(dst).duration == pytest.approx(info.duration, abs=0.4)
+    assert lines and lines[-1].end <= m.trimmed + 0.1  # captions stay inside the full-length clip
+
+
+def test_raw_render_uses_a_single_encode(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import autoclip.core.render as render_mod
+
+    calls: list[Any] = []
+    real_encode = render_mod.encode
+
+    def spy(*a: Any, **k: Any) -> Any:
+        calls.append(a)
+        return real_encode(*a, **k)
+
+    monkeypatch.setattr(render_mod, "encode", spy)
+    info = probe(media.video)
+    render(media, tmp_path, Moment(0.0, info.duration, "", scene="raw"), kind="raw", aspect="original", skip={"pauses": True})
+    assert len(calls) == 1  # no second full-file pass for the whole-source clip
+
+
 def test_render_without_fades(media: Media, tmp_path: Path) -> None:
     dst, size, lines = render(media, tmp_path, moment(), skip={"fade": True})
     assert dst.is_file() and size == (320, 568) and probe(dst).has_audio

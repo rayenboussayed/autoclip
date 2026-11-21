@@ -295,6 +295,7 @@ def render_clip(vclip: MoviePyClip, job: RenderJob, store: Store, cache: Cache) 
         comp = comp.with_effects([vfx.FadeIn(video_fade), vfx.FadeOut(video_fade)])
     if audio is not None:
         mono = build_audio(audio, kept, fg.duration)
+        del audio  # the full-window array is no longer needed while the clip is encoded
         sound = AudioArrayClip(np.stack([mono, mono], axis=1), fps=AUDIO_SR)
         if not cfg.skip.fade:
             audio_fade = audio_fade_seconds(fg.duration)
