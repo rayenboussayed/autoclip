@@ -11,7 +11,7 @@
 >
 > **Historical measurement.** This file records a 3.x-era `tools/compare_stt.py` run. The setting names, the model
 > policy and the cost figures below reflect that point in time, not current defaults: the engine now derives the Whisper
-> model from the machine (see README "Transcription" and CHANGELOG `[Unreleased]`), never picks `base`, and decodes with
+> model from the machine (see README "Transcription" and CHANGELOG `[4.0.3]`), never picks `base`, and decodes with
 > detect-once language and a hallucination guard. The CER/RTF numbers have not been re-measured after those changes and
 > are not claims about current behaviour.
 

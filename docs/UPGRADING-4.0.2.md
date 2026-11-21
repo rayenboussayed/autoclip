@@ -55,9 +55,9 @@ done) — nothing is silently ignored.
 - The transcript disk cache format was bumped (`format: 2`) when the streaming rework landed — entries written by
   older builds never match and re-transcribe once, on every such machine (there is no in-place migration, by design).
   Because CPU runs now also use `small` instead of `tiny`/`base`, a machine that previously ran at `lowest`/`low`
-  re-transcribes for that reason too. Unreleased engine changes recorded under `CHANGELOG.md` → `[Unreleased]`
+  re-transcribes for that reason too. The 4.0.3 engine changes recorded under `CHANGELOG.md` → `[4.0.3]`
   (detect-once decoding with a hallucination guard, a new cache key, bundled fonts and the CPU `medium` pick) cause one
-  further re-transcribe on affected machines while the version string remains `4.0.2`.
+  further re-transcribe on affected machines.
 - Whisper model downloads remain automatic; `--skip stt` still avoids Whisper entirely.
 - With effectively no usable free RAM the engine names the smallest known model, and Whisper itself refuses to load
   anything below its minimum; the video is then skipped with a clear error instead of swapping into oblivion. The rest

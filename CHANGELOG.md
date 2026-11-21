@@ -4,7 +4,7 @@ All notable changes to autoclip, newest first. Release timestamps come from
 Git tags (and commit metadata for untagged but version-stamped commits). Each
 release mentions the source tag/commit for traceability.
 
-## [Unreleased]
+## [4.0.3] — 2026-11-21 06:51:08 UTC (tag `v4.0.3`, commit `b5946ef`)
 
 - feat: Whisper now runs inside the silence-removal assembly when that stage rebuilds the source: each bounded 5-minute chunk is transcribed as soon as its FFmpeg segments are committed, with per-chunk playback/source offsets and one resumable `.transcript.partial.jsonl` ledger; a reused assembly, a cached/sidecar/subtitle transcript or a short file keeps the standalone pass. Both paths share one `WhisperSession` implementation and load at most one Whisper model per run; a fused STT failure never aborts the assembly (the run selects on audio only). When a cheaper transcript source wins, the non-fused path in `get_transcript` handles it (it may never reach `transcribe`). No config, cache-format or CLI change.
 - test: unit and end-to-end coverage for the fused path, its arming rules, crash/cancel/failure behaviour and complete-partial replay; all new branches covered (the CI matrix's 100 % gate remains authoritative).
@@ -12,8 +12,10 @@ release mentions the source tag/commit for traceability.
 
 - fix: mixed Arabic+Latin captions and titles no longer render as empty boxes. Font lookup now considers every script in
   the text and the whole installed font index; when no single font covers a line, it falls back to a covering font per
-  token, drawn in bidi visual order when a covering font is installed (CJK is not bundled). The Docker image and snap
-  install DejaVu + Noto fonts; other artifacts use OS fonts, and Windows/macOS rendering was not verified here.
+  token, drawn in bidi visual order when a covering font is installed (CJK is not bundled). A 95% aggregate gate could
+  still accept a Latin-only font for a caption with one Arabic word and paint it as tofu; mixed-script text now requires
+  every letter to be covered, both when selecting a font and when choosing the whole-line renderer. The Docker image and
+  snap install DejaVu + Noto fonts; other artifacts use OS fonts, and Windows/macOS rendering was not verified here.
 - fix: stop passing `multilingual=True` to faster-whisper, which makes it detect the language on every internal window and
   can drift into another language; the language detected on the first chunk is now reused, with a 2 s silence
   hallucination guard. Verified at the call level with stubbed transcription only: no real Whisper inference was run.
@@ -21,7 +23,9 @@ release mentions the source tag/commit for traceability.
   `base` is excluded (measured 0% Arabic), and a CUDA→CPU fallback can no longer silently load a multi-hour CPU model.
   Selection is unit-tested with injected measurements; no model download, GPU or accuracy measurement was performed.
 - note: the transcript cache key records the decoding change, so 4.0.2-era transcripts are re-transcribed once; the cache
-  format stays 2. The nine config-file keys, CLI and version (4.0.2) are unchanged.
+  format stays 2. The nine config-file keys and CLI are unchanged; this release bumps the version string to 4.0.3.
+- docs: README, AGENTS, CHANGELOG and the upgrading notes now name 4.0.3 as the current release; historical 4.0.2
+  references are kept where they describe the earlier release.
 
 ## [4.0.2] — 2026-11-19 11:35:00 UTC (tag `v4.0.2`)
 

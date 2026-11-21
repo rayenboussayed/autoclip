@@ -530,9 +530,9 @@ See `docs/options-reference.md` for every option and its explanation (this is th
 
 See `docs/UPGRADING-4.0.md` for the nine-key schema, the removed-key → runtime replacement table, the
 `--flag` / `AUTOCLIP_*` equivalents, and the behaviour that is automatic now; `docs/UPGRADING-4.0.2.md` covers the
-4.0.1 → 4.0.2 release (the last machine-policy knobs are removed; the engine chooses them). The current tree also carries
-unreleased engine changes (CPU `medium` pick, detect-once decoding, a hallucination guard, a one-time cache-key change
-and bundled fonts), documented under `CHANGELOG.md` → `[Unreleased]`; the version string remains `4.0.2`.
+4.0.1 → 4.0.2 release (the last machine-policy knobs are removed; the engine chooses them). The 4.0.3 release adds the
+fused per-chunk STT pass, the CPU `medium` pick, detect-once decoding, a hallucination guard, a one-time cache-key change
+and bundled fonts; see `CHANGELOG.md` → `[4.0.3]`.
 `UPGRADING-3.0.md` covers the
 2.x → 3.0 changes and is kept as history. 4.0 was a breaking config-schema release: old config files still load
 (removed keys warn and are ignored), but their replacements moved to flags, environment variables or - for the machine
@@ -563,7 +563,7 @@ command. Metadata files (`.info.json`, thumbnail, description) are written next 
 
 ## Changelog
 
-See [`CHANGELOG.md`](CHANGELOG.md) for release-by-release notes. The current code is version `4.0.2`.
+See [`CHANGELOG.md`](CHANGELOG.md) for release-by-release notes. The current code is version `4.0.3`.
 
 ## Development
 
