@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import functools
-import io
 import json
 import logging
 import os
@@ -15,7 +14,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import av
 import numpy as np
@@ -179,12 +178,12 @@ def decode_audio(src: Path, start: float, dur: float, sr: int, filters: Sequence
             with tempfile.TemporaryFile() as serr:
                 with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=serr, env=external_env()) as proc:
                     assert proc.stdout is not None
-                    stdout = cast(io.BufferedIOBase, proc.stdout)
+                    stdout: Any = proc.stdout  # the buffered stream's readinto is not in every typeshed
                     # Read straight into one f32 buffer: no growing bytes list, no join, no extra copy.
                     # A small tail absorbs ffmpeg's padded output; anything beyond it is drained so the
                     # child never blocks on a full pipe.
                     out = np.empty(total + (1 << 18), dtype=np.float32)
-                    view = memoryview(out).cast("B")
+                    view = memoryview(cast(Any, out)).cast("B")  # ndarray is a buffer on all supported versions
                     filled = 0
                     while filled < len(view):
                         got = stdout.readinto(view[filled:])
