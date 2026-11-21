@@ -137,7 +137,7 @@ def render(
     tmp_path: Path,
     moment: Moment,
     src: Path | None = None,
-    kind: Literal["short", "long"] = "short",
+    kind: Literal["short", "long", "raw"] = "short",
     aspect: str = "9:16",
     encoder: Encoder | None = None,
     **sections: dict[str, Any],

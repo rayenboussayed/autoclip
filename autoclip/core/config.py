@@ -37,6 +37,8 @@ log = logging.getLogger("autoclip")
 JsonValue = dict[str, "JsonValue"] | list["JsonValue"] | str | int | float | bool | None
 
 Position = Literal["top", "center", "lower", "bottom"]
+#: The three output families. Shared so config, render jobs and presets cannot drift apart.
+ClipKind = Literal["short", "long", "raw"]
 
 #: The schema: an unknown key is an error, a value keeps the type the JSON gave it.
 SCHEMA = ConfigDict(extra="forbid")
@@ -75,7 +77,7 @@ class Section:
 
 @dataclass(config=SCHEMA)
 class KindCfg(Section):
-    """One kind of output clip ("short" or "long"): the length range."""
+    """One kind of output clip ("short", "long" or "raw"): the length range."""
 
     count: Annotated[Int, Field(ge=1)] = 5  # clips per scene type
     min_seconds: Annotated[Float, Field(gt=0)] = 20  # a clip is never shorter than this
@@ -96,10 +98,12 @@ class ClipsCfg(Section):
     """Which moments to cut."""
 
     mode: Literal["highlights", "ranges", "split"] = "highlights"
-    kinds: list[Literal["short", "long"]] = field(default_factory=lambda: ["short", "long"])
+    kinds: list[ClipKind] = field(default_factory=lambda: ["short", "long"])
     scenes: str | list[str] = "best"  # "all", one scene type or a list; each type gets its own clips
     short: KindCfg = field(default_factory=KindCfg)
     long: KindCfg = field(default_factory=lambda: KindCfg(count=2, min_seconds=180, max_seconds=600, aspect="16:9"))
+    # raw renders the whole silence-removed source: no selection bounds, original geometry.
+    raw: KindCfg = field(default_factory=lambda: KindCfg(count=1, min_seconds=0.01, max_seconds=86400.0, aspect="original"))
     keywords: list[str] = field(default_factory=list)  # extra words/phrases (any language) that boost a moment
 
     def scene_list(self) -> list[str]:
@@ -109,8 +113,8 @@ class ClipsCfg(Section):
         return [self.scenes] if isinstance(self.scenes, str) else self.scenes
 
     def kind(self, name: str) -> KindCfg:
-        """Settings of the ``"short"`` or ``"long"`` kind."""
-        return self.short if name == "short" else self.long
+        """Settings of the requested kind (unknown names keep the historical ``long`` fallback)."""
+        return {"short": self.short, "long": self.long, "raw": self.raw}.get(name, self.long)
 
     @model_validator(mode="after")
     def _scenes_and_kinds(self) -> ClipsCfg:
@@ -119,7 +123,7 @@ class ClipsCfg(Section):
         if bad:
             raise ConfigError(f"unknown clips.scenes {bad}; valid: 'all' or {', '.join(STYLES)}")
         if not self.kinds or len(set(self.kinds)) != len(self.kinds):
-            raise ConfigError("clips.kinds must list 'short' and/or 'long' once each")
+            raise ConfigError("clips.kinds must list 'short', 'long' and/or 'raw' once each")
         return self
 
 
@@ -319,7 +323,7 @@ class Config(Section):
 class FileClipsCfg(Section):
     """The four clip options that are worth asking about."""
 
-    preset: Literal["both", "shorts", "long"] = "both"  # which families of clips to render
+    preset: Literal["both", "shorts", "long", "raw"] = "both"  # which families of clips to render
     scenes: str | list[str] = "best"  # "all", one scene type or a list
     keywords: list[str] = field(default_factory=list)  # extra words/phrases that boost a moment
     ranges: list[Range] = field(default_factory=list)  # exact cuts: ["00:01:00-00:01:45"]
@@ -508,10 +512,11 @@ class RuntimeOverrides(Section):
 
 
 #: Which kinds a preset renders.
-PRESET_KINDS: dict[str, tuple[str, ...]] = {
+PRESET_KINDS: dict[str, tuple[ClipKind, ...]] = {
     "both": ("short", "long"),
     "shorts": ("short",),
     "long": ("long",),
+    "raw": ("raw",),
 }
 
 
@@ -558,7 +563,7 @@ class FileConfig(Section):
         long = KindCfg(count=2, min_seconds=180, max_seconds=600, aspect="16:9", ranges=ranges)
         clips = ClipsCfg(
             mode=mode,
-            kinds=list(PRESET_KINDS[self.clips.preset]),  # type: ignore[arg-type]
+            kinds=list(PRESET_KINDS[self.clips.preset]),
             scenes=self.clips.scenes,
             short=short,
             long=long,

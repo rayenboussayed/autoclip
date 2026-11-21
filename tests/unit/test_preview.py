@@ -39,6 +39,14 @@ def test_preview_long_kind_uses_the_long_aspect(media: Media, tmp_path: Path) ->
         assert img.size == canvas_size("16:9", quality_short_side(cfg.quality), 320, 180)
 
 
+def test_preview_raw_kind_keeps_the_source_shape(media: Media, tmp_path: Path) -> None:
+    cfg = make_cfg(media, tmp_path)
+    png = _png_bytes(cfg, media, "raw")
+    with Image.open(io.BytesIO(png)) as img:
+        img.load()
+        assert img.size == (320, 180)
+
+
 def test_preview_canvas_matches_preview_image(media: Media, tmp_path: Path) -> None:
     cfg = make_cfg(media, tmp_path, quality="high")
     canvas = preview_canvas(media.video, cfg, "short", at=1.0)

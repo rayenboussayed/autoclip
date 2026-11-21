@@ -1197,6 +1197,12 @@ def test_preview_long_kind_uses_the_long_aspect(media: Any, monkeypatch: pytest.
         assert img.size == canvas_size("16:9", quality_short_side("high"), 320, 180)
 
 
+def test_preview_raw_kind_is_accepted(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = _preview_client(monkeypatch, tmp_path)
+    response = _preview_post(client, media, {"kind": "raw"})
+    assert response.status_code == 200, response.text
+
+
 def test_preview_rejects_an_empty_upload_and_bad_kind(media: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     client = _preview_client(monkeypatch, tmp_path)
     assert client.post("/api/preview", files={"file": ("e.bin", b"", "application/octet-stream")}).status_code == 400

@@ -156,6 +156,17 @@ def test_the_preset_selects_the_kinds() -> None:
     assert FileConfig(clips={"preset": "long"}).to_config().clips.kinds == ["long"]  # type: ignore[arg-type]
 
 
+def test_the_raw_preset_selects_only_the_raw_kind() -> None:
+    from autoclip.core.config import Config
+
+    raw = FileConfig(clips={"preset": "raw"}).to_config()  # type: ignore[arg-type]
+    assert raw.clips.kinds == ["raw"]
+    assert raw.clips.kind("raw") is raw.clips.raw
+    assert raw.clips.raw.aspect == "original"
+    assert parse(Config, {"clips": {"kinds": ["raw"]}}).clips.kinds == ["raw"]
+    assert parse(Config, {"clips": {"kinds": ["short", "long", "raw"]}}).clips.kinds == ["short", "long", "raw"]
+
+
 def test_ranges_switch_to_exact_cuts_for_every_selected_kind() -> None:
     cfg = FileConfig(clips={"preset": "shorts", "ranges": ["00:00:04-00:00:10"]}).to_config()  # type: ignore[arg-type]
     assert cfg.clips.mode == "ranges"
@@ -368,6 +379,8 @@ def test_runtime_config_validation_errors() -> None:
         parse(Config, {"clips": {"kinds": []}})
     with pytest.raises(ConfigError):
         parse(Config, {"clips": {"kinds": ["short", "short"]}})
+    with pytest.raises(ConfigError):
+        parse(Config, {"clips": {"raw": {"min_seconds": 50, "max_seconds": 10}}})
     with pytest.raises(ConfigError):
         parse(Config, {"download": {"subtitles": {"languages": [""]}}})
     with pytest.raises(ConfigError):

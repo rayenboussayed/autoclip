@@ -127,7 +127,7 @@ def test_the_choices_are_the_ones_the_config_accepts() -> None:
     }
     for path, default in expected.items():
         assert default in OPTIONS[path].choices, path
-    assert OPTIONS["clips.preset"].choices == ("both", "shorts", "long")
+    assert OPTIONS["clips.preset"].choices == ("both", "shorts", "long", "raw")
 
 
 # -- the behaviour (no display needed) --------------------------------------------------------

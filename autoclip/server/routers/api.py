@@ -168,8 +168,8 @@ async def preview(
     cache dir, one frame is rendered and the folder is deleted before the response is returned.
     """
     settings = get_settings()
-    if kind not in ("short", "long"):
-        raise HTTPException(status_code=400, detail="kind must be 'short' or 'long'")
+    if kind not in ("short", "long", "raw"):
+        raise HTTPException(status_code=400, detail="kind must be 'short', 'long' or 'raw'")
     if file.size is not None and file.size > settings.max_file_size:
         raise HTTPException(status_code=413, detail=f"file exceeds MAX_FILE_SIZE ({settings.max_file_size} bytes)")
 

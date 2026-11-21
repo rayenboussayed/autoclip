@@ -96,10 +96,10 @@ CLIPS = Section(
             "What to produce",
             "choice",
             "`both` renders vertical shorts and horizontal long clips, `shorts` only the 20-60 s vertical ones, "
-            "`long` only the 3-10 minute horizontal ones.",
-            "The two families have their own length, shape and destination; most projects want one of them.",
-            "`shorts` for TikTok/Reels/Shorts, `long` for YouTube compilations, `both` for a full package.",
-            choices=("both", "shorts", "long"),
+            "`long` only the 3-10 minute horizontal ones, `raw` the whole silence-removed video with captions.",
+            "The families have their own length, shape and destination; `raw` keeps the source shape.",
+            "`shorts` for TikTok/Reels/Shorts, `long` for YouTube compilations, `raw` for a full captioned export.",
+            choices=("both", "shorts", "long", "raw"),
         ),
         _o(
             "clips.scenes",
