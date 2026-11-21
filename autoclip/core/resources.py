@@ -19,7 +19,7 @@ from pathlib import Path
 import psutil
 
 from .config import Config
-from .derive import probes as adaptive
+from .derive import probes
 from .derive.constants import profile_for
 from .derive.policy import AutoDecision, Pressure, decide_admission
 from .derive.probes import detect_cpu_count
@@ -114,7 +114,7 @@ class ResourceMonitor:
         self.peak_rss = 0
         self.mode = "balance"
         self.profile = profile_for(self.mode)
-        self._cpu_samples: deque[float] = deque(maxlen=adaptive.SAMPLE_CAP)
+        self._cpu_samples: deque[float] = deque(maxlen=probes.SAMPLE_CAP)
         self._adapt_ts = 0.0
         self._oom = False
         self._state_path: Path | None = None
@@ -132,7 +132,7 @@ class ResourceMonitor:
         self.memory_fraction = self.profile.mem_fraction
         self.memory_reserve_mb = self.profile.memory_reserve_mb
         self.cpus = detect_cpu_count()
-        self._cpu_samples = deque(maxlen=adaptive.SAMPLE_CAP)
+        self._cpu_samples = deque(maxlen=probes.SAMPLE_CAP)
         self.peak_rss = 0  # each batch starts a fresh worker story; the server hits configure per job
         self._oom = False
         if cfg is not None and getattr(cfg, "output_dir", None):
@@ -140,15 +140,15 @@ class ResourceMonitor:
         else:
             self._state_path = None
         if self._state_path is not None:
-            state = adaptive.load_state(self._state_path)
+            state = probes.load_state(self._state_path)
             if isinstance(state, dict) and state.get("mode") == self.mode:
                 persisted = state.get("cpu_percent")
                 if isinstance(persisted, (int, float)):
-                    self.max_cpu_percent = adaptive.clamp(float(persisted), self.profile.cpu_percent_min, self.profile.cpu_percent_max)
+                    self.max_cpu_percent = probes.clamp(float(persisted), self.profile.cpu_percent_min, self.profile.cpu_percent_max)
                 persisted_samples = state.get("samples")
                 if isinstance(persisted_samples, list):
-                    restored = [float(x) for x in persisted_samples[-adaptive.SAMPLE_CAP :] if isinstance(x, (int, float))]
-                    self._cpu_samples = deque(restored, maxlen=adaptive.SAMPLE_CAP)
+                    restored = [float(x) for x in persisted_samples[-probes.SAMPLE_CAP :] if isinstance(x, (int, float))]
+                    self._cpu_samples = deque(restored, maxlen=probes.SAMPLE_CAP)
 
     def snapshot(self) -> Snapshot:
         """Measure now (a few cheap syscalls)."""
@@ -267,8 +267,8 @@ class ResourceMonitor:
             pressure = self.snapshot().pressure
         except Exception:  # pragma: no cover
             pressure = "low"  # pragma: no cover
-        samples_deque = deque(self._cpu_samples, maxlen=adaptive.SAMPLE_CAP)
-        trend_dir = adaptive.trend(samples_deque) if len(samples) >= 3 else 0
+        samples_deque = deque(self._cpu_samples, maxlen=probes.SAMPLE_CAP)
+        trend_dir = probes.trend(samples_deque) if len(samples) >= 3 else 0
         if self._oom:
             new = prev - profile.step_down
             self._oom = False
@@ -300,7 +300,7 @@ class ResourceMonitor:
             new = prev - profile.step_down * 0.5
         else:
             new = prev
-        new = adaptive.clamp(new, profile.cpu_percent_min, profile.cpu_percent_max)
+        new = probes.clamp(new, profile.cpu_percent_min, profile.cpu_percent_max)
         if abs(new - prev) >= 0.5:
             self.max_cpu_percent = new
             log.info(
@@ -310,7 +310,7 @@ class ResourceMonitor:
                 self.memory_fraction,
             )
             if self._state_path is not None:
-                adaptive.save_state(
+                probes.save_state(
                     self._state_path,
                     {"mode": self.mode, "cpu_percent": new, "samples": samples},
                 )
