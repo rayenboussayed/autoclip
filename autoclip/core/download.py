@@ -26,9 +26,7 @@ from typing import Any, cast
 from urllib.parse import urlsplit
 
 from .config import Config, DownloadCfg, parse, parse_hms
-from .errors import AutoclipError, DownloadError, RateLimitError
-from .formats import Choice, DownloadPrefs, YtInfo, choose, choose_candidates, describe
-from .internal.automation import (
+from .derive.constants import (
     COOKIE_BROWSERS,
     DOWNLOAD_FORMAT_CANDIDATES,
     DOWNLOAD_PAUSE_MAX_SECONDS,
@@ -39,8 +37,10 @@ from .internal.automation import (
     DOWNLOAD_SOCKET_TIMEOUT,
     JS_RUNTIME_ORDER,
     PLAYLIST_MAX_VIDEOS,
+    download_quality_for,
 )
-from .internal.quality import download_quality_for
+from .errors import AutoclipError, DownloadError, RateLimitError
+from .formats import Choice, DownloadPrefs, YtInfo, choose, choose_candidates, describe
 from .io import read_json as _read_json
 from .io import srt_time as _srt_time
 from .log import health_check, safe_path_text, traced

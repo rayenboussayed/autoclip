@@ -10,13 +10,13 @@ from typing import Any
 
 import numpy as np
 
-from .events import CancelToken
-from .internal.automation import (
+from .derive.constants import (
     UNSILENCE_KEEP_SILENCE_MS,
     UNSILENCE_MIN_SEGMENT_SECONDS,
     UNSILENCE_MIN_SILENCE_MS,
     UNSILENCE_SILENCE_THRESHOLD_DB,
 )
+from .events import CancelToken
 from .log import traced
 from .media import FRAME, SR, external_env, ffmpeg_exe
 from .models import MediaInfo

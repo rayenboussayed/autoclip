@@ -1,10 +1,10 @@
-"""Unit tests for the pure admission policy (``autoclip.core.internal.budget``)."""
+"""Unit tests for the pure admission policy (``autoclip.core.derive.policy``)."""
 
 from __future__ import annotations
 
 import pytest
 
-from autoclip.core.internal.budget import Pressure, decide_admission
+from autoclip.core.derive.policy import Pressure, decide_admission
 
 
 def test_decisions_are_frozen() -> None:

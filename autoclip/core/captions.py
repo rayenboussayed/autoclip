@@ -20,8 +20,8 @@ from PIL import Image, ImageColor, ImageDraw, ImageFont, features
 
 from .audio import Timeline, is_filler
 from .config import CaptionsCfg, Config
+from .derive.constants import CAPTION_MAX_SECONDS, CAPTION_SAFE_BOTTOM, CAPTION_SAFE_TOP, DEFAULT_FILLERS
 from .fonts import covers_all, covers_letters, dominant_script, find_font, has_rtl
-from .internal.automation import CAPTION_MAX_SECONDS, CAPTION_SAFE_BOTTOM, CAPTION_SAFE_TOP, DEFAULT_FILLERS
 from .log import traced
 from .media import F32
 from .models import Span, Word
@@ -56,7 +56,7 @@ MIN_CHUNK_SECONDS = 0.8
 
 def make_chunks(words: Sequence[Word], cfg: CaptionsCfg, width: int = 1080) -> list[Chunk]:
     """Group words into caption screens by length, duration, long pauses and punctuation."""
-    from .internal.automation import caption_chars
+    from .derive.constants import caption_chars
 
     char_limit = caption_chars(width)
     chunks: list[Chunk] = []

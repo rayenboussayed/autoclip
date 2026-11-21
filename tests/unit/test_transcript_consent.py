@@ -35,8 +35,8 @@ class Downloader:
 
 def _run(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, downloader: Downloader, **sections: Any) -> list[Segment]:
     monkeypatch.setattr("autoclip.core.transcript.RESOURCES.usable_memory", lambda: 10 * 1024 * 1024 * 1024)
-    monkeypatch.setattr("autoclip.core.internal.runtime.detect_cpu_count", lambda: 4)
-    monkeypatch.setattr("autoclip.core.internal.runtime.free_ram_mb", lambda: 4096.0)
+    monkeypatch.setattr("autoclip.core.derive.policy.detect_cpu_count", lambda: 4)
+    monkeypatch.setattr("autoclip.core.derive.policy.free_ram_mb", lambda: 4096.0)
     install_stub_whisper(monkeypatch, media, {}, download_model=downloader)
     cfg = make_cfg(media, tmp_path / "out", **sections)
     info: MediaInfo = probe(media.video)

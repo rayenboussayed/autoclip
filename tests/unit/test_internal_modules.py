@@ -14,66 +14,66 @@ import pytest
 
 from autoclip.core import ai
 from autoclip.core.config import Config, parse
-from autoclip.core.internal import adaptive, background, content, decisions, modes, quality, runtime
-from autoclip.core.internal.automation import DEFAULT_FILLERS
+from autoclip.core.derive import constants, policy, probes
+from autoclip.core.derive.constants import DEFAULT_FILLERS
 
 
 def test_background_helpers() -> None:
-    assert background.is_color("#abc") and background.is_color("#aabbcc")
-    assert not background.is_color("blur")
-    assert background.background_kind("blur") == "blur"
-    assert background.background_kind("#fff") == "color"
-    assert background.background_kind("/tmp/x.png") == "image"
+    assert policy.is_color("#abc") and policy.is_color("#aabbcc")
+    assert not policy.is_color("blur")
+    assert policy.background_kind("blur") == "blur"
+    assert policy.background_kind("#fff") == "color"
+    assert policy.background_kind("/tmp/x.png") == "image"
     base = Path(tempfile.gettempdir())
-    assert background.resolve_background("blur", base) == "blur"
-    assert background.resolve_background("#fff", base) == "#fff"
-    assert background.resolve_background("rel.png", base) == str(base / "rel.png")
+    assert policy.resolve_background("blur", base) == "blur"
+    assert policy.resolve_background("#fff", base) == "#fff"
+    assert policy.resolve_background("rel.png", base) == str(base / "rel.png")
     with contextlib.suppress(Exception):
-        background.background_kind("")
+        policy.background_kind("")
     with contextlib.suppress(Exception):
-        background.background_kind("#zzz")
+        policy.background_kind("#zzz")
 
 
 def test_content_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    assert content.load_lexicon(None) == {}
-    assert content.load_lexicon(tmp_path) == {}
-    (tmp_path / content.LEXICON_FILE).write_text(json.dumps({"funny": ["x"], "fillers": ["um"]}), encoding="utf-8")
-    assert content.load_lexicon(tmp_path) == {"funny": ["x"], "fillers": ["um"]}
-    assert content.fillers_from({"fillers": ["um"]}) == frozenset({"um"})
-    assert content.fillers_from({}) == frozenset(DEFAULT_FILLERS)
+    assert policy.load_lexicon(None) == {}
+    assert policy.load_lexicon(tmp_path) == {}
+    (tmp_path / policy.LEXICON_FILE).write_text(json.dumps({"funny": ["x"], "fillers": ["um"]}), encoding="utf-8")
+    assert policy.load_lexicon(tmp_path) == {"funny": ["x"], "fillers": ["um"]}
+    assert policy.fillers_from({"fillers": ["um"]}) == frozenset({"um"})
+    assert policy.fillers_from({}) == frozenset(DEFAULT_FILLERS)
     # invalid files raise
     for bad in ("{nope", "[1,2]", '{"a": 1}', '{"a": [""]}', '{"a": []}'):
-        (tmp_path / content.LEXICON_FILE).write_text(bad, encoding="utf-8")
+        (tmp_path / policy.LEXICON_FILE).write_text(bad, encoding="utf-8")
         with contextlib.suppress(Exception):
-            content.load_lexicon(tmp_path)
-    (tmp_path / content.LEXICON_FILE).unlink()
+            policy.load_lexicon(tmp_path)
+    (tmp_path / policy.LEXICON_FILE).unlink()
     # unreadable file branch
-    (tmp_path / content.LEXICON_FILE).write_text("{}", encoding="utf-8")
+    (tmp_path / policy.LEXICON_FILE).write_text("{}", encoding="utf-8")
     from pathlib import Path as _P
 
     orig = _P.read_text
 
     def boom(self: Path, *a: Any, **k: Any) -> str:
-        if content.LEXICON_FILE in str(self):
+        if policy.LEXICON_FILE in str(self):
             raise OSError("boom")
         return orig(self, *a, **k)
 
     monkeypatch.setattr(_P, "read_text", boom)
     with contextlib.suppress(Exception):
-        content.load_lexicon(tmp_path)
+        policy.load_lexicon(tmp_path)
 
 
 def test_quality_helpers() -> None:
-    assert tuple(quality.QUALITY_PROFILES) == ("high", "medium", "low")
-    assert quality.quality_short_side("low") >= 2
-    assert quality.output_fps(24.0, "low") >= 1.0
-    assert quality.download_quality_for("high") == 720
+    assert tuple(constants.QUALITY_PROFILES) == ("high", "medium", "low")
+    assert constants.quality_short_side("low") >= 2
+    assert constants.output_fps(24.0, "low") >= 1.0
+    assert constants.download_quality_for("high") == 720
     with contextlib.suppress(ValueError):
-        quality.quality_profile("nope")
+        constants.quality_profile("nope")
     with contextlib.suppress(ValueError):
-        quality.download_quality_for("nope")
+        constants.download_quality_for("nope")
     # output_fps with a cap
-    assert quality.output_fps(100.0, "medium") == 30.0
+    assert constants.output_fps(100.0, "medium") == 30.0
 
 
 def test_runtime_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -83,38 +83,38 @@ def test_runtime_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = types.ModuleType("ctranslate2")
     fake.get_cuda_device_count = lambda: 0  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "ctranslate2", fake)
-    assert runtime.whisper_model_for("cpu", cpus=4, ram_mb=4096) == "small"
-    assert runtime.whisper_model_for("cpu", cpus=16, ram_mb=16384) == "medium"
-    assert runtime.whisper_model_for("cuda") == "large-v3"
-    assert runtime.detect_device() in ("cpu", "cuda")
+    assert policy.whisper_model_for("cpu", cpus=4, ram_mb=4096) == "small"
+    assert policy.whisper_model_for("cpu", cpus=16, ram_mb=16384) == "medium"
+    assert policy.whisper_model_for("cuda") == "large-v3"
+    assert policy.detect_device() in ("cpu", "cuda")
     # detect_cpu_count must survive a broken probe (falls back to the raw affinity/cpu count)
     monkeypatch.setattr("autoclip.core.resources.cgroup_cpu_quota", lambda: None)
-    assert runtime.detect_cpu_count() >= 1
+    assert policy.detect_cpu_count() >= 1
 
 
 def test_adaptive_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    assert adaptive.load_state(tmp_path / "missing.json") is None
+    assert probes.load_state(tmp_path / "missing.json") is None
     p = tmp_path / "state.json"
-    adaptive.save_state(p, {"a": 1})
-    assert adaptive.load_state(p) == {"a": 1}
+    probes.save_state(p, {"a": 1})
+    assert probes.load_state(p) == {"a": 1}
     from collections import deque
 
-    assert adaptive.trend(deque([1.0, 2.0])) == 0  # too few samples
-    assert adaptive.trend(deque([1.0, 1.0, 1.0, 1.0])) == 0
-    assert adaptive.trend(deque([1.0, 1.0, 5.0, 5.0])) == 1
-    assert adaptive.trend(deque([5.0, 5.0, 1.0, 1.0])) == -1
-    assert adaptive.clamp(5.0, 0.0, 10.0) == 5.0
-    assert adaptive.clamp(15.0, 0.0, 10.0) == 10.0
+    assert probes.trend(deque([1.0, 2.0])) == 0  # too few samples
+    assert probes.trend(deque([1.0, 1.0, 1.0, 1.0])) == 0
+    assert probes.trend(deque([1.0, 1.0, 5.0, 5.0])) == 1
+    assert probes.trend(deque([5.0, 5.0, 1.0, 1.0])) == -1
+    assert probes.clamp(5.0, 0.0, 10.0) == 5.0
+    assert probes.clamp(15.0, 0.0, 10.0) == 10.0
     # save_state OSError branch
     monkeypatch.setattr(Path, "replace", lambda self, other: (_ for _ in ()).throw(OSError("boom")))
-    adaptive.save_state(tmp_path / "x.json", {"a": 1})  # must not raise
+    probes.save_state(tmp_path / "x.json", {"a": 1})  # must not raise
 
 
 def test_modes_helpers() -> None:
-    assert modes.profile_for("nope").name == "balance"
-    assert modes.profile_for("performance").name == "performance"
-    assert tuple(modes.PROFILES) == ("performance", "resources", "balance")
-    from autoclip.core.internal.automation import denoiser_threads
+    assert constants.profile_for("nope").name == "balance"
+    assert constants.profile_for("performance").name == "performance"
+    assert tuple(constants.PROFILES) == ("performance", "resources", "balance")
+    from autoclip.core.derive.constants import denoiser_threads
 
     assert denoiser_threads("resources") == 1
     assert denoiser_threads("performance") >= 1
@@ -198,13 +198,13 @@ def test_config_coercion_edge_cases() -> None:
 
 
 def test_decisions_helpers() -> None:
-    from autoclip.core.internal.runtime import runtime_decisions
+    from autoclip.core.derive.policy import runtime_decisions
 
     decisions_list = runtime_decisions()
     assert any(d.name == "quality" for d in decisions_list)
     assert any(d.name == "mode" for d in decisions_list)
     # log_decisions runs without error
-    decisions.log_decisions()
+    policy.log_decisions()
 
 
 def test_ai_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -721,13 +721,11 @@ def test_rerank_returns_empty_when_no_model_resolves(monkeypatch: pytest.MonkeyP
 def test_free_ram_mb_honours_the_container_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     import types
 
-    from autoclip.core.internal import runtime
-
     monkeypatch.setattr("psutil.virtual_memory", lambda: types.SimpleNamespace(available=1024 * (1 << 20)))
     monkeypatch.setattr("autoclip.core.resources.cgroup_memory_available", lambda: 512 * (1 << 20))
-    assert runtime.free_ram_mb() == pytest.approx(512)
+    assert policy.free_ram_mb() == pytest.approx(512)
     monkeypatch.setattr("autoclip.core.resources.cgroup_memory_available", lambda: None)
-    assert runtime.free_ram_mb() == pytest.approx(1024)
+    assert policy.free_ram_mb() == pytest.approx(1024)
 
 
 def test_reset_run_breaker_rearms_the_ai_helpers() -> None:
@@ -803,9 +801,7 @@ def test_model_sizes_handles_absurd_sizes() -> None:
 
 
 def test_quality_tiers_stay_in_sync_with_the_profile_table() -> None:
-    from autoclip.core.internal import quality
-
-    assert tuple(quality.QUALITY_PROFILES) == quality.VALID_QUALITIES
+    assert tuple(constants.QUALITY_PROFILES) == constants.VALID_QUALITIES
 
 
 def test_llm_model_survives_a_broken_free_ram_meter(monkeypatch: pytest.MonkeyPatch) -> None:

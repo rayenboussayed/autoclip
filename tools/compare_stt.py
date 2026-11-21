@@ -35,7 +35,7 @@ from numpy.typing import NDArray
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from autoclip.core.internal.automation import HALLUCINATION_SILENCE_THRESHOLD, transcription_beam_size
+from autoclip.core.derive.constants import HALLUCINATION_SILENCE_THRESHOLD, transcription_beam_size
 from autoclip.core.media import decode_audio
 from autoclip.core.resources import RESOURCES
 

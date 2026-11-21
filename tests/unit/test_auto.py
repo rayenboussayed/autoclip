@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from autoclip.core.internal.auto import (
+from autoclip.core.derive.policy import (
     JOB_RAM_MB,
     auto_max_concurrent_jobs,
     auto_mode,

@@ -10,8 +10,8 @@ import pytest
 from PIL import Image
 
 from autoclip.core.config import Config
+from autoclip.core.derive.constants import quality_short_side
 from autoclip.core.errors import AutoclipError
-from autoclip.core.internal.quality import quality_short_side
 from autoclip.core.preview import MOCK_ACTIVE, MOCK_CAPTION, MOCK_TITLE, preview_canvas, preview_image
 from autoclip.core.render import canvas_size
 from tests.support import Media, make_cfg

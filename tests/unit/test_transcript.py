@@ -17,9 +17,9 @@ from autoclip.core import hardware, transcript
 from autoclip.core.config import Config
 from autoclip.core.cutmap import CutMap
 from autoclip.core.denoise import SpeechEnhancer, default_models_dir
+from autoclip.core.derive.constants import HALLUCINATION_SILENCE_THRESHOLD
 from autoclip.core.errors import AutoclipError
 from autoclip.core.hardware import pick_encoder
-from autoclip.core.internal.automation import HALLUCINATION_SILENCE_THRESHOLD
 from autoclip.core.media import F32, decode_audio, probe
 from autoclip.core.models import MediaInfo, Segment
 from autoclip.core.resources import MB, RESOURCES
@@ -163,8 +163,8 @@ def asr_cfg(media: Media, tmp_path: Path, **sections: Any) -> Config:
 
 def test_transcribe_cpu_with_stub(media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path) -> None:
     monkeypatch.setattr("autoclip.core.transcript.RESOURCES.usable_memory", lambda: 10 * 1024 * 1024 * 1024)
-    monkeypatch.setattr("autoclip.core.internal.runtime.detect_cpu_count", lambda: 4)
-    monkeypatch.setattr("autoclip.core.internal.runtime.free_ram_mb", lambda: 4096.0)
+    monkeypatch.setattr("autoclip.core.derive.policy.detect_cpu_count", lambda: 4)
+    monkeypatch.setattr("autoclip.core.derive.policy.free_ram_mb", lambda: 4096.0)
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec)
     cfg = asr_cfg(media, tmp_path)
@@ -195,8 +195,8 @@ def test_a_broken_cuda_runtime_falls_back_to_the_cpu(
 ) -> None:
     """A GPU that loads but cannot run must not fail the run: a capped CPU model takes over."""
     monkeypatch.setattr("autoclip.core.transcript.RESOURCES.usable_memory", lambda: 10 * 1024 * 1024 * 1024)
-    monkeypatch.setattr("autoclip.core.internal.runtime.detect_cpu_count", lambda: 4)
-    monkeypatch.setattr("autoclip.core.internal.runtime.free_ram_mb", lambda: 4096.0)
+    monkeypatch.setattr("autoclip.core.derive.policy.detect_cpu_count", lambda: 4)
+    monkeypatch.setattr("autoclip.core.derive.policy.free_ram_mb", lambda: 4096.0)
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec, cuda=1, cuda_fails=True)
     cfg = asr_cfg(media, tmp_path)
@@ -421,8 +421,8 @@ def test_gpu_chunk_failure_retries_on_cpu(
     media: Media, monkeypatch: pytest.MonkeyPatch, info: MediaInfo, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setattr("autoclip.core.transcript.RESOURCES.usable_memory", lambda: 10 * 1024 * 1024 * 1024)
-    monkeypatch.setattr("autoclip.core.internal.runtime.detect_cpu_count", lambda: 4)
-    monkeypatch.setattr("autoclip.core.internal.runtime.free_ram_mb", lambda: 4096.0)
+    monkeypatch.setattr("autoclip.core.derive.policy.detect_cpu_count", lambda: 4)
+    monkeypatch.setattr("autoclip.core.derive.policy.free_ram_mb", lambda: 4096.0)
     rec: dict[str, Any] = {}
     install_stub_whisper(monkeypatch, media, rec, cuda=1, gpu_chunk_fails=True)
     cfg = asr_cfg(media, tmp_path)
@@ -1118,11 +1118,11 @@ def test_a_large_cpu_model_logs_the_slow_warning(
 
 
 def test_cap_cpu_model_keeps_custom_names_and_small_picks(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("autoclip.core.internal.runtime.detect_cpu_count", lambda: 4)
-    monkeypatch.setattr("autoclip.core.internal.runtime.free_ram_mb", lambda: 4096.0)
+    monkeypatch.setattr("autoclip.core.derive.policy.detect_cpu_count", lambda: 4)
+    monkeypatch.setattr("autoclip.core.derive.policy.free_ram_mb", lambda: 4096.0)
     assert transcript._cap_cpu_model("custom/path") == "custom/path"
     assert transcript._cap_cpu_model("tiny") == "tiny"
     assert transcript._cap_cpu_model("large-v3") == "small"
-    monkeypatch.setattr("autoclip.core.internal.runtime.detect_cpu_count", lambda: 16)
-    monkeypatch.setattr("autoclip.core.internal.runtime.free_ram_mb", lambda: 16384.0)
+    monkeypatch.setattr("autoclip.core.derive.policy.detect_cpu_count", lambda: 16)
+    monkeypatch.setattr("autoclip.core.derive.policy.free_ram_mb", lambda: 16384.0)
     assert transcript._cap_cpu_model("large-v3") == "small"  # even on an ample host, a GPU fallback stays cheap

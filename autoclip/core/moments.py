@@ -15,8 +15,8 @@ from numpy.typing import NDArray
 
 from .config import Config, KindCfg
 from .cutmap import CutMap
-from .internal.automation import CLIP_PAD_END, CLIP_PAD_START, DEFAULT_FILLERS, LLM_TOP_K, SCENE_SNAP_RADIUS_SECONDS
-from .internal.content import load_lexicon
+from .derive.constants import CLIP_PAD_END, CLIP_PAD_START, DEFAULT_FILLERS, LLM_TOP_K, SCENE_SNAP_RADIUS_SECONDS
+from .derive.policy import load_lexicon
 from .log import traced
 from .media import F32, FRAME, snap_to_quiet
 from .models import MediaInfo, Moment

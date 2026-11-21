@@ -19,11 +19,10 @@ from numpy.typing import NDArray
 
 from .captions import Y_CENTER, render_text_image, safe_top
 from .config import Config
+from .derive.constants import BACKGROUND_BLUR, BACKGROUND_DIM, quality_short_side
+from .derive.policy import background_kind
 from .errors import AutoclipError
 from .fonts import find_font
-from .internal.automation import BACKGROUND_BLUR, BACKGROUND_DIM
-from .internal.background import background_kind
-from .internal.quality import quality_short_side
 from .log import traced
 from .media import probe
 from .render import blur_function, canvas_size, even

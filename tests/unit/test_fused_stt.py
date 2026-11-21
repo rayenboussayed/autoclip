@@ -12,9 +12,9 @@ import autoclip.core.optimizer as optimizer
 import autoclip.core.transcript as transcript
 from autoclip.core.config import Config
 from autoclip.core.cutmap import CutMap
+from autoclip.core.derive.constants import CHUNK_MINUTES
 from autoclip.core.events import Cancelled, CancelToken
 from autoclip.core.hardware import cpu_encoder
-from autoclip.core.internal import CHUNK_MINUTES
 from autoclip.core.media import probe
 from autoclip.core.optimizer import prepare_source
 from autoclip.core.pipeline import process_video

@@ -110,9 +110,12 @@ def test_manifest_video_renders_short_and_long_clips(
         assert 0 <= start < end <= info.duration + 1, (kind, clip, info.duration)
         assert 0 < trimmed <= end - start + 0.01, (kind, clip)
     short, long = clips["short"][0], clips["long"][0]
-    from autoclip.core.internal.auto import auto_quality  # noqa: PLC0415
-    from autoclip.core.internal.quality import quality_short_side  # noqa: PLC0415
-    from autoclip.core.internal.runtime import detect_cpu_count, free_ram_mb  # noqa: PLC0415
+    from autoclip.core.derive.constants import quality_short_side  # noqa: PLC0415
+    from autoclip.core.derive.policy import (  # noqa: PLC0415
+        auto_quality,  # noqa: PLC0415
+        detect_cpu_count,
+        free_ram_mb,
+    )
     from autoclip.core.render import canvas_size  # noqa: PLC0415
 
     side = quality_short_side(auto_quality(cpus=detect_cpu_count(), free_ram_mb=free_ram_mb()))  # the engine-derived tier of this host

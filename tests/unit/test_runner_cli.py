@@ -623,7 +623,7 @@ def test_render_all_defers_submissions_while_another_job_is_in_flight(
     jobs, store, _ = parallel_jobs(media, tmp_path, 2)
     monkeypatch.setattr(runner, "ProcessPoolExecutor", ThreadPool)
     from autoclip.core import resources as _resources  # noqa: PLC0415
-    from autoclip.core.internal.budget import AutoDecision  # noqa: PLC0415
+    from autoclip.core.derive.policy import AutoDecision  # noqa: PLC0415
 
     admission_calls: list[tuple[str, int]] = []
 

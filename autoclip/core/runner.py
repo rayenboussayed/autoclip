@@ -13,9 +13,9 @@ from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wai
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import replace
 
+from .derive.constants import profile_for
 from .events import CancelToken, Reporter
 from .hardware import HW_MAX_WORKERS
-from .internal import modes
 from .io import srt_time as _srt_time
 from .log import default_level, safe_path_text, setup_logging, traced
 from .models import RenderJob
@@ -110,7 +110,7 @@ def render_all(
     try:
         profile = RESOURCES.profile
     except AttributeError:  # pragma: no cover
-        profile = modes.profile_for(mode_name)  # pragma: no cover
+        profile = profile_for(mode_name)  # pragma: no cover
     capacity = 1 if not getattr(profile, "parallel", True) else min(RESOURCES.cpu_budget(), len(jobs), limit)
     if cancel is not None and cancel.cancelled:
         return

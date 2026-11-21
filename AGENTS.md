@@ -101,10 +101,11 @@ autoclip/
     errors.py       AutoclipError, ConfigError, DownloadError
     io.py           shared leaf helpers: read_json, srt_time, unique_name (no duplicated copies in the front ends)
     resources.py    ResourceMonitor + RESOURCES singleton: CPU/RAM -> worker plan, cache budget, adaptive tuning
-    internal/       derived runtime decisions and constants (the resource-aware engine: encode-quality / performance-mode /
-                    LLM-model / server-concurrency selection, mode profiles, adaptive helpers, decision logs,
-                    admission policy for the render pool);
-                    not user-facing configuration, logged as `automation ...`
+    derive/         the resource-aware engine, split by concern (not user-facing config; logged as `automation ...`)
+      constants.py  every baked-in number: mode profiles, quality tiers, fade/caption/download/LLM constants
+      probes.py     machine measurements: detect_cpu_count, free_ram_mb, detect_device, adaptive sample state
+      policy.py     rules that turn measurements into decisions: quality/mode/model/job picks, admission,
+                    decision log, background and lexicon interpretation
     log.py          LOG, setup_logging, traced decorator, speed_text
     store.py        SQLite Store (WAL), MemoryLRU, Cache (RAM LRU in front of SQLite kv), is_boundary
     media.py        ffmpeg discovery, probe (PyAV), energy track, decode_audio, trim_video
@@ -411,7 +412,7 @@ keys still raise `ConfigError`.
 
 `Config` (runtime) = `input`, `output_dir`, `mode`, `quality`, `download`, `clips`,
 `llm`, `image`, `video`, `captions`, `skip`. `mode` (`performance`/`resources`/`balance`) and `quality`
-(`high`/`medium`/`low`) are **internal, engine-derived** fields (chosen by `internal.auto` from the measured cores and
+(`high`/`medium`/`low`) are **internal, engine-derived** fields (chosen by `derive.policy.auto_quality` from the measured cores and
 free RAM in `to_config`; never accepted from the file, the environment or the command line). `KindCfg` = `count`, `min_seconds`,
 `max_seconds`, `aspect`, `ranges` (no `target_seconds` in 4.0). `SkipCfg` = `stt`, `denoise`, `audio_enhance`, `audio`,
 `pauses`, `caption`, `title`, `fade`, `thumbnail`, `llm` (all `false`; see invariant 16). `DownloadCfg` = `cookies`, `time_range`,
@@ -431,7 +432,7 @@ Whisper. The language is always auto-detected and consent is always `auto`; ther
 Invalid *values* fall back: `_coerce_defaults` replaces a value that fails validation with the field default and logs
 `config: invalid value for <path>; falling back to default`. Wrong *types* and unknown keys remain fatal (`ConfigError`).
 
-Four previously user-facing knobs are still internally derived (see `autoclip/core/internal/automation.py`):
+Four previously user-facing knobs are still internally derived (see `autoclip/core/derive/constants.py`):
 `transcript.enhance.num_threads`, `transcript.beam_size`, `captions.max_chars`, and
 `captions.safe_top` / `captions.safe_bottom`. Do not reintroduce them in user-facing config. Download quality derives
 from the engine-derived output quality via `DOWNLOAD_QUALITY_BY_OUTPUT` (720/480/360 for high/medium/low).

@@ -21,11 +21,9 @@ import numpy as np
 from .audio import enhance_audio
 from .config import Config
 from .cutmap import CutMap
+from .derive.constants import CHUNK_MINUTES, UNSILENCE_MIN_TOTAL_SECONDS, quality_profile
 from .errors import AutoclipError
 from .events import Cancelled, CancelToken
-from .internal import CHUNK_MINUTES
-from .internal.automation import UNSILENCE_MIN_TOTAL_SECONDS
-from .internal.quality import quality_profile
 from .io import read_json
 from .log import traced
 from .media import AUDIO_SR, FRAME, atomic_write_json, external_env, ffmpeg_exe, frame_energy_db, probe

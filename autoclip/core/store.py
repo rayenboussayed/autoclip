@@ -19,7 +19,7 @@ from typing import TypedDict, TypeVar, cast
 import numpy as np
 from numpy.typing import NDArray
 
-from .internal import CACHE_DISK_MB
+from .derive.constants import CACHE_DISK_MB
 from .models import Moment, Segment, Word
 from .resources import MB, ResourceMonitor
 

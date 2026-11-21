@@ -6,8 +6,8 @@ import contextlib
 import logging
 from pathlib import Path
 
+from .derive.constants import SCENE_ADAPTIVE_THRESHOLD, SCENE_MIN_CONTENT_VAL, SCENE_MIN_SCENE_LEN_SECONDS
 from .events import CancelToken
-from .internal.automation import SCENE_ADAPTIVE_THRESHOLD, SCENE_MIN_CONTENT_VAL, SCENE_MIN_SCENE_LEN_SECONDS
 from .log import traced
 from .models import MediaInfo
 

@@ -17,16 +17,16 @@ import numpy as np
 from .config import Config
 from .cutmap import CutMap
 from .denoise import SpeechEnhancer, default_models_dir
-from .errors import AutoclipError
-from .events import Cancelled, CancelToken
-from .internal import CHUNK_MINUTES as _CHUNK_MINUTES
-from .internal.automation import (
+from .derive.constants import CHUNK_MINUTES as _CHUNK_MINUTES
+from .derive.constants import (
     ENHANCE_ATTENUATION_DB,
     ENHANCE_SNR_THRESHOLD_DB,
     HALLUCINATION_SILENCE_THRESHOLD,
     transcription_beam_size,
 )
-from .internal.runtime import whisper_model_for
+from .derive.policy import whisper_model_for
+from .errors import AutoclipError
+from .events import Cancelled, CancelToken
 from .log import speed_text, traced
 from .media import atomic_write_text, decode_audio
 from .model_engine import release_allocations

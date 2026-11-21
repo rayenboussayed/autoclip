@@ -232,7 +232,7 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
     log_file = default_log_file(cfg.output_dir)
     setup_logging(log_file, level, None if getattr(args, "events", None) == "jsonl" else level)
     RESOURCES.configure(cfg)
-    from ..core.internal.decisions import log_decisions
+    from ..core.derive.policy import log_decisions
 
     log_decisions(cfg)
     snap = RESOURCES.snapshot()

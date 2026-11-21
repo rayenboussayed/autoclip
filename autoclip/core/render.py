@@ -16,16 +16,18 @@ import numpy as np
 from .audio import Timeline, build_audio, compute_keep, enhance_audio
 from .captions import Y_CENTER, build_captions, render_text_image, safe_top
 from .config import VideoCfg
-from .fonts import find_font
-from .internal import output_fps, quality_profile, quality_short_side
-from .internal.automation import (
+from .derive.constants import (
     BACKGROUND_BLUR,
     BACKGROUND_DIM,
     audio_fade_seconds,
+    output_fps,
+    quality_profile,
+    quality_short_side,
     title_display_seconds,
     video_fade_seconds,
 )
-from .internal.background import background_kind
+from .derive.policy import background_kind
+from .fonts import find_font
 from .log import safe_path_text, speed_text, traced
 from .media import AUDIO_SR
 from .models import Encoder, RenderJob, Span, Word

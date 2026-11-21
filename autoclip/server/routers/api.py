@@ -363,8 +363,7 @@ def _auto_job_limit() -> int:
     Falls back to 1 (the historical default) if the machine cannot be measured.
     """
     try:
-        from autoclip.core.internal.auto import auto_max_concurrent_jobs
-        from autoclip.core.internal.runtime import detect_cpu_count, free_ram_mb
+        from autoclip.core.derive.policy import auto_max_concurrent_jobs, detect_cpu_count, free_ram_mb
 
         limit = auto_max_concurrent_jobs(cpus=detect_cpu_count(), free_ram_mb=free_ram_mb())
     except Exception as e:  # best effort: the floor is always safe

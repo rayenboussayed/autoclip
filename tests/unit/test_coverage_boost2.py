@@ -181,7 +181,7 @@ def test_detect_device_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     import sys
 
     monkeypatch.setitem(sys.modules, "ctranslate2", None)
-    from autoclip.core.internal.runtime import detect_device
+    from autoclip.core.derive.policy import detect_device
 
     assert detect_device() == "cpu"
 
@@ -191,7 +191,7 @@ def test_detect_device_falls_back_to_cpu_on_cuda_errors(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(ctranslate2, "get_cuda_device_count", lambda: (_ for _ in ()).throw(RuntimeError()))
 
-    from autoclip.core.internal.runtime import detect_device
+    from autoclip.core.derive.policy import detect_device
 
     assert detect_device() == "cpu"
 
@@ -258,7 +258,7 @@ def test_config_default_model_cpu_branch(monkeypatch: pytest.MonkeyPatch) -> Non
     import ctranslate2
 
     monkeypatch.setattr(ctranslate2, "get_cuda_device_count", lambda: 0)
-    from autoclip.core.internal.runtime import detect_device
+    from autoclip.core.derive.policy import detect_device
 
     assert detect_device() == "cpu"
 

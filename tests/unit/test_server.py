@@ -1167,7 +1167,7 @@ def test_preview_returns_a_png_of_the_short_canvas(media: Any, monkeypatch: pyte
 
     from PIL import Image
 
-    from autoclip.core.internal.quality import quality_short_side
+    from autoclip.core.derive.constants import quality_short_side
     from autoclip.core.render import canvas_size
 
     client = _preview_client(monkeypatch, tmp_path)
@@ -1185,7 +1185,7 @@ def test_preview_long_kind_uses_the_long_aspect(media: Any, monkeypatch: pytest.
 
     from PIL import Image
 
-    from autoclip.core.internal.quality import quality_short_side
+    from autoclip.core.derive.constants import quality_short_side
     from autoclip.core.render import canvas_size
 
     client = _preview_client(monkeypatch, tmp_path)
@@ -1678,7 +1678,7 @@ def test_auto_job_limit_falls_back_to_one_when_the_machine_cannot_be_measured(
     def broken(**kwargs: object) -> int:
         raise RuntimeError("nope")
 
-    monkeypatch.setattr("autoclip.core.internal.auto.auto_max_concurrent_jobs", broken)
+    monkeypatch.setattr("autoclip.core.derive.policy.auto_max_concurrent_jobs", broken)
     with caplog.at_level("DEBUG", logger="autoclip.server"):
         assert api._auto_job_limit() == 1
 
@@ -1695,9 +1695,9 @@ def test_the_semaphore_wiring_passes_the_measured_machine_to_the_rule(monkeypatc
         calls.update(cpus=cpus, free_ram_mb=int(free_ram_mb))
         return 2
 
-    monkeypatch.setattr("autoclip.core.internal.auto.auto_max_concurrent_jobs", rule)
-    monkeypatch.setattr("autoclip.core.internal.runtime.detect_cpu_count", lambda: 6)
-    monkeypatch.setattr("autoclip.core.internal.runtime.free_ram_mb", lambda: 8192.0)
+    monkeypatch.setattr("autoclip.core.derive.policy.auto_max_concurrent_jobs", rule)
+    monkeypatch.setattr("autoclip.core.derive.policy.detect_cpu_count", lambda: 6)
+    monkeypatch.setattr("autoclip.core.derive.policy.free_ram_mb", lambda: 8192.0)
     monkeypatch.setattr(api, "_sem", None)
     monkeypatch.setattr(api, "_sem_loop", None)
 

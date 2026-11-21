@@ -232,7 +232,7 @@ def run_pipeline(
     from ..core.resources import RESOURCES as _RESOURCES
 
     _RESOURCES.configure(cfg)
-    from ..core.internal.decisions import log_decisions as _log_decisions
+    from ..core.derive.policy import log_decisions as _log_decisions
 
     _log_decisions(cfg)
     snap = _RESOURCES.snapshot()

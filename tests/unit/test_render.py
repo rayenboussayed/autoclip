@@ -45,7 +45,7 @@ def test_even_and_canvas_size() -> None:
 
 
 def test_quality_profile_scales_output_and_caps_fps() -> None:
-    from autoclip.core.internal import output_fps, quality_short_side
+    from autoclip.core.derive.constants import output_fps, quality_short_side
 
     assert [quality_short_side(q) for q in ("high", "medium", "low")] == [864, 648, 432]
     assert output_fps(50.0, "high") == 50.0  # no cap: the source frame rate is kept

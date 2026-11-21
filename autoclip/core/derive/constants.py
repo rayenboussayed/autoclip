@@ -1,8 +1,14 @@
-"""Values that autoclip chooses for the user and never asks them about."""
+"""Values autoclip chooses for the user and never asks about.
+
+One table for the engine's fixed numbers, mode profiles and quality tiers. These were spread over
+``internal/automation``, ``internal/modes`` and ``internal/quality``; a single module makes it
+possible to see every baked-in choice at once and keeps callers from inventing their own numbers.
+"""
 
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 
 __all__ = [
     "AUDIO_FADE_SECONDS",
@@ -10,9 +16,12 @@ __all__ = [
     "AUDIO_TARGET_DBFS",
     "BACKGROUND_BLUR",
     "BACKGROUND_DIM",
+    "BASE_SHORT_SIDE",
+    "CACHE_DISK_MB",
     "CAPTION_MAX_SECONDS",
     "CAPTION_SAFE_BOTTOM",
     "CAPTION_SAFE_TOP",
+    "CHUNK_MINUTES",
     "CLIP_PAD_END",
     "CLIP_PAD_START",
     "COOKIE_BROWSERS",
@@ -23,16 +32,22 @@ __all__ = [
     "DOWNLOAD_PAUSE_MIN_SECONDS",
     "DOWNLOAD_PLAYLIST_PAUSE_MAX_SECONDS",
     "DOWNLOAD_PLAYLIST_PAUSE_MIN_SECONDS",
+    "DOWNLOAD_QUALITY_BY_OUTPUT",
     "DOWNLOAD_RETRIES",
     "DOWNLOAD_SOCKET_TIMEOUT",
     "ENHANCE_ATTENUATION_DB",
     "ENHANCE_SNR_THRESHOLD_DB",
     "HALLUCINATION_SILENCE_THRESHOLD",
+    "JOB_RAM_MB",
     "JS_RUNTIME_ORDER",
+    "LEXICON_FILE",
     "LLM_NUM_CTX",
     "LLM_TIMEOUT",
     "LLM_TOP_K",
+    "OLLAMA_RAM_FRACTION",
     "PLAYLIST_MAX_VIDEOS",
+    "PROFILES",
+    "QUALITY_PROFILES",
     "SCENE_ADAPTIVE_THRESHOLD",
     "SCENE_MIN_CONTENT_VAL",
     "SCENE_MIN_SCENE_LEN_SECONDS",
@@ -45,15 +60,22 @@ __all__ = [
     "UNSILENCE_MIN_SILENCE_MS",
     "UNSILENCE_MIN_TOTAL_SECONDS",
     "UNSILENCE_SILENCE_THRESHOLD_DB",
+    "VALID_QUALITIES",
     "VIDEO_FADE_SECONDS",
+    "ModeProfile",
+    "QualityProfile",
     "audio_fade_seconds",
     "caption_chars",
     "denoiser_threads",
+    "download_quality_for",
+    "output_fps",
+    "profile_for",
+    "quality_profile",
+    "quality_short_side",
     "title_display_seconds",
     "transcription_beam_size",
     "video_fade_seconds",
 ]
-
 
 CAPTION_SAFE_TOP = 0.10
 """Fraction of a vertical frame kept free at the top for captions."""
@@ -216,3 +238,149 @@ def title_display_seconds(text: str, duration: float) -> float:
     # roughly 10-15 characters per second for a single-line overlay title
     estimated = min(3.0, max(1.0, len(text) / 12.0))
     return round(min(duration, estimated), 3)
+
+
+# --- mode profiles --------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ModeProfile:
+    """The resource policy for one of the three internal profiles."""
+
+    name: str
+    cpu_percent_min: float
+    cpu_percent_max: float
+    cpu_percent_default: float
+    mem_fraction: float
+    memory_reserve_mb: int
+    encoding_threads_cap: int
+    parallel: bool
+    target_cpu_low: float
+    target_cpu_high: float
+    step_up: float
+    step_down: float
+
+
+PROFILES: dict[str, ModeProfile] = {
+    "performance": ModeProfile(
+        name="performance",
+        cpu_percent_min=70.0,
+        cpu_percent_max=100.0,
+        cpu_percent_default=90.0,
+        mem_fraction=0.75,
+        memory_reserve_mb=256,
+        encoding_threads_cap=4,
+        parallel=True,
+        target_cpu_low=80.0,
+        target_cpu_high=95.0,
+        step_up=5.0,
+        step_down=3.0,
+    ),
+    "resources": ModeProfile(
+        name="resources",
+        cpu_percent_min=10.0,
+        cpu_percent_max=40.0,
+        cpu_percent_default=25.0,
+        mem_fraction=0.30,
+        memory_reserve_mb=1024,
+        encoding_threads_cap=2,
+        parallel=False,
+        target_cpu_low=15.0,
+        target_cpu_high=35.0,
+        step_up=2.0,
+        step_down=5.0,
+    ),
+    "balance": ModeProfile(
+        name="balance",
+        cpu_percent_min=30.0,
+        cpu_percent_max=80.0,
+        cpu_percent_default=50.0,
+        mem_fraction=0.50,
+        memory_reserve_mb=512,
+        encoding_threads_cap=4,
+        parallel=True,
+        target_cpu_low=55.0,
+        target_cpu_high=75.0,
+        step_up=4.0,
+        step_down=4.0,
+    ),
+}
+
+
+def profile_for(mode: str) -> ModeProfile:
+    """Return the profile for *mode*; unknown or empty values fall back to ``balance`` rather than raising."""
+    if not mode or mode not in PROFILES:
+        return PROFILES["balance"]
+    return PROFILES[mode]
+
+
+# --- quality tiers --------------------------------------------------------------------------------
+
+VALID_QUALITIES = ("high", "medium", "low")
+#: Short side of the canvas at the neutral quality tier; every tier scales it.
+BASE_SHORT_SIDE = 1080
+DOWNLOAD_QUALITY_BY_OUTPUT = {"high": 720, "medium": 480, "low": 360}
+
+
+@dataclass(frozen=True)
+class QualityProfile:
+    """Encoder settings for one output-quality tier."""
+
+    short_side_scale: float
+    fps_cap: float | None
+    aac_bitrate_kbps: int
+    crf: int
+    preset: str
+    nvenc_cq: int
+    videotoolbox_qv: int
+
+
+QUALITY_PROFILES: dict[str, QualityProfile] = {
+    "high": QualityProfile(0.80, None, 192, 20, "slow", 22, 85),
+    "medium": QualityProfile(0.60, 30.0, 128, 24, "medium", 28, 65),
+    "low": QualityProfile(0.40, 24.0, 96, 28, "fast", 33, 45),
+}
+
+
+def download_quality_for(output_quality: str) -> int:
+    """The short side to download for an output quality tier."""
+    try:
+        return DOWNLOAD_QUALITY_BY_OUTPUT[output_quality]
+    except KeyError as e:
+        raise ValueError(f"unknown quality {output_quality!r}; valid: {', '.join(VALID_QUALITIES)}") from e
+
+
+def quality_profile(quality: str) -> QualityProfile:
+    """The encoder profile for a quality tier."""
+    try:
+        return QUALITY_PROFILES[quality]
+    except KeyError as e:
+        raise ValueError(f"unknown quality {quality!r}; valid: {', '.join(VALID_QUALITIES)}") from e
+
+
+def quality_short_side(quality: str) -> int:
+    """The rendered short side of the quality tier (never smaller than 2 px)."""
+    return max(2, round(BASE_SHORT_SIDE * quality_profile(quality).short_side_scale))
+
+
+def output_fps(source_fps: float | None, quality: str) -> float:
+    """The encoded frame rate: the source's, capped by the quality tier."""
+    source = max(float(source_fps) if source_fps and source_fps > 0 else 30.0, 1.0)
+    cap = quality_profile(quality).fps_cap
+    return max(1.0, min(source, cap) if cap is not None else source)
+
+
+# --- other fixed values ---------------------------------------------------------------------------
+
+CACHE_DISK_MB = 2048
+"""Fixed SQLite cache ceiling."""
+
+CHUNK_MINUTES = 5.0
+"""Fixed, memory-safe transcription chunk length."""
+
+#: RAM one server job needs at peak (Whisper + render + Python overhead), in MB.
+JOB_RAM_MB = 1536.0
+#: An installed model may use at most this fraction of free RAM (the rest is KV cache, the pipeline, the OS).
+OLLAMA_RAM_FRACTION = 0.5
+#: Name of the optional lexicon file, looked up next to the config file.
+LEXICON_FILE = "lexicon.json"

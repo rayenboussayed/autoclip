@@ -386,7 +386,7 @@ def test_whisper_model_for_cuda_and_cpu(monkeypatch: pytest.MonkeyPatch) -> None
     fake = types.ModuleType("ctranslate2")
     fake.get_cuda_device_count = lambda: 2  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "ctranslate2", fake)
-    from autoclip.core.internal.runtime import detect_device, whisper_model_for
+    from autoclip.core.derive.policy import detect_device, whisper_model_for
 
     assert detect_device() == "cuda"
     assert whisper_model_for("cuda") == "large-v3"

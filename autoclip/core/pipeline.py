@@ -16,10 +16,9 @@ from pathlib import Path
 
 from .config import Config, KindCfg, parse_hms
 from .cutmap import CutMap
+from .derive.constants import SPLIT_SECONDS, quality_short_side
 from .errors import AutoclipError
 from .events import Cancelled, CancelToken, Reporter
-from .internal.automation import SPLIT_SECONDS
-from .internal.quality import quality_short_side
 from .log import health_check, safe_path_text, traced
 from .media import external_env, ffmpeg_exe, probe
 from .models import Encoder, MediaInfo, Moment, RenderJob
@@ -164,7 +163,7 @@ def process_video(
     reporter = report if report is not None else Reporter(cancel=cancel)
     root, cc, stem = Path(cfg.output_dir), cfg.clips, name or src.stem
     original_source = src
-    from .internal.content import fillers_from, load_lexicon
+    from .derive.policy import fillers_from, load_lexicon
 
     fillers = fillers_from(load_lexicon(config_dir))
     info = probe(src)

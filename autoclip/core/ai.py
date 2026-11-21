@@ -21,9 +21,9 @@ from pydantic import BaseModel
 from pydantic.json_schema import JsonSchemaValue
 
 from .config import Config
-from .internal.auto import auto_ollama_model
-from .internal.automation import LLM_NUM_CTX, LLM_TIMEOUT
-from .internal.runtime import free_ram_mb
+from .derive.constants import LLM_NUM_CTX, LLM_TIMEOUT
+from .derive.policy import auto_ollama_model
+from .derive.probes import free_ram_mb
 from .models import Moment
 
 log = logging.getLogger("autoclip")

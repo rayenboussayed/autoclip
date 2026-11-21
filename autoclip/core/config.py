@@ -24,12 +24,10 @@ from urllib.parse import urlsplit
 from pydantic import ConfigDict, Field, Strict, StringConstraints, TypeAdapter, ValidationError, model_validator
 from pydantic.dataclasses import dataclass
 
+from .derive.constants import COOKIE_BROWSERS
+from .derive.policy import auto_mode, auto_quality, background_kind, load_lexicon, resolve_background
+from .derive.probes import detect_cpu_count, free_ram_mb
 from .errors import ConfigError
-from .internal.auto import auto_mode, auto_quality
-from .internal.automation import COOKIE_BROWSERS
-from .internal.background import background_kind, resolve_background
-from .internal.content import load_lexicon
-from .internal.runtime import detect_cpu_count, free_ram_mb
 from .platforms import BUILTIN_GROUPS, canonical, deep_merge
 from .styles import STYLES
 

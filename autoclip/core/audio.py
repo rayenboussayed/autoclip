@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from .internal.automation import AUDIO_HIGHPASS_HZ, AUDIO_TARGET_DBFS, DENOISE_STRENGTH, SILENCE_KEEP_PADDING, SILENCE_MIN_SECONDS
+from .derive.constants import AUDIO_HIGHPASS_HZ, AUDIO_TARGET_DBFS, DENOISE_STRENGTH, SILENCE_KEEP_PADDING, SILENCE_MIN_SECONDS
 from .log import traced
 from .media import AUDIO_SR, decode_audio
 from .models import Word

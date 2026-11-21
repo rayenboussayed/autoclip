@@ -14,7 +14,7 @@ import subprocess
 from collections.abc import Callable
 
 from .config import VideoCfg
-from .internal.quality import quality_profile
+from .derive.constants import quality_profile
 from .media import external_env
 from .models import Encoder
 

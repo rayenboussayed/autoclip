@@ -19,12 +19,10 @@ from pathlib import Path
 import psutil
 
 from .config import Config
-from .internal import (
-    adaptive,
-    detect_cpu_count,
-    modes,
-)
-from .internal.budget import AutoDecision, Pressure, decide_admission
+from .derive import probes as adaptive
+from .derive.constants import profile_for
+from .derive.policy import AutoDecision, Pressure, decide_admission
+from .derive.probes import detect_cpu_count
 
 log = logging.getLogger("autoclip")
 MB = 1 << 20
@@ -115,7 +113,7 @@ class ResourceMonitor:
         self._cpu_time = 0.0
         self.peak_rss = 0
         self.mode = "balance"
-        self.profile = modes.profile_for(self.mode)
+        self.profile = profile_for(self.mode)
         self._cpu_samples: deque[float] = deque(maxlen=adaptive.SAMPLE_CAP)
         self._adapt_ts = 0.0
         self._oom = False
@@ -128,7 +126,7 @@ class ResourceMonitor:
         if cfg is not None:
             mode = cfg.mode
         self.mode = mode
-        self.profile = modes.profile_for(mode)
+        self.profile = profile_for(mode)
         self.max_cpu_percent = float(self.profile.cpu_percent_default)
         self.encoding_threads = self.profile.encoding_threads_cap
         self.memory_fraction = self.profile.mem_fraction

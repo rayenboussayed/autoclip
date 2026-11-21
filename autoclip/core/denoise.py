@@ -25,8 +25,8 @@ from pathlib import Path
 import numpy as np
 
 from .audio import frame_db
+from .derive.constants import DENOISE_STRENGTH, ENHANCE_ATTENUATION_DB, ENHANCE_SNR_THRESHOLD_DB, denoiser_threads
 from .errors import AutoclipError
-from .internal.automation import DENOISE_STRENGTH, ENHANCE_ATTENUATION_DB, ENHANCE_SNR_THRESHOLD_DB, denoiser_threads
 from .media import F32
 from .model_engine import release_allocations
 from .resources import RESOURCES
