@@ -14,7 +14,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .config import Config, KindCfg
-from .cutmap import CutMap
+from .cutmap import CutMap, MeasuredTimeline
 from .derive.constants import CLIP_PAD_END, CLIP_PAD_START, DEFAULT_FILLERS, LLM_TOP_K, SCENE_SNAP_RADIUS_SECONDS
 from .derive.policy import load_lexicon
 from .log import traced
@@ -242,6 +242,7 @@ def select_moments(
     have_text: bool,
     config_dir: Path | None = None,
     cutmap: CutMap | None = None,
+    timeline: MeasuredTimeline | None = None,
     shots: Sequence[float] = (),
 ) -> list[Moment]:
     """The best moments of ``src`` for every requested scene type, as ``kind`` ("short" or "long") clips.
@@ -251,6 +252,7 @@ def select_moments(
     """
     cc, kcfg = cfg.clips, cfg.clips.kind(kind)
     cutmap = cutmap or CutMap.identity(info.duration)
+    timeline = timeline or MeasuredTimeline.from_cutmap(cutmap)
     shots = sorted(set(shots))
     segs = store.light_segments() if have_text else []
     cands = text_candidates(segs, kcfg, info.duration)
@@ -297,11 +299,11 @@ def select_moments(
             s, e = _nearest_cut(shots, s, SCENE_SNAP_RADIUS_SECONDS), _nearest_cut(shots, e, SCENE_SNAP_RADIUS_SECONDS)
             if not kcfg.min_seconds <= e - s <= kcfg.max_seconds or _overlaps(s, e, placements):
                 s, e = m.start, m.end
-            m.start, m.end = s, e
+            m.start, m.end = s, e  # candidate windows already use the real timeline
             placements.append(original_span)
             taken.append(original_span)
             m.title = m.title or make_title(m.text, frozenset(DEFAULT_FILLERS))
-            m.source_start = cutmap.optimized_to_source(m.start)
-            m.source_end = cutmap.optimized_to_source(m.end)
+            m.source_start = timeline.to_source(m.start)
+            m.source_end = timeline.to_source(m.end)
             moments.append(m)
     return moments

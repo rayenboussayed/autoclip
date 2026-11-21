@@ -44,6 +44,25 @@ def test_prepare_source_encodes_the_kept_intervals(media: Media, tmp_path: Path,
     assert manifest["assembled"] is True
 
 
+def test_timeline_helpers_reject_a_missing_measurement(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="no measured duration"):
+        optimizer._timeline_for(tmp_path / "x.mp4", ((0.0, 1.0),), (0.0,))
+    with pytest.raises(ValueError, match="no measured timeline"):
+        optimizer._timeline_from_manifest(tmp_path / "x.mp4", {"pieces": [[0.0, 1.0]]})
+
+
+def test_measured_timeline_ends_at_the_real_assembled_duration(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Captions must use the real assembled timeline, not the nominal cut-map one."""
+    cfg = make_cfg(media, tmp_path, None)
+    info = probe(media.video)
+    monkeypatch.setattr(optimizer, "UNSILENCE_MIN_TOTAL_SECONDS", 0.0)
+    prepared = prepare_source(media.video, cfg, info, tmp_path / "work")
+    real = probe(prepared.path).duration
+    assert prepared.timeline.last == pytest.approx(real, abs=0.05)
+    assert prepared.timeline.to_real(prepared.cutmap.total_kept) == pytest.approx(real, abs=0.05)
+    assert prepared.timeline.to_source(real) == pytest.approx(prepared.cutmap.intervals[-1][1], abs=0.05)
+
+
 def test_prepare_source_keeps_a_silent_video_as_identity(media: Media, tmp_path: Path) -> None:
     cfg = make_cfg(media, tmp_path, None)
     info = probe(media.silent)
@@ -125,8 +144,11 @@ def test_assembly_reprobes_a_bad_stream_copy_before_using_it(media: Media, tmp_p
     cfg = make_cfg(media, tmp_path, None)
     info = probe(media.video)
     cut = CutMap.from_intervals(info.duration, [(0.0, 5.0), (10.0, 15.0)])
-    durations = iter([0.0, cut.total_kept])
-    monkeypatch.setattr(optimizer, "_probe_duration", lambda path: next(durations))
+
+    def probe_duration(path: Path) -> float:
+        return cut.total_kept if path.name.startswith("optimized_") else 1.0
+
+    monkeypatch.setattr(optimizer, "_probe_duration", probe_duration)
     out = optimizer.assemble_optimized(media.video, info, cfg, tmp_path / "work", cut)
     assert out.is_file()
 
@@ -265,6 +287,11 @@ def test_corrupt_reuse_manifests_rebuild_the_assembly(media: Media, tmp_path: Pa
     assert optimizer._load_reused_assembly(media.video, cfg, tmp_path / "work", info) is None
 
     payload["path"] = "optimized_talk.mp4"
+    payload["durations"] = []  # a manifest without a measured timeline cannot be reused
+    (tmp_path / "work" / "optimizer.json").write_text(json.dumps(payload), encoding="utf-8")
+    assert optimizer._load_reused_assembly(media.video, cfg, tmp_path / "work", info) is None
+
+    payload["durations"] = [1.0] * len(payload["pieces"])
     payload["intervals"] = [[0.0, 1.0]]
     (tmp_path / "work" / "optimizer.json").write_text(json.dumps(payload), encoding="utf-8")
     assert optimizer._load_reused_assembly(media.video, cfg, tmp_path / "work", info) is None

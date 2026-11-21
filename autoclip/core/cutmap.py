@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from bisect import bisect_left, bisect_right
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 CutMapVersion = int
@@ -106,3 +107,75 @@ class CutMap:
         """Map a source span, keeping it continuous in optimized time."""
         mapped_start, mapped_end = self.source_to_optimized(start), self.source_to_optimized(end)
         return (mapped_start, max(mapped_start, mapped_end))
+
+
+@dataclass(frozen=True, slots=True)
+class MeasuredTimeline:
+    """The real timeline of an assembled file, aligned piece by piece with the nominal cut map.
+
+    Each kept interval is encoded as its own MP4; CFR frame rounding and AAC padding make the
+    piece longer than its nominal source width, so the concatenated file is longer than
+    :attr:`CutMap.total_kept`.  Transcripts and subtitles are cached on the nominal clock, while
+    captions are burned into the real file - this monotone map is the single translation point.
+    It carries no cache identity: the cached rows stay nominal and are remapped once per run.
+    """
+
+    intervals: tuple[tuple[float, float], ...]
+    nominal: tuple[float, ...]  # cumulative nominal starts, one more entry than intervals
+    real: tuple[float, ...]  # cumulative measured starts, one more entry than intervals
+
+    @classmethod
+    def from_durations(cls, intervals: Sequence[tuple[float, float]], durations: Sequence[float]) -> MeasuredTimeline:
+        """Build from kept source spans and the measured duration of each encoded piece."""
+        if not intervals or len(intervals) != len(durations):
+            raise ValueError("one measured duration is required per kept interval")
+        nominal, real = [0.0], [0.0]
+        for (start, end), duration in zip(intervals, durations, strict=True):
+            if end <= start or duration <= 0:
+                raise ValueError("kept intervals and their measured durations must be positive")
+            nominal.append(nominal[-1] + end - start)
+            real.append(real[-1] + duration)
+        return cls(tuple((float(a), float(b)) for a, b in intervals), tuple(nominal), tuple(real))
+
+    @classmethod
+    def from_cutmap(cls, cut: CutMap) -> MeasuredTimeline:
+        """The nominal clock of a source that was not reassembled (measured width == nominal)."""
+        if not cut.intervals:
+            return cls.from_durations(((0.0, cut.duration),), (cut.duration,))
+        return cls.from_durations(cut.intervals, [end - start for start, end in cut.intervals])
+
+    @property
+    def last(self) -> float:
+        """The real duration of the assembled file."""
+        return self.real[-1]
+
+    def _piece(self, t: float, edges: tuple[float, ...]) -> int:
+        """Index of the piece containing ``t`` on ``edges``, clamped to the available pieces."""
+        return min(max(bisect_right(edges, t) - 1, 0), len(self.intervals) - 1)
+
+    def to_real(self, t: float) -> float:
+        """Nominal optimized time -> real time in the assembled file."""
+        i = self._piece(t, self.nominal)
+        start, end = self.intervals[i]
+        local = min(max(t - self.nominal[i], 0.0), end - start)
+        return self.real[i] + local * (self.real[i + 1] - self.real[i]) / (end - start)
+
+    def to_nominal(self, t: float) -> float:
+        """Real time in the assembled file -> nominal optimized time."""
+        i = self._piece(t, self.real)
+        start, end = self.intervals[i]
+        duration = self.real[i + 1] - self.real[i]
+        local = min(max(t - self.real[i], 0.0), duration)
+        return self.nominal[i] + local * (end - start) / duration
+
+    def to_source(self, t: float) -> float:
+        """Real time in the assembled file -> original source time."""
+        i = self._piece(t, self.real)
+        start, end = self.intervals[i]
+        duration = self.real[i + 1] - self.real[i]
+        local = min(max(t - self.real[i], 0.0), duration)
+        return start + local * (end - start) / duration
+
+    def remap_window(self, start: float, end: float) -> tuple[float, float]:
+        """A nominal window as a real window in the assembled file."""
+        return self.to_real(start), self.to_real(end)

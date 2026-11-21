@@ -20,7 +20,7 @@ import numpy as np
 
 from .audio import enhance_audio
 from .config import Config
-from .cutmap import CutMap
+from .cutmap import CutMap, MeasuredTimeline
 from .derive.constants import CHUNK_MINUTES, UNSILENCE_MIN_TOTAL_SECONDS, quality_profile
 from .errors import AutoclipError
 from .events import Cancelled, CancelToken
@@ -33,7 +33,7 @@ from .speech import scan_audio
 
 log = logging.getLogger("autoclip")
 
-_SCHEMA = 1
+_SCHEMA = 2  # v2 records the measured duration of every encoded piece
 _SCANNER_SCHEMA = 1
 _STALE_PATCH = ".part.mp4"
 
@@ -44,6 +44,25 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         return read_json(path)
     except (OSError, ValueError):  # JSONDecodeError and UnicodeDecodeError are ValueErrors
         return None
+
+
+def _timeline_for(target: Path, pieces: Sequence[tuple[float, float]], durations: Sequence[float]) -> MeasuredTimeline:
+    """Build the real timeline from measured pieces, scaled to end exactly at the assembled file."""
+    total = sum(durations)
+    if total <= 0:
+        raise ValueError("the assembly has no measured duration")
+    scale = probe(target).duration / total
+    spans = [(float(start), float(end)) for start, end in pieces]
+    return MeasuredTimeline.from_durations(spans, [d * scale for d in durations])
+
+
+def _timeline_from_manifest(target: Path, manifest: dict[str, Any]) -> MeasuredTimeline:
+    """The measured timeline stored in a manifest; a missing one means a stale assembly."""
+    durations, raw = manifest.get("durations"), manifest.get("pieces")
+    if not isinstance(durations, list) or not isinstance(raw, list) or len(durations) != len(raw):
+        raise ValueError("the manifest has no measured timeline")
+    spans = [(float(pair[0]), float(pair[1])) for pair in raw]
+    return _timeline_for(target, spans, [float(value) for value in durations])
 
 
 def _source_fingerprint(src: Path, cfg: Config) -> str:
@@ -161,7 +180,7 @@ def _probe_duration(path: Path) -> float:
     return probe(path).duration
 
 
-def _load_reused_assembly(src: Path, cfg: Config, work: Path, info: MediaInfo) -> tuple[Path, CutMap] | None:
+def _load_reused_assembly(src: Path, cfg: Config, work: Path, info: MediaInfo) -> tuple[Path, CutMap, MeasuredTimeline] | None:
     manifest = _read_json(work / "optimizer.json")
     if manifest is None or manifest.get("assembled") is not True or manifest.get("schema") != _SCHEMA:
         return None
@@ -176,7 +195,10 @@ def _load_reused_assembly(src: Path, cfg: Config, work: Path, info: MediaInfo) -
     target = work / str(manifest.get("path", ""))
     if target.name != f"optimized_{src.stem}.mp4" or not target.is_file() or target.stat().st_size <= 0:
         return None
-    return target, cut
+    try:
+        return target, cut, _timeline_from_manifest(target, manifest)
+    except (KeyError, TypeError, ValueError, AutoclipError):
+        return None  # a pre-v2 manifest has no measured timeline: rebuild it
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +208,7 @@ class PreparedSource:
     path: Path
     info: MediaInfo
     cutmap: CutMap
+    timeline: MeasuredTimeline  # nominal transcript time -> real time of the assembled file
     energy_db: Any
     audio_ready: bool
     stt_failed: bool = False  # the fused Whisper pass failed; the run degrades to audio-only selection
@@ -217,16 +240,17 @@ def prepare_source(
     """
     reused = _load_reused_assembly(src, cfg, work, info)
     if reused is not None:
-        target, cut = reused
+        target, cut, timeline = reused
         prepared_info = probe(target)
         zeros = np.zeros(int(prepared_info.duration / FRAME) + 1, dtype=np.float32)
         energy_db = frame_energy_db(target) if prepared_info.has_audio else zeros
-        return PreparedSource(target, prepared_info, cut, energy_db, audio_ready=True)
+        return PreparedSource(target, prepared_info, cut, timeline, energy_db, audio_ready=True)
     scan = scan_audio(src, info, cancel=cancel)
     removable = max(0.0, info.duration - (sum(end - start for start, end in scan.intervals) if scan.intervals else 0.0))
     threshold = max(UNSILENCE_MIN_TOTAL_SECONDS, 0.02 * info.duration)
     if not scan.intervals or removable < threshold:
-        return PreparedSource(src, info, CutMap.identity(info.duration), scan.energy_db, audio_ready=False)
+        cut = CutMap.identity(info.duration)
+        return PreparedSource(src, info, cut, MeasuredTimeline.from_cutmap(cut), scan.energy_db, audio_ready=False)
     cut = CutMap.from_intervals(info.duration, scan.intervals)
     stt_failed = False
     stt: SttPass | None = None
@@ -244,7 +268,10 @@ def prepare_source(
     prepared_info = probe(target)
     zeros = np.zeros(int(prepared_info.duration / FRAME) + 1, dtype=np.float32)
     energy_db = frame_energy_db(target) if prepared_info.has_audio else zeros
-    return PreparedSource(target, prepared_info, cut, energy_db, audio_ready=True, stt_failed=stt_failed or bool(stt and stt.failed))
+    timeline = _timeline_from_manifest(target, _read_json(work / "optimizer.json") or {})
+    return PreparedSource(
+        target, prepared_info, cut, timeline, energy_db, audio_ready=True, stt_failed=stt_failed or bool(stt and stt.failed)
+    )
 
 
 @traced("assemble_optimized")
@@ -353,6 +380,10 @@ def assemble_optimized(
                 log.warning("transcription skipped (%s: %s): selecting on audio only", type(e).__name__, e)
                 stt.failed = True
 
+    # The encoded pieces are a little longer than their nominal source spans (CFR rounding and
+    # AAC padding).  Measure them before the concat so the timeline we publish is the real one.
+    durations = [_probe_duration(work / "optimizer" / f"{index:06d}.mp4") for index in range(len(pieces))]
+    expected_duration = sum(durations)
     list_file = segment_root / "list.txt"
     # Fixed names, relative paths, and cwd below make the manifest immune to hostile source names.
     list_file.write_text("".join(f"file '{index:06d}.mp4'\n" for index in range(len(pieces))), encoding="utf-8")
@@ -426,6 +457,8 @@ def assemble_optimized(
         "scanner": _SCANNER_SCHEMA,
         "cut_fingerprint": cut.fingerprint,
         "intervals": [list(interval) for interval in cut.intervals],
+        "pieces": [[start, end] for start, end, _ in pieces],
+        "durations": durations,
         "path": target.name,
         "assembled": True,
     }

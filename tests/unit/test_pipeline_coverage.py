@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from autoclip.core.cutmap import CutMap
+from autoclip.core.cutmap import CutMap, MeasuredTimeline
 from autoclip.core.media import probe
 from autoclip.core.optimizer import PreparedSource
 from autoclip.core.pipeline import process_video
@@ -29,7 +29,12 @@ def test_process_video_uses_the_optimized_source(media: Any, tmp_path: Path, mon
     monkeypatch.setattr(
         "autoclip.core.pipeline.prepare_source",
         lambda src, cfg, info, work, **k: PreparedSource(
-            destination, probe(destination), CutMap.identity(info.duration), __import__("numpy").zeros(1, dtype=np.float32), False
+            destination,
+            probe(destination),
+            CutMap.identity(info.duration),
+            MeasuredTimeline.from_cutmap(CutMap.identity(info.duration)),
+            __import__("numpy").zeros(1, dtype=np.float32),
+            False,
         ),
     )
 
@@ -67,7 +72,12 @@ def test_process_video_optimizer_identity_returns_the_original(media: Any, tmp_p
     monkeypatch.setattr(
         "autoclip.core.pipeline.prepare_source",
         lambda src, cfg, info, work, **k: PreparedSource(
-            src, info, CutMap.identity(info.duration), __import__("numpy").zeros(1, dtype=np.float32), False
+            src,
+            info,
+            CutMap.identity(info.duration),
+            MeasuredTimeline.from_cutmap(CutMap.identity(info.duration)),
+            __import__("numpy").zeros(1, dtype=np.float32),
+            False,
         ),
     )
     from autoclip.core.hardware import cpu_encoder as ce

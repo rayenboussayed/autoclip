@@ -2,7 +2,7 @@
 
 import pytest
 
-from autoclip.core.cutmap import CutMap
+from autoclip.core.cutmap import CutMap, MeasuredTimeline
 
 
 def test_identity_map_round_trips_without_shift() -> None:
@@ -77,3 +77,36 @@ def test_cutmap_edge_time_mappings() -> None:
 
 def test_chunked_pieces_returns_no_chunks_for_an_empty_kept_set() -> None:
     assert CutMap(10.0, ()).chunked_pieces(30.0) == []
+
+
+def test_measured_timeline_maps_nominal_real_and_source_times() -> None:
+    """A piece that encodes longer than its nominal width stretches only its own span."""
+    timeline = MeasuredTimeline.from_durations(((0.0, 4.0), (10.0, 15.0)), (4.4, 5.5))
+    assert timeline.nominal == (0.0, 4.0, 9.0)
+    assert timeline.real == (0.0, 4.4, 9.9)
+    assert timeline.last == 9.9
+    assert timeline.to_real(2.0) == pytest.approx(2.2)
+    assert timeline.to_real(6.5) == pytest.approx(4.4 + 2.5 * 1.1)
+    assert timeline.to_nominal(timeline.to_real(6.5)) == pytest.approx(6.5)
+    # a real time just inside the second piece is near source 11 s
+    assert timeline.to_source(4.4 + 1.1) == pytest.approx(11.0)
+    remapped = timeline.remap_window(0.0, 9.0)
+    assert remapped[0] == 0.0 and remapped[1] == pytest.approx(9.9)
+
+
+def test_measured_timeline_identity_and_validation() -> None:
+    """An unassembled source uses a nominal clock; malformed measurements are rejected."""
+    assert MeasuredTimeline.from_cutmap(CutMap(10.0, ())).last == 10.0
+    assert MeasuredTimeline.from_cutmap(CutMap.identity(10.0)).to_real(4.0) == 4.0
+    with pytest.raises(ValueError):
+        MeasuredTimeline.from_durations((), ())
+    with pytest.raises(ValueError):
+        MeasuredTimeline.from_durations(((0.0, 4.0),), (4.0, 5.0))
+    with pytest.raises(ValueError):
+        MeasuredTimeline.from_durations(((0.0, 4.0),), (0.0,))
+    with pytest.raises(ValueError):
+        MeasuredTimeline.from_durations(((2.0, 1.0),), (1.0,))
+    clamped = MeasuredTimeline.from_durations(((0.0, 4.0),), (5.0,))
+    assert clamped.to_real(-1.0) == 0.0 and clamped.to_real(99.0) == 5.0
+    assert clamped.to_nominal(-1.0) == 0.0 and clamped.to_nominal(99.0) == 4.0
+    assert clamped.to_source(-1.0) == 0.0 and clamped.to_source(99.0) == 4.0

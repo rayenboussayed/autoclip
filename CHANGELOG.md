@@ -4,6 +4,10 @@ All notable changes to autoclip, newest first. Release timestamps come from
 Git tags (and commit metadata for untagged but version-stamped commits). Each
 release mentions the source tag/commit for traceability.
 
+## [Unreleased]
+
+- fix: captions, clip windows and exported `.srt` files now follow the real timeline of a silence-removed video. Encoded segments are longer than their nominal source spans (CFR frame rounding and AAC padding), so a 30-cut assembly could drift about 3.4 s; the assembler now measures each segment and publishes a monotone measured timeline that the transcript, selection and render stages share. The transcript cache stays nominal, so no cache format, config key, CLI or output layout changed. Old optimizer manifests are rebuilt once (internal schema 2).
+
 ## [4.0.3] — 2026-11-21 06:51:08 UTC (tag `v4.0.3`, commit `b5946ef`)
 
 - feat: Whisper now runs inside the silence-removal assembly when that stage rebuilds the source: each bounded 5-minute chunk is transcribed as soon as its FFmpeg segments are committed, with per-chunk playback/source offsets and one resumable `.transcript.partial.jsonl` ledger; a reused assembly, a cached/sidecar/subtitle transcript or a short file keeps the standalone pass. Both paths share one `WhisperSession` implementation and load at most one Whisper model per run; a fused STT failure never aborts the assembly (the run selects on audio only). When a cheaper transcript source wins, the non-fused path in `get_transcript` handles it (it may never reach `transcribe`). No config, cache-format or CLI change.

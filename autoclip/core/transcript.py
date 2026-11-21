@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 
 from .config import Config
-from .cutmap import CutMap
+from .cutmap import CutMap, MeasuredTimeline
 from .denoise import SpeechEnhancer, default_models_dir
 from .derive.constants import CHUNK_MINUTES as _CHUNK_MINUTES
 from .derive.constants import (
@@ -754,6 +754,7 @@ def get_transcript(
     cache_source: Path | None = None,
     model_name_override: str | None = None,
     stt_failed: bool = False,
+    timeline: MeasuredTimeline | None = None,
     cancel: CancelToken | None = None,
 ) -> bool:
     """Put the transcript of ``src`` into ``store`` (sidecar file, downloaded subtitles, disk cache or Whisper).
@@ -763,6 +764,8 @@ def get_transcript(
 
     ``model_name_override`` pins the cache key to the model already chosen for this run. ``stt_failed`` suppresses a
     fresh Whisper pass after a fused failure; a complete partial is still replayed and kept for a later resume.
+    ``timeline`` translates the nominal playback clock used by the cached transcript to the real assembled file;
+    the cache itself stays nominal so old entries remain valid.
     """
     if not need_text:
         return False
@@ -773,12 +776,12 @@ def get_transcript(
     if sidecar is not None:
         segments = _sidecar_segments(sidecar, cutmap)
         if segments:
-            store.put_segments(segments)
+            store.put_segments(_remap_segments(segments, timeline))
             return True
     if subtitle is not None:
         downloaded = _downloaded_segments(subtitle, subtitle_manual, cutmap)
         if downloaded:
-            store.put_segments(downloaded)
+            store.put_segments(_remap_segments(downloaded, timeline))
             return True
     selected_model = model_name_override or transcript_model()
     cache_file, key = work_dir / f"{stem}.transcript.json", _cache_key(cache_src, selected_model, cutmap, enhance=not cfg.skip.denoise)
@@ -822,8 +825,29 @@ def get_transcript(
         }
         atomic_write_text(cache_file, json.dumps(cache_payload, ensure_ascii=False))
     partial.unlink(missing_ok=True)  # the cache now carries the full transcript; the partial is redundant
-    store.put_segments(segments)
+    store.put_segments(_remap_segments(segments, timeline))
     return bool(segments)
+
+
+def _remap_segments(segments: list[Segment], timeline: MeasuredTimeline | None) -> list[Segment]:
+    """Put cached nominal playback times onto the real assembled timeline (identity when absent)."""
+    if timeline is None:
+        return segments
+    return [
+        Segment(
+            timeline.to_real(segment.start),
+            timeline.to_real(segment.end),
+            segment.text,
+            [
+                Word(timeline.to_real(word.start), timeline.to_real(word.end), word.text, word.pseudo, word.source_start, word.source_end)
+                for word in segment.words
+            ],
+            segment.pseudo,
+            segment.source_start,
+            segment.source_end,
+        )
+        for segment in segments
+    ]
 
 
 def _downloaded_segments(path: Path, manual: bool, cutmap: CutMap | None = None) -> list[Segment]:

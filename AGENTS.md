@@ -116,7 +116,9 @@ autoclip/
     media.py        ffmpeg discovery, probe (PyAV), energy track, decode_audio, trim_video
     audio.py        enhance_audio (denoise/loudness/limiter), compute_keep (pauses/fillers), Timeline, build_audio
     speech.py       scan_audio: one streamed 16 kHz pass for loudness and non-silent spans
-    cutmap.py       source <-> optimized timeline map used by STT, subtitles, ranges and clip metadata
+    cutmap.py       source <-> nominal optimized timeline map, plus MeasuredTimeline (real assembled clock)
+                    STT/subtitles are cached on the nominal clock and remapped once when stored;
+                    selection and render use the measured clock so captions track the real video
     optimizer.py    crash-safe assembly of optimized_<stem>.mp4 from bounded FFmpeg segments
     model_engine.py automatic resource-aware model selection and phase-end release
     scenes.py       PySceneDetect cut boundaries used to snap selected clip edges

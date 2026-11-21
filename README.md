@@ -339,6 +339,9 @@ segments after a crash and publishes both source and optimized timestamps in `cl
 SQLite rows. When the assembly runs, it also transcribes each finished 5-minute chunk and records progress in a
 `<stem>.transcript.partial.jsonl` next to the cache; a crash resumes both the committed segments and the unfinished
 transcript chunks. Sidecar and downloaded subtitles are remapped to the playback timeline instead of being discarded.
+Encoded segments are a little longer than their nominal spans (frame rounding and AAC padding), so the assembler measures
+each one and publishes a monotone measured timeline; transcripts stay cached on the nominal clock and are translated once
+when they enter SQLite, keeping captions, clip windows and exported `.srt` files locked to the real video.
 
 After the optimized video exists, visible cuts are detected with PySceneDetect. A selected clip edge may move to a cut
 within 2 seconds when the length contract remains valid; the ordinary caption, timing and rendering paths otherwise

@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .config import Config, KindCfg, parse_hms
-from .cutmap import CutMap
+from .cutmap import CutMap, MeasuredTimeline
 from .derive.constants import SPLIT_SECONDS, quality_short_side
 from .errors import AutoclipError
 from .events import Cancelled, CancelToken, Reporter
@@ -70,18 +70,20 @@ def ranges_moments(
     fillers: frozenset[str] | None = None,
     kind: str = "short",
     cutmap: CutMap | None = None,
+    timeline: MeasuredTimeline | None = None,
 ) -> list[Moment]:
     """Moments for the explicit ``ranges`` of a clip kind (scene type "custom"), clamped to the video."""
     if fillers is None:
         fillers = frozenset()
     cutmap = cutmap or CutMap.identity(info.duration)
+    timeline = timeline or MeasuredTimeline.from_cutmap(cutmap)
     from . import ai
 
     use_llm = not cfg.skip.llm and ai.llm_available(cfg.llm.base_url, cfg.llm.model)
     out = []
     for span in kcfg.ranges:
         source_lo, source_hi = (min(parse_hms(x), cutmap.duration) for x in span.split("-"))
-        lo, hi = cutmap.source_span_to_optimized(source_lo, source_hi)
+        lo, hi = timeline.remap_window(*cutmap.source_span_to_optimized(source_lo, source_hi))
         if hi - lo <= 0:
             log.warning("clips.ranges entry %s was fully removed by silence; no custom clip for that span", span)
             continue
@@ -203,7 +205,7 @@ def process_video(
         cancel=cancel,
         stt_factory=fused.plan if fused is not None else None,
     )
-    src, info, cutmap = prepared.path, prepared.info, prepared.cutmap
+    src, info, cutmap, timeline = prepared.path, prepared.info, prepared.cutmap, prepared.timeline
     db = prepared.energy_db
     if prepared.path != original_source:
         log.info("using the optimized source %s (%.2fs)", safe_path_text(prepared.path), prepared.info.duration)
@@ -228,6 +230,7 @@ def process_video(
             cache_source=original_source,
             model_name_override=selected_model or None,
             stt_failed=prepared.stt_failed,
+            timeline=timeline,
             cancel=cancel,
         )
         if needs_text(cfg):
@@ -239,9 +242,11 @@ def process_video(
         for kind in cc.kinds:
             kcfg = cc.kind(kind)
             moments = (
-                ranges_moments(store, kcfg, info, cfg, have_text, kind=kind, cutmap=cutmap)
+                ranges_moments(store, kcfg, info, cfg, have_text, kind=kind, cutmap=cutmap, timeline=timeline)
                 if cc.mode == "ranges"
-                else select_moments(src, info, store, cache, cfg, kind, db, have_text, config_dir=config_dir, cutmap=cutmap, shots=cuts)
+                else select_moments(
+                    src, info, store, cache, cfg, kind, db, have_text, config_dir=config_dir, cutmap=cutmap, timeline=timeline, shots=cuts
+                )
             )
             if not moments:
                 log.warning("no %s clips for %s (video shorter than the length range, or no ranges given)", kind, name or src.name)
