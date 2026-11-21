@@ -49,7 +49,7 @@ def test_raw_clip_is_full_length_and_captioned(media: Media, e2e_run: E2ERun, tm
     srt = tmp_path / "raw.srt"
     srt.write_text("1\n00:00:01,000 --> 00:00:39,000\nRAW CAPTION\n", encoding="utf-8")
     out = tmp_path / "out-raw"
-    config = pipeline_config(out, source, transcript=srt, clips={"preset": "raw", "kinds": ["raw"]})
+    config = pipeline_config(out, source, transcript=srt, clips={"preset": "raw"})
     e2e_run.execute("raw-caption", config).require_ok()
 
     clips = sorted(out.glob("raw/*/*.mp4"))

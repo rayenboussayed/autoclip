@@ -453,6 +453,48 @@ def test_process_video_raw_produces_one_full_length_job(media: Any, tmp_path: Pa
     assert not (out / "short").exists() and not (out / "long").exists()
 
 
+def test_process_video_mixed_kinds_render_raw_last(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil
+
+    from autoclip.core import pipeline as pipeline_mod
+    from autoclip.core.hardware import cpu_encoder
+    from autoclip.core.store import Store
+
+    install_stub_whisper(monkeypatch, media, {}, cuda=0)
+    out = tmp_path / "mixed-out"
+    cfg = make_cfg(
+        media,
+        out,
+        clips={"kinds": ["short", "raw"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}},
+    )
+    cfg.captions.enabled = False
+    cfg.skip.title = True
+    destination = out / ".work" / media.video.stem / f"optimized_{media.video.stem}.mp4"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(media.video, destination)
+    cut = CutMap.identity(probe(media.video).duration)
+    monkeypatch.setattr(
+        "autoclip.core.pipeline.prepare_source",
+        lambda src, cfg, info, work, **k: PreparedSource(
+            destination, probe(destination), cut, MeasuredTimeline.from_cutmap(cut), np.zeros(1, dtype=np.float32), False
+        ),
+    )
+    batches: list[list[Any]] = []
+
+    def capture(jobs: list[Any], *a: Any, **k: Any) -> None:
+        batches.append(jobs)
+        for job in jobs:
+            store = Store(job.db_path)
+            store.finish_clip(job.clip_id, ok=True, file=job.dst.name, size=(320, 180), trimmed=job.moment.end)
+            store.close()
+
+    monkeypatch.setattr(pipeline_mod, "render_all", capture)
+    process_video(media.video, cfg, None, cpu_encoder(cfg.video, cfg.quality))
+    assert len(batches) == 2
+    assert batches[0] and all(job.kind == "short" for job in batches[0])
+    assert [job.kind for job in batches[1]] == ["raw"]
+
+
 def test_process_video_persists_both_timelines_in_clips_json(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import json as _json
 

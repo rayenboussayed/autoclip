@@ -266,6 +266,43 @@ def test_decode_audio_timeout_then_success(media: Media, monkeypatch: pytest.Mon
     assert len(samples) == 16000
 
 
+def test_decode_audio_drains_output_beyond_the_read_buffer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """When ffmpeg produces more than the preallocated tail, the extra bytes are drained, not left in the pipe."""
+    capacity = 16000 + (1 << 18)  # samples requested + tail, in samples; the view is 4x that in bytes
+
+    class Stdout:
+        def __init__(self) -> None:
+            self.pos = 0
+
+        def readinto(self, view: Any) -> int:
+            n = min(len(view), 4 * capacity + 64 - self.pos)
+            if n <= 0:
+                return 0
+            view[:n] = bytes(n)
+            self.pos += n
+            return n
+
+        def read(self, _n: int) -> bytes:
+            return b""
+
+    class Proc:
+        def __init__(self) -> None:
+            self.stdout = Stdout()
+
+        def __enter__(self) -> Proc:
+            return self
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr("autoclip.core.media.subprocess.Popen", lambda *a, **k: Proc())
+    samples = decode_audio(tmp_path / "never-opened.mp4", 0.0, 1.0, 16000)
+    assert len(samples) == 16000 and not samples.any()
+
+
 def test_decode_audio_at_any_sample_rate(media: Media) -> None:
     whisper = decode_audio(media.video, 1.0, 2.0, 16000)
     assert whisper.dtype == np.float32 and len(whisper) == 32000 and np.abs(whisper).max() > 0.1

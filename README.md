@@ -150,8 +150,8 @@ See `docs/options-reference.md` for the generated reference of the nine keys.
 * **The length of a clip is `clip(minimum, maximum)`:** `min_seconds` is a hard floor (the pause removal gives cuts back
   rather than going below it), `max_seconds` is a hard ceiling (padding around the cut cannot push it over).
 * `clips.ranges` cuts your own ranges (scene type `custom`), applies to the `short` and `long` kinds; `--split` cuts equal
-  600 s parts into `long/{video}/` and cannot be combined with `clips.ranges`. The `raw` preset ignores both and instead
-  writes one full-length captioned file to `raw/{video}/`.
+  600 s parts into `long/{video}/` and cannot be combined with `clips.ranges`. The `raw` preset is mutually exclusive
+  with both and instead writes one full-length captioned file to `raw/{video}/`.
 * `input` is a path, a glob or a list. One broken video or clip never stops the batch. Exit status: `0` all done,
   `1` something failed, `2` bad configuration. A transcript is picked up from a sidecar `.json`/`.srt` next to each video.
 

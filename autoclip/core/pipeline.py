@@ -335,12 +335,14 @@ def process_video(
         log.info("system health before render: %s", health_check("render"))
         reporter("render", 0.0, f"0/{total} clips to process")
         try:
-            if jobs:
-                render_all(jobs, needs, report=reporter, cancel=cancel)
             if raw_jobs:
-                reporter("render", len(jobs) / total, f"{len(jobs)}/{total} clips processed")
-                # One job: in-process, no pool. Keeps its duration-scaled estimate away from other clips.
+                # A mixed batch would report a misleading 100% after the short/long pass; report only
+                # the final state. raw is a single job, rendered in-process without the pool.
+                if jobs:
+                    render_all(jobs, needs, cancel=cancel)
                 render_all(raw_jobs, raw_needs, cancel=cancel)
+            else:
+                render_all(jobs, needs, report=reporter, cancel=cancel)
         except Cancelled:
             _write_clip_summaries(root, stem, store.clips())  # keep what finished: a half-written run is still useful
             raise
