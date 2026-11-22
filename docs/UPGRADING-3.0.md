@@ -1,6 +1,6 @@
 # Upgrading from 2.x to 3.0 (historical)
 
-> This note covers the 2.x → 3.0 changes and is kept as history. The current release is 4.0.3;
+> This note covers the 2.x → 3.0 changes and is kept as history. The current release is 4.0.4;
 > see `UPGRADING-4.0.md` for the 3.x → 4.0 changes, `UPGRADING-4.0.2.md` for the 4.0.1 → 4.0.2 changes,
 > `../CHANGELOG.md` for the full release history, and `logging.md` for the logging architecture.
 

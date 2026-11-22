@@ -4,11 +4,15 @@ All notable changes to autoclip, newest first. Release timestamps come from
 Git tags (and commit metadata for untagged but version-stamped commits). Each
 release mentions the source tag/commit for traceability.
 
-## [Unreleased]
+## [4.0.4] — 2026-11-21 21:59:43 UTC (tag `v4.0.4`, commit `f564c95`)
 
 - feat: a `raw` clip kind exports one full-length, captioned, audio-enhanced version of the silence-removed source at the original shape, into `raw/{video}/`. Select it with the additive `clips.preset: "raw"` value; the default `both`, all nine config keys, the CLI and the caches are unchanged. `raw` cannot be combined with `clips.ranges` or `--split`. Its duration-scaled memory estimate is kept in a separate single-job render pass, and audio decode/mixing now use one destination buffer instead of several full-length copies.
 
 - fix: captions, clip windows and exported `.srt` files now follow the real timeline of a silence-removed video. Encoded segments are longer than their nominal source spans (CFR frame rounding and AAC padding), so a 30-cut assembly could drift about 3.4 s; the assembler now measures each segment and publishes a monotone measured timeline that the transcript, selection and render stages share. The transcript cache stays nominal, so no cache format, config key, CLI or output layout changed. Old optimizer manifests are rebuilt once (internal schema 2).
+
+- fix: the audio decode loop now type-checks on Python 3.11 as well as 3.12/3.13, where the typeshed accepts `memoryview(ndarray)` directly.
+
+- docs: README, AGENTS and the upgrading notes name 4.0.4 as the current release; historical 4.0.3 references are kept where they describe the earlier release. This release only bumps the version string; no config-file key, CLI option or cache format changed.
 
 ## [4.0.3] — 2026-11-21 06:51:08 UTC (tag `v4.0.3`, commit `b5946ef`)
 
