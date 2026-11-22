@@ -779,7 +779,9 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 * **DB schema change:** edit `store.SCHEMA` (the DB is recreated every run - no migrations), update `Store` methods and
   `tests/unit/test_infra.py`. Remember workers open their own connection.
 * **Caption styling:** `captions.render_text_image` takes a `CaptionsCfg`; sprite cache keys include the whole style
-  (`sprite_key`), so new style fields are picked up automatically if they are in `CaptionsCfg`.
+  (`sprite_key`), so new style fields are picked up automatically if they are in `CaptionsCfg`. `render_clip` picks one
+  font for the whole clip with `fonts.find_shared_font` (words + title) and passes it to `build_captions` and the title;
+  a caption that font cannot draw falls back to `find_font(text)`, and `_render_runs` still supplies per-token fonts.
 * **Performance work:** profile one clip with `python -m cProfile -o p.out -m autoclip cfg.json` (use `mode: "ranges"`).
   Typical hot spots are MoviePy's compositor and per-frame resize/blur; most remaining time is inside MoviePy.
 * **Debugging a run:** run with `AUTOCLIP_DEBUG=1` (the dev mode: DEBUG everywhere), read `{output_dir}/logs/autoclip_*.log` (START/END per operation,

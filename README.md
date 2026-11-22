@@ -524,7 +524,9 @@ line - so `./autoclip-x86_64.AppImage config.json` still cuts clips.
   same binary, so a GPU encoder is only chosen when the build that will really encode can use it.
 * **Fonts**: each OS's font folders are searched for a font covering every script in the caption; mixed Arabic+Latin text
   falls back to a covering font per token when no single font has all the glyphs (Arabic is shaped and ordered as a whole
-  line). Install a Noto font for scripts your OS lacks. The server Docker image and snap include DejaVu and Noto fonts
+  line). One font is chosen from the whole clip's caption text and reused for every cue and the overlay title, so the face
+  stays consistent; a cue that font cannot draw keeps its own covering font. Install a Noto font for scripts your OS lacks.
+  The server Docker image and snap include DejaVu and Noto fonts
   (no CJK); host installs, the standalone bundle and the AppImage rely on OS fonts. Glyph rendering on Windows/macOS was
   not verified here.
 * **Arabic / Hebrew** captions are shaped in pure Python when Pillow has no libraqm (typical for Windows / macOS wheels).
