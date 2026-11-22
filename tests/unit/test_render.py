@@ -321,6 +321,92 @@ def test_skip_title_draws_no_title(media: Media, tmp_path: Path, monkeypatch: py
     assert drawn == [] and lines and dst.exists()  # the captions still go through captions.render_text_image
 
 
+def test_render_title_and_captions_share_one_font(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The overlay title uses the same face as every caption of the clip."""
+    import string
+
+    from autoclip.core import captions as captions_mod
+    from tests.unit.test_fonts_captions import _fake_index, _synthetic_font
+
+    latin = _synthetic_font(tmp_path / "DejaVuSans-Bold.ttf", [ord(c) for c in string.ascii_letters + string.digits + " .,!?'\"-"])
+    dual = _synthetic_font(
+        tmp_path / "NotoSansX-Bold.ttf",
+        [ord(c) for c in string.ascii_letters + string.digits + " .,!?'\"-"] + list(range(0x600, 0x700)),
+    )
+    _fake_index(tmp_path, monkeypatch, **{"dejavusans-bold.ttf": latin, "notosansx-bold.ttf": dual})
+    drawn: list[tuple[str, Path | None]] = []
+    real = captions_mod.render_text_image
+
+    def recording(text: str, font: Path | None, *a: Any, **kw: Any) -> Any:
+        drawn.append((text, font))
+        return real(text, font, *a, **kw)
+
+    monkeypatch.setattr(captions_mod, "render_text_image", recording)
+    monkeypatch.setattr(render_mod, "render_text_image", recording)
+
+    render(media, tmp_path, moment(title="مرحبا"), skip={"fade": True})
+
+    assert any("مرحبا" in t for t, _ in drawn) and len(drawn) >= 2
+    assert {font for _text, font in drawn} == {dual}
+
+
+def test_render_title_falls_back_when_no_font_covers_the_whole_render(
+    media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mixed script with no dual font: captions and the Arabic title keep their own covering fonts."""
+    import string
+
+    from autoclip.core import captions as captions_mod
+    from tests.unit.test_fonts_captions import _fake_index, _synthetic_font
+
+    latin = _synthetic_font(tmp_path / "DejaVuSans-Bold.ttf", [ord(c) for c in string.ascii_letters + string.digits + " .,!?'\"-"])
+    arabic = _synthetic_font(tmp_path / "NotoSansArabic-Bold.ttf", list(range(0x600, 0x700)))
+    _fake_index(tmp_path, monkeypatch, **{"dejavusans-bold.ttf": latin, "notosansarabic-bold.ttf": arabic})
+    drawn: list[tuple[str, Path | None]] = []
+    real = captions_mod.render_text_image
+
+    def recording(text: str, font: Path | None, *a: Any, **kw: Any) -> Any:
+        drawn.append((text, font))
+        return real(text, font, *a, **kw)
+
+    monkeypatch.setattr(captions_mod, "render_text_image", recording)
+    monkeypatch.setattr(render_mod, "render_text_image", recording)
+
+    render(media, tmp_path, moment(title="مرحبا"), skip={"fade": True})
+
+    assert next(font for text, font in drawn if "مرحبا" in text) == arabic
+    assert any(font == latin for text, font in drawn if "مرحبا" not in text)
+
+
+def test_render_title_falls_back_when_the_shared_font_lacks_one_title_glyph(
+    media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 95%-covering shared font cannot draw the title: the title gets its own lookup."""
+    import string
+
+    from autoclip.core import captions as captions_mod
+    from tests.unit.test_fonts_captions import _fake_index, _synthetic_font
+
+    latin = _synthetic_font(
+        tmp_path / "DejaVuSans-Bold.ttf", [ord(c) for c in string.ascii_letters.replace("Q", "") + string.digits + " .,!?'\"-"]
+    )
+    _fake_index(tmp_path, monkeypatch, **{"dejavusans-bold.ttf": latin})
+    drawn: list[tuple[str, Path | None]] = []
+    real = captions_mod.render_text_image
+
+    def recording(text: str, font: Path | None, *a: Any, **kw: Any) -> Any:
+        drawn.append((text, font))
+        return real(text, font, *a, **kw)
+
+    monkeypatch.setattr(captions_mod, "render_text_image", recording)
+    monkeypatch.setattr(render_mod, "render_text_image", recording)
+
+    render(media, tmp_path, moment(title="QUICK"), skip={"fade": True})
+
+    assert any(font == latin for text, font in drawn if "QUICK" not in text)
+    assert next(font for text, font in drawn if "QUICK" in text) is None  # no installed font covers Q
+
+
 def test_skip_audio_keeps_the_whole_window(media: Media, tmp_path: Path) -> None:
     m = moment()
     dst, _, _ = render(media, tmp_path, m, skip={"audio": True})

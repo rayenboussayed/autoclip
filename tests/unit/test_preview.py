@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -73,6 +74,30 @@ def test_preview_uppercase_changes_the_output(media: Media, tmp_path: Path) -> N
     normal = make_cfg(media, tmp_path, captions={"uppercase": False})
     upper = make_cfg(media, tmp_path, captions={"uppercase": True})
     assert _png_bytes(normal, media) != _png_bytes(upper, media)
+
+
+@pytest.mark.parametrize("uppercase", [False, True])
+def test_preview_uses_one_font_for_both_overlays(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uppercase: bool) -> None:
+    """Both mock sprites receive the one shared font, whatever the uppercase setting."""
+    from autoclip.core.captions import render_text_image as real
+
+    sentinel = tmp_path / "sentinel.ttf"
+    drawn: list[tuple[str, Path | None]] = []
+
+    def shared(texts: Any) -> Path:
+        assert list(texts) == [MOCK_CAPTION.upper() if uppercase else MOCK_CAPTION, MOCK_TITLE]
+        return sentinel
+
+    def recording(text: str, font: Path | None, *a: Any, **kw: Any) -> Any:
+        drawn.append((text, font))
+        return real(text, None, *a, **kw)  # the sentinel is not a font file; render with the built-in face
+
+    monkeypatch.setattr("autoclip.core.preview.find_shared_font", shared)
+    monkeypatch.setattr("autoclip.core.preview.render_text_image", recording)
+    _png_bytes(make_cfg(media, tmp_path, captions={"uppercase": uppercase}), media)
+
+    assert [text for text, _ in drawn] == [MOCK_CAPTION.upper() if uppercase else MOCK_CAPTION, MOCK_TITLE]
+    assert {font for _, font in drawn} == {sentinel}
 
 
 def test_preview_title_flag_changes_the_output(media: Media, tmp_path: Path) -> None:

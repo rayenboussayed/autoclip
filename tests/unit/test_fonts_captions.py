@@ -37,6 +37,7 @@ from autoclip.core.fonts import (
     covers_text,
     dominant_script,
     find_font,
+    find_shared_font,
     font_dirs,
     font_index,
     has_rtl,
@@ -472,6 +473,99 @@ def test_find_font_scan_is_deterministic_with_two_covering_fonts(tmp_path: Path,
     _fake_index(tmp_path, monkeypatch, **{"zzz-font.ttf": one, "notosansx-bold.ttf": two})
     assert find_font("abc مرحبا") == two  # Noto wins the rank; repeated runs agree
     assert find_font("abc مرحبا") == two
+
+
+# ---- one font per render ---------------------------------------------------------------------------
+def test_find_shared_font_uses_one_font_for_all_texts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    both = _synthetic_font(tmp_path / "NotoSansX-Bold.ttf", [ord(c) for c in "abc 123 مرحبا"])
+    _fake_index(tmp_path, monkeypatch, **{"notosansx-bold.ttf": both})
+    assert find_shared_font(["abc", "123", "مرحبا"]) == both
+
+
+def test_build_captions_uses_one_font_for_all_captions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cache: Cache) -> None:
+    """Regression: two captions of one render must not flip between the Latin and the Arabic font."""
+    latin = _synthetic_font(tmp_path / "DejaVuSans-Bold.ttf", [ord(c) for c in "abc 123."])
+    dual = _synthetic_font(tmp_path / "NotoSansArabic-Bold.ttf", [ord(c) for c in "abc 123."] + list(range(0x600, 0x700)))
+    _fake_index(tmp_path, monkeypatch, **{"dejavusans-bold.ttf": latin, "notosansarabic-bold.ttf": dual})
+    assert find_font("abc.") == latin  # the old per-caption lookup preferred the Latin font
+    assert find_font("مرحبا") == dual
+
+    seen: list[Path | None] = []
+    real = captions.render_text_image
+
+    def recording(text: str, font: Path | None, *a: Any, **kw: Any) -> Any:
+        seen.append(font)
+        return real(text, font, *a, **kw)
+
+    monkeypatch.setattr(captions, "render_text_image", recording)
+    ws = [Word(0.0, 0.5, "abc."), Word(1.0, 1.5, "مرحبا")]
+    build_captions(ws, Timeline([(0.0, 2.0)]), config(), cache, (360, 640), 2.0)
+
+    assert len(seen) == 2
+    assert set(seen) == {dual}
+
+
+def test_build_captions_keeps_per_caption_fonts_when_no_font_covers_every_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cache: Cache
+) -> None:
+    """No shared font exists: a caption with another script still gets its own covering font."""
+    latin = _synthetic_font(tmp_path / "DejaVuSans-Bold.ttf", [ord(c) for c in "abc 123."])
+    arabic = _synthetic_font(tmp_path / "NotoSansArabic-Bold.ttf", list(range(0x600, 0x700)))
+    _fake_index(tmp_path, monkeypatch, **{"dejavusans-bold.ttf": latin, "notosansarabic-bold.ttf": arabic})
+    assert find_shared_font(["abc.", "مرحبا"]) is None
+
+    seen: list[Path | None] = []
+    real = captions.render_text_image
+
+    def recording(text: str, font: Path | None, *a: Any, **kw: Any) -> Any:
+        seen.append(font)
+        return real(text, font, *a, **kw)
+
+    monkeypatch.setattr(captions, "render_text_image", recording)
+    ws = [Word(0.0, 0.5, "abc."), Word(1.0, 1.5, "مرحبا")]
+    build_captions(ws, Timeline([(0.0, 2.0)]), config(), cache, (360, 640), 2.0)
+
+    assert set(seen) == {latin, arabic}
+
+
+def test_build_captions_uses_a_local_font_for_a_chunk_the_shared_font_cannot_draw(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cache: Cache
+) -> None:
+    """The per-text glyph gate stays: a rare letter falls back instead of rendering as tofu."""
+    font = _synthetic_font(tmp_path / "DejaVuSans-Bold.ttf", [ord(c) for c in "abc 123."])
+    _fake_index(tmp_path, monkeypatch, **{"dejavusans-bold.ttf": font})
+    seen: list[tuple[str, Path | None]] = []
+    real = captions.render_text_image
+
+    def recording(text: str, chosen: Path | None, *a: Any, **kw: Any) -> Any:
+        seen.append((text, chosen))
+        return real(text, chosen, *a, **kw)
+
+    monkeypatch.setattr(captions, "render_text_image", recording)
+    # "." ends a caption (ENDERS), so each word becomes its own chunk.
+    ws = [Word(i * 0.5, i * 0.5 + 0.4, "ab.") for i in range(20)] + [Word(10.0, 10.4, "é.")]
+    build_captions(ws, Timeline([(0.0, 11.0)]), config(), cache, (360, 640), 11.0)
+
+    assert seen == [("ab.", font), ("é.", None)]  # identical sprites share one key, so each text renders once
+
+
+def test_build_captions_does_one_font_lookup_for_the_whole_render(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cache: Cache) -> None:
+    """Performance: no per-caption font scan when a single face covers the whole render."""
+    dual = _synthetic_font(tmp_path / "NotoSansArabic-Bold.ttf", [ord(c) for c in "abc 123."] + list(range(0x600, 0x700)))
+    _fake_index(tmp_path, monkeypatch, **{"notosansarabic-bold.ttf": dual})
+    calls = 0
+    real = find_font
+
+    def counting(text: str) -> Path | None:
+        nonlocal calls
+        calls += 1
+        return real(text)
+
+    monkeypatch.setattr("autoclip.core.captions.find_font", counting)
+    ws = [Word(0.0, 0.5, "abc."), Word(1.0, 1.5, "مرحبا")]
+    build_captions(ws, Timeline([(0.0, 2.0)]), config(), cache, (360, 640), 2.0)
+
+    assert calls == 0
 
 
 def test_mixed_caption_with_a_stroke_uses_the_multi_font_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from autoclip.core.fonts import find_font
 from autoclip.core.media import probe
 from autoclip.core.transcript import parse_srt
 
@@ -58,3 +59,28 @@ def test_raw_clip_is_full_length_and_captioned(media: Media, e2e_run: E2ERun, tm
     cues = parse_srt(clips[0].with_suffix(".srt").read_text(encoding="utf-8"))
     assert cues and " ".join(cue["text"] for cue in cues) == "RAW CAPTION"
     assert cues[-1]["end"] == pytest.approx(probe(clips[0]).duration, abs=0.3)
+
+
+def test_all_captions_share_one_font(media: Media, e2e_run: E2ERun, tmp_path: Path) -> None:
+    """A real CLI render chooses one caption font for the whole clip, logged once per build."""
+    if find_font("HELLO 123 CAFÉ") is None:
+        pytest.skip("no system font installed")
+    source = tmp_path / "font.mp4"
+    source.write_bytes(media.video.read_bytes())
+    srt = tmp_path / "font.srt"
+    srt.write_text(
+        "1\n00:00:01,000 --> 00:00:03,000\nHELLO 123\n\n"
+        "2\n00:00:04,000 --> 00:00:06,000\nCAFÉ\n\n"
+        "3\n00:00:08,000 --> 00:00:10,000\nWORLD AGAIN\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "out-font"
+    config = pipeline_config(out, source, transcript=srt, clips={"preset": "raw"})
+    result = e2e_run.execute("one-font", config).require_ok()
+
+    assert result.log_path is not None
+    chosen = [
+        line.split("caption font: ", 1)[1] for line in result.log_path.read_text(encoding="utf-8").splitlines() if "caption font: " in line
+    ]
+    assert len(chosen) == 1 and chosen[0] != "None"
+    assert sorted(out.glob("raw/*/*.mp4"))
