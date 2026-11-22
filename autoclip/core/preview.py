@@ -4,8 +4,9 @@ The preview takes one representative frame from the source video and paints the 
 layout and captions (real :func:`autoclip.core.captions.render_text_image` sprites, real font
 discovery, real :func:`autoclip.core.render.canvas_size` geometry) over it, with a mock sentence
 and a mock title. It never decodes audio, never transcribes and never encodes a video; the
-output is a single PNG. Everything about the caption is read from the runtime config, so what
-the user sees is what the render will produce.
+output is a single PNG. Everything about the caption is read from the runtime config, and both
+mock overlays share one discovered font as a real render does; the face comes from the mock text
+(this endpoint never transcribes), so what the user sees is what the render will produce.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from .config import Config
 from .derive.constants import BACKGROUND_BLUR, BACKGROUND_DIM, quality_short_side
 from .derive.policy import background_kind
 from .errors import AutoclipError
-from .fonts import find_font
+from .fonts import find_shared_font
 from .log import traced
 from .media import probe
 from .render import blur_function, canvas_size, even
@@ -149,14 +150,15 @@ def preview_canvas(source: Path, cfg: Config, kind: str = "short", at: float | N
     fill = cfg.video.layout == "fill"
     size = canvas_size(kcfg.aspect, quality_short_side(cfg.quality), info.width, info.height, fill=fill)
     canvas = _canvas(frame, size[0], size[1], cfg)
+    text = MOCK_CAPTION.upper() if cfg.captions.uppercase else MOCK_CAPTION
+    font = find_shared_font([text, MOCK_TITLE])
     if cfg.captions.enabled:
-        text = MOCK_CAPTION.upper() if cfg.captions.uppercase else MOCK_CAPTION
-        sprite = render_text_image(text, find_font(text), int(min(size) / 15), cfg.captions, int(size[0] * 0.9), active=MOCK_ACTIVE)
+        sprite = render_text_image(text, font, int(min(size) / 15), cfg.captions, int(size[0] * 0.9), active=MOCK_ACTIVE)
         band = sprite.shape[0] + (sprite.shape[0] % 2)
         top = safe_top(Y_CENTER[cfg.captions.position], size[1], size[0], cfg.captions, band)
         _blit(canvas, sprite, top)
     if not cfg.skip.title:
-        sprite = render_text_image(MOCK_TITLE, find_font(MOCK_TITLE), int(min(size) / 13), cfg.captions, int(size[0] * 0.92))
+        sprite = render_text_image(MOCK_TITLE, font, int(min(size) / 13), cfg.captions, int(size[0] * 0.92))
         top = safe_top(Y_CENTER["top"], size[1], size[0], cfg.captions, sprite.shape[0])
         _blit(canvas, sprite, top)
     return canvas

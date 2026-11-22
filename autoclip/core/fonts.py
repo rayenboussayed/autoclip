@@ -11,7 +11,7 @@ import logging
 import os
 import platform
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from fontTools.ttLib import TTFont
@@ -191,3 +191,14 @@ def find_font(text: str, preferred: str = "auto") -> Path | None:
         return chosen
     log.warning("no installed font covers %s text (install a Noto font); captions may show empty boxes", dominant_script(text).title())
     return None
+
+
+def find_shared_font(texts: Sequence[str]) -> Path | None:
+    """One font for all ``texts``, so every overlay of a render starts from the same face.
+
+    Ranking the strings together means a font is not accepted for a short Latin caption and then
+    replaced by another for the next one that happens to contain a digit or a second script. Callers
+    still run their per-text glyph checks, so a caption the chosen font cannot draw keeps its own
+    covering font instead of showing empty boxes.
+    """
+    return find_font(" ".join(texts))

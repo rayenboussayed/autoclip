@@ -21,7 +21,7 @@ from PIL import Image, ImageColor, ImageDraw, ImageFont, features
 from .audio import Timeline, is_filler
 from .config import CaptionsCfg, Config
 from .derive.constants import CAPTION_MAX_SECONDS, CAPTION_SAFE_BOTTOM, CAPTION_SAFE_TOP, DEFAULT_FILLERS
-from .fonts import covers_all, covers_letters, dominant_script, find_font, has_rtl
+from .fonts import covers_all, covers_letters, dominant_script, find_font, find_shared_font, has_rtl
 from .log import traced
 from .media import F32
 from .models import Span, Word
@@ -416,7 +416,7 @@ def safe_top(centre: float, H: int, W: int, cfg: CaptionsCfg, band_h: int) -> in
 
 
 def sprite_key(*parts: object) -> str:
-    """Stable cache key for a sprite's rendering parameters (the DB is fresh per run, so chosen fonts need no key)."""
+    """Stable cache key for a sprite's rendering parameters, including the chosen font path."""
     return "cap:" + hashlib.sha256(repr(parts).encode()).hexdigest()
 
 
@@ -444,35 +444,45 @@ def build_captions(
     size: tuple[int, int],
     duration: float,
     fillers: frozenset[str] | set[str] | None = None,
+    font: Path | None = None,
 ) -> tuple[Any | None, list[Span]]:
-    """Render the caption sprites into the cache."""
+    """Render the caption sprites into the cache.
+
+    Args:
+        font: Font chosen once for the whole render; when omitted (or when it cannot draw a caption)
+            the lookup falls back to that caption's own text.
+    """
     W, H = size
     cc = cfg.captions
     if fillers is None:
         fillers = frozenset(DEFAULT_FILLERS)
     words = without_fillers(words, {f.lower() for f in fillers})
     font_size, max_w = int(min(W, H) / 15), int(W * 0.9)
+    chunks = make_chunks(words, cc, W)
+    if font is None:
+        font = find_shared_font([c.text.upper() if cc.uppercase else c.text for c in chunks])
+    log.info("caption font: %s", font)
     sprites: list[Sprite] = []
     lines: list[Span] = []
 
-    def add(start: float, end: float, text: str, active: int | None) -> None:
-        params = (text, font, font_size, cc, max_w, active)
+    def add(start: float, end: float, text: str, active: int | None, chosen: Path | None) -> None:
+        params = (text, chosen, font_size, cc, max_w, active)
         sprites.append(Sprite(start, end, sprite_key(*params), functools.partial(render_text_image, *params)))
 
-    for chunk in make_chunks(words, cc, W):
+    for chunk in chunks:
         span = tl.map_range(chunk.start, chunk.end)
         if span is None or span[1] - span[0] < 0.08:
             continue
         text = chunk.text.upper() if cc.uppercase else chunk.text
-        font = find_font(text)
+        chunk_font = font if font is not None and covers_letters(font, text) else find_font(text)
         lines.append(Span(round(span[0], 2), round(span[1], 2), text))
         if can_highlight(text) and len(text.split()) == len(chunk.words) and not any(w.pseudo for w in chunk.words):
             for k, w in enumerate(chunk.words):
                 nxt = chunk.words[k + 1].start if k + 1 < len(chunk.words) else chunk.end
                 if (part := tl.map_range(w.start, max(nxt, w.start + 0.05))) and part[1] - part[0] >= 0.03:
-                    add(part[0], part[1], text, k)
+                    add(part[0], part[1], text, k, chunk_font)
         else:
-            add(span[0], span[1], text, None)
+            add(span[0], span[1], text, None, chunk_font)
     if not sprites:
         return None, lines
     band_h = max(int(cache.memoize_array(s.key, s.render).shape[0]) for s in sprites)  # also warms the cache

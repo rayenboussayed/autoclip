@@ -27,7 +27,7 @@ from .derive.constants import (
     video_fade_seconds,
 )
 from .derive.policy import background_kind
-from .fonts import find_font
+from .fonts import covers_letters, find_font, find_shared_font
 from .log import safe_path_text, speed_text, traced
 from .media import AUDIO_SR
 from .models import Encoder, RenderJob, Span, Word
@@ -242,6 +242,7 @@ def render_clip(vclip: MoviePyClip, job: RenderJob, store: Store, cache: Cache) 
     has_audio = has_audio and not cfg.skip.audio  # a muted clip needs no decoding either
     title_on = not cfg.skip.title
     words = [Word(w.start - start, w.end - start, w.text, w.pseudo) for w in store.window_words(moment.start, moment.end)]
+    font = find_shared_font([*(w.text.upper() if cfg.captions.uppercase else w.text for w in words), moment.title])
     audio = (
         enhance_audio(
             src,
@@ -277,7 +278,7 @@ def render_clip(vclip: MoviePyClip, job: RenderJob, store: Store, cache: Cache) 
     )
     overlays = []
     captions, lines = (
-        build_captions(words, Timeline(kept), cfg, cache, size, fg.duration, fillers=job.fillers)
+        build_captions(words, Timeline(kept), cfg, cache, size, fg.duration, fillers=job.fillers, font=font)
         if cfg.captions.enabled and words
         else (None, [])
     )
@@ -285,7 +286,8 @@ def render_clip(vclip: MoviePyClip, job: RenderJob, store: Store, cache: Cache) 
         overlays.append(captions)
     if title_on and moment.title:
         cc = cfg.captions
-        art = render_text_image(moment.title, find_font(moment.title), int(min(size) / 13), cc, int(size[0] * 0.92))
+        title_font = font if font is not None and covers_letters(font, moment.title) else find_font(moment.title)
+        art = render_text_image(moment.title, title_font, int(min(size) / 13), cc, int(size[0] * 0.92))
         top = safe_top(Y_CENTER["top"], size[1], size[0], cc, art.shape[0])
         overlays.append(ImageClip(art).with_duration(title_display_seconds(moment.title, fg.duration)).with_position(("center", top)))
 
