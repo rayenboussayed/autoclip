@@ -45,6 +45,7 @@ def test_cli_fixture_stays_within_budget(media, tmp_path: Path, memory_results: 
     code, samples = _run_cli(media.video, tmp_path, out_dir)
     assert code == 0
     assert list(out_dir.glob("short/*/clips.json")), "no clips were produced"
+    assert list(out_dir.glob("raw/*/clips.json")), "no always-on raw export was produced"
     peak = peak_of(samples)
     assert len(samples) >= budgets.MIN_SAMPLES
     assert peak >= budgets.MIN_PEAK_MB * 1024 * 1024
@@ -60,6 +61,7 @@ def test_cli_many_parts_stays_within_budget(many_parts_video: Path, tmp_path: Pa
     code, samples = _run_cli(many_parts_video, tmp_path, out_dir)
     assert code == 0
     assert list(out_dir.glob("short/*/clips.json")), "no clips were produced"
+    assert list(out_dir.glob("raw/*/clips.json")), "no always-on raw export was produced"
     peak = peak_of(samples)
     assert len(samples) >= budgets.MIN_SAMPLES
     assert peak >= budgets.MIN_PEAK_MB * 1024 * 1024

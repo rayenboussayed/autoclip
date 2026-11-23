@@ -133,14 +133,14 @@ def test_manifest_video_renders_short_and_long_clips(
         assert len(clip_paths(path.parent)) == 1, path.parent
         assert_database_done(pipeline_dir / "out", source.stem)
     assert rendered_clips(result) == sorted(
-        path for kind in ("short", "long") for path in clip_paths(pipeline_dir / "out" / kind / source.stem)
+        path for kind in ("short", "long", "raw") for path in clip_paths(pipeline_dir / "out" / kind / source.stem)
     )
 
     summary = level_summary(clips, info.duration)
     problems = record_level(download_cache, entry.url, ladder_level, summary)
     assert not problems, f"level {ladder_level} of {vid} differs from the previous level: {problems}"
     assert result.log_path is not None
-    assert "finished: 2 clip(s) done, 0 failed" in result.log_path.read_text(encoding="utf-8")
+    assert "finished: 3 clip(s) done, 0 failed" in result.log_path.read_text(encoding="utf-8")
 
 
 def test_download_only_saves_the_original_subtitles_and_metadata(downloaded_bbc: DownloadedMedia, bbc_entry: ManifestEntry) -> None:
@@ -191,7 +191,7 @@ def test_pipeline_renders_explicit_ranges(e2e_run: E2ERun, downloaded_bbc: Downl
         assert 14.5 <= duration <= 20.5, (path.name, duration)
         assert path.with_suffix(".srt").is_file()
         assert path.with_suffix(".jpg").is_file()
-    assert rendered_clips(result) == clip_paths(folder)
+    assert rendered_clips(result) == sorted(clip_paths(folder) + clip_paths(case_dir / "out" / "raw" / downloaded_bbc.path.stem))
     assert_database_done(case_dir / "out", downloaded_bbc.path.stem)
 
 

@@ -258,8 +258,11 @@ def test_main_processes_several_videos_into_the_short_long_video_structure(
     install_stub_whisper(monkeypatch, media, {}, cuda=0)  # silent.mp4 ships no sidecar transcript; the stub provides one
     assert main(run_args(write_config(tmp_path, media, inputs=[str(media.video), str(media.silent)]))) == 0
     out = tmp_path / "out"
-    assert sorted(p.name for p in out.iterdir()) == [".work", "logs", "short"]  # only the requested kind gets a folder
+    assert sorted(p.name for p in out.iterdir()) == [".work", "logs", "raw", "short"]  # raw is always exported
     for stem in ("talk", "silent"):
+        assert (out / "raw" / stem / f"{stem}_raw_01_0s.mp4").is_file()
+        assert (out / "raw" / stem / f"{stem}_raw_01_0s_uncaptioned.mp4").is_file()
+        assert (out / "raw" / stem / f"{stem}_raw_01_0s_uncaptioned.srt").is_file()
         summary = clips_json(tmp_path, "short", stem)
         assert len(summary) == 1 and (out / "short" / stem / summary[0]["file"]).exists()
         assert summary[0]["file"].startswith(f"{stem}_best_01_") and summary[0]["scene"] == "best" and summary[0]["width"] == 320
@@ -267,7 +270,7 @@ def test_main_processes_several_videos_into_the_short_long_video_structure(
         assert (out / ".work" / stem / "autoclip.db").exists()  # shared work files stay out of the short/long folders
     (log_file,) = (out / "logs").glob("autoclip_*.log")
     text = log_file.read_text(encoding="utf-8")
-    assert "input 1/2" in text and "input 2/2" in text and "finished: 2 clip(s) done, 0 failed" in text and "START render_all" in text
+    assert "input 1/2" in text and "input 2/2" in text and "finished: 4 clip(s) done, 0 failed" in text and "START render_all" in text
 
 
 def test_main_short_and_long_clips_for_several_scene_types(media: Media, tmp_path: Path) -> None:
@@ -290,9 +293,12 @@ def test_a_kind_without_room_is_skipped_but_the_rest_is_produced(media: Media, t
     assert (tmp_path / "out" / "short" / "talk").is_dir() and not (tmp_path / "out" / "long").exists()
 
 
-def test_main_no_clips_for_any_kind_fails_the_video(media: Media, tmp_path: Path) -> None:
+def test_main_no_short_or_long_clips_still_exports_raw(media: Media, tmp_path: Path) -> None:
     cfg = write_config(tmp_path, media, inputs=[str(media.video)], clips={"preset": "long"})
-    assert main(run_args(cfg)) == 1
+    assert main(run_args(cfg)) == 0  # the always-on raw clip is still a clip
+    raw = tmp_path / "out" / "raw" / "talk"
+    assert (raw / "talk_raw_01_0s.mp4").is_file() and (raw / "talk_raw_01_0s_uncaptioned.mp4").is_file()
+    assert not (tmp_path / "out" / "long").exists()
 
 
 def test_main_one_broken_video_does_not_stop_the_batch(media: Media, tmp_path: Path) -> None:
@@ -335,12 +341,13 @@ def test_main_ranges_are_given_per_clip_kind(media: Media, tmp_path: Path) -> No
     assert [(c["start"], c["end"]) for c in long] == [(4.0, 10.0), (20.0, 40.0)]
 
 
-def test_main_ranges_skip_kinds_without_ranges_and_fail_without_any(media: Media, tmp_path: Path) -> None:
+def test_main_ranges_skip_kinds_without_ranges_but_raw_is_always_exported(media: Media, tmp_path: Path) -> None:
     cfg = write_config(tmp_path / "a", media, inputs=[str(media.video)], clips={"preset": "shorts", "ranges": ["0:04-0:10"]})
     assert main(run_args(cfg, output=tmp_path / "a" / "out")) == 0
     assert (tmp_path / "a" / "out" / "short").is_dir() and not (tmp_path / "a" / "out" / "long").exists()
     cfg2 = write_config(tmp_path / "b", media, inputs=[str(media.video)], clips={"preset": "long"})
-    assert main(run_args(cfg2, output=tmp_path / "b" / "out")) == 1
+    assert main(run_args(cfg2, output=tmp_path / "b" / "out")) == 0  # no long clips, but raw is exported
+    assert (tmp_path / "b" / "out" / "raw" / "talk" / "talk_raw_01_0s_uncaptioned.mp4").is_file()
 
 
 def test_main_split_mode_cuts_equal_parts_into_the_long_folder(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -351,6 +358,7 @@ def test_main_split_mode_cuts_equal_parts_into_the_long_folder(media: Media, tmp
     folder = tmp_path / "out" / "long" / "talk"
     assert json.loads((folder / "clips.json").read_text(encoding="utf-8")) == ["talk_part001.mp4", "talk_part002.mp4", "talk_part003.mp4"]
     assert all((folder / f"talk_part{k:03d}.mp4").stat().st_size > 1000 for k in (1, 2, 3))
+    assert not (tmp_path / "out" / "raw").exists()  # split is the one mode without an always-on raw export
 
 
 def test_needs_text_only_when_selection_captions_or_titles_use_it(media: Media, tmp_path: Path) -> None:

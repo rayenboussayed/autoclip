@@ -4,7 +4,7 @@ Each budget is a measured peak × a safety factor, floored at 200 MB. When a pub
 grows (a new OCR pass, a bigger model), recalibrate the budget with a fresh measurement and note the
 date here. An unexplained change *lowering* a budget, or removing one, is a regression risk.
 
-Measured on 2026-11-13 and 2026-11-18 on a 16-core Linux 3.14/3.13 machine; M1/M3 run with the in-process ``low``/``medium`` fixtures and ``ultrafast``; M4/M5 run via CLI subprocesses (engine-derived tier since 5.0 - ``medium`` on the calibration box), re-confirmed green 2026-11-19.
+Measured on 2026-11-13 and 2026-11-18 on a 16-core Linux 3.14/3.13 machine; M1/M3 run with the in-process ``low``/``medium`` fixtures and ``ultrafast``; M4/M5 run via CLI subprocesses (engine-derived tier since 5.0 - ``medium`` on the calibration box), re-confirmed green 2026-11-19. M4/M5 were recalibrated on 2026-11-22: every non-split run now also renders the whole silence-removed source into ``raw/``, so the CLI tree peaks rose to 990 MB (fixture) and 1398 MB (many-parts) on this box. M1/M3 also run the always-on raw render but were not recalibrated in this task; do not tighten them without a fresh measurement.
 """
 
 from __future__ import annotations
@@ -20,12 +20,12 @@ RENDER_720P_PEAK_MB = 2000.0  # measured 1161 MB -> ~1.7x headroom
 
 # M4: CLI subprocess on the fixture (ranges mode; the engine-derived encode tier since 5.0), 300-460 spawn threads allowed
 CLI_PARENT_PEAK_MB = 600.0  # measured ~216 MB
-CLI_TREE_PEAK_MB = 900.0  # measured ~320 MB
+CLI_TREE_PEAK_MB = 1300.0  # measured 990 MB on 2026-11-22 with the always-on raw render; ~1.3x headroom
 CLI_WALL_SECONDS = 120.0  # advisory only, never gates
 
 # M5: CLI subprocess on the 120 s many-parts fixture (optimized path, fail-safe encode)
 CLI_MANY_PARTS_PARENT_MB = 600.0  # measured ~216 MB
-CLI_MANY_PARTS_TREE_MB = 900.0  # measured ~320 MB
+CLI_MANY_PARTS_TREE_MB = 1800.0  # measured 1398 MB on 2026-11-22 with the always-on raw render; ~1.3x headroom
 CLI_MANY_PARTS_WALL_SECONDS = 180.0  # advisory only
 
 # M9: enhance_audio on the 40 s fixture (3 s span chunks, noisereduce path)

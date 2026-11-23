@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import os
+import shutil
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -17,8 +18,9 @@ from pathlib import Path
 from .config import Config, KindCfg, parse_hms
 from .cutmap import CutMap, MeasuredTimeline
 from .derive.constants import SPLIT_SECONDS, quality_short_side
-from .errors import AutoclipError
+from .derive.policy import fillers_from, load_lexicon
 from .events import Cancelled, CancelToken, Reporter
+from .io import srt_time
 from .log import health_check, safe_path_text, traced
 from .media import external_env, ffmpeg_exe, probe
 from .models import Encoder, MediaInfo, Moment, RenderJob
@@ -36,7 +38,7 @@ log = logging.getLogger("autoclip")
 
 def split_video(src: Path, out_dir: Path, seconds: float, duration: float, name: str | None = None) -> list[Path]:
     """Cut ``src`` into consecutive parts of ``seconds`` with ffmpeg stream copy (instant, no re-encode)."""
-    parts = []
+    parts: list[Path] = []
     for k in range(math.ceil(duration / seconds)):
         dst = out_dir / f"{name or src.stem}_part{k + 1:03d}.mp4"
         cmd = [
@@ -82,7 +84,7 @@ def ranges_moments(
     use_llm = not cfg.skip.llm and ai.llm_available(cfg.llm.base_url, cfg.llm.model)
     out = []
     for span in kcfg.ranges:
-        source_lo, source_hi = (min(parse_hms(x), cutmap.duration) for x in span.split("-"))
+        source_lo, source_hi = (min(parse_hms(bound), cutmap.duration) for bound in span.split("-"))
         lo, hi = timeline.remap_window(*cutmap.source_span_to_optimized(source_lo, source_hi))
         if hi - lo <= 0:
             log.warning("clips.ranges entry %s was fully removed by silence; no custom clip for that span", span)
@@ -92,8 +94,6 @@ def ranges_moments(
         caption = ""
         if use_llm and text:
             try:
-                from . import ai
-
                 title = ai.generate_title(cfg, text) or title
                 caption = ai.generate_caption(cfg, text)
             except Exception as e:
@@ -164,6 +164,59 @@ def _write_clip_summaries(root: Path, stem: str, rows: Sequence[ClipRow]) -> Non
         (root / clip_kind / stem / "clips.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _export_uncaptioned_raw(root: Path, stem: str, optimized: Path, store: Store) -> Path:
+    """Copy the silence-removed source into ``raw/<stem>/`` with its full-transcript SRT beside it.
+
+    The video is a plain copy: ``optimized`` is the already-built source in ``.work``, so no second
+    encode is needed. ``store`` segments are already on that file's measured clock, so each becomes
+    one SubRip cue without any time remapping here.
+    """
+    raw_folder = root / "raw" / stem
+    raw_folder.mkdir(parents=True, exist_ok=True)
+    # Exactly one raw moment starts at 0, so its render name is always `_raw_01_0s`.
+    uncaptioned_video = raw_folder / f"{stem}_raw_01_0s_uncaptioned.mp4"
+    shutil.copyfile(optimized, uncaptioned_video)
+    segments = store.light_segments()
+    subtitle_text = "\n".join(
+        f"{index}\n{srt_time(start)} --> {srt_time(end)}\n{text}\n" for index, (start, end, text, _) in enumerate(segments, 1)
+    )
+    subtitle_path = uncaptioned_video.with_suffix(".srt")
+    subtitle_path.write_text(subtitle_text, encoding="utf-8")
+    log.info("raw export: %s (%d transcript cues)", safe_path_text(uncaptioned_video), len(segments))
+    return uncaptioned_video
+
+
+def _generate_sd_thumbnails(root: Path, stem: str, rows: Sequence[ClipRow], cfg: Config) -> None:
+    """Replace finished clips' frame covers with Stable Diffusion ones when the backend is available.
+
+    An unavailable or failing backend is logged and skipped; it must never fail the video.
+    """
+    try:
+        from . import ai
+
+        if not ai.sd_available():
+            return
+        import cv2
+
+        for row in rows:
+            if row["status"] != "done":
+                continue
+            clip_path = root / row["kind"] / stem / row["file"]
+            thumbnail = clip_path.with_suffix(".jpg")
+            source_frame = clip_path.with_suffix(".frame.jpg")
+            try:
+                capture = cv2.VideoCapture(str(clip_path))
+                ok, frame = capture.read()
+                capture.release()
+                if ok:
+                    cv2.imwrite(str(source_frame), frame)
+                    ai.generate_sd_thumbnail(source_frame, thumbnail, cfg.image.prompt)
+            finally:
+                source_frame.unlink(missing_ok=True)
+    except Exception as e:
+        log.warning("Stable Diffusion thumbnail pass failed (%s: %s)", type(e).__name__, e)
+
+
 @traced
 def process_video(
     src: Path,
@@ -188,8 +241,6 @@ def process_video(
     reporter = report if report is not None else Reporter(cancel=cancel)
     root, cc, stem = Path(cfg.output_dir), cfg.clips, name or src.stem
     original_source = src
-    from .derive.policy import fillers_from, load_lexicon
-
     fillers = fillers_from(load_lexicon(config_dir))
     info = probe(src)
     original_info = info
@@ -260,39 +311,39 @@ def process_video(
             reporter("transcribe", 1.0, "transcript ready" if have_text else "transcription skipped - selecting on audio only")
         else:
             reporter("transcribe", 1.0, "no transcript needed")
+        _export_uncaptioned_raw(root, stem, src, store)
         jobs: list[RenderJob] = []
         raw_jobs: list[RenderJob] = []
         needs = 0
         raw_needs = 0
-        for kind in cc.kinds:
+        # De-duplicate locally: cc.kinds still drives scene detection and preset validation.
+        kinds = list(dict.fromkeys((*cc.kinds, "raw")))
+        for kind in kinds:
             kcfg = cc.kind(kind)
-            moments = (
-                [raw_moment(store, cutmap, timeline, have_text)]
-                if kind == "raw"
-                else (
-                    ranges_moments(store, kcfg, info, cfg, have_text, kind=kind, cutmap=cutmap, timeline=timeline)
-                    if cc.mode == "ranges"
-                    else select_moments(
-                        src,
-                        info,
-                        store,
-                        cache,
-                        cfg,
-                        kind,
-                        db,
-                        have_text,
-                        config_dir=config_dir,
-                        cutmap=cutmap,
-                        timeline=timeline,
-                        shots=cuts,
-                    )
+            if kind == "raw":
+                moments = [raw_moment(store, cutmap, timeline, have_text)]
+            elif cc.mode == "ranges":
+                moments = ranges_moments(store, kcfg, info, cfg, have_text, kind=kind, cutmap=cutmap, timeline=timeline)
+            else:
+                moments = select_moments(
+                    src,
+                    info,
+                    store,
+                    cache,
+                    cfg,
+                    kind,
+                    db,
+                    have_text,
+                    config_dir=config_dir,
+                    cutmap=cutmap,
+                    timeline=timeline,
+                    shots=cuts,
                 )
-            )
             if not moments:
                 log.warning("no %s clips for %s (video shorter than the length range, or no ranges given)", kind, name or src.name)
                 continue
-            out = root / kind / stem
-            out.mkdir(parents=True, exist_ok=True)
+            clip_dir = root / kind / stem
+            clip_dir.mkdir(parents=True, exist_ok=True)
             size = canvas_size(
                 kcfg.aspect,
                 quality_short_side(cfg.quality),
@@ -301,15 +352,15 @@ def process_video(
                 fill=cfg.video.layout == "fill",
             )
             numbers: dict[str, int] = {}
-            for m in moments:
-                n = numbers[m.scene] = numbers.get(m.scene, 0) + 1
-                dst = out / f"{stem}_{m.scene}_{n:02d}_{int(m.start)}s.mp4"
-                clip_id = store.save_moment(kind, m.scene, n, m)
+            for moment in moments:
+                number = numbers[moment.scene] = numbers.get(moment.scene, 0) + 1
+                clip_path = clip_dir / f"{stem}_{moment.scene}_{number:02d}_{int(moment.start)}s.mp4"
+                clip_id = store.save_moment(kind, moment.scene, number, moment)
                 job = RenderJob(
                     clip_id,
-                    m,
+                    moment,
                     src,
-                    dst,
+                    clip_path,
                     kind,
                     kcfg.aspect,
                     encoder,
@@ -321,33 +372,29 @@ def process_video(
                     fillers=fillers,
                     audio_ready=prepared.audio_ready,
                 )
-                estimate = estimate_render_bytes(size, m.end - m.start)
+                estimate = estimate_render_bytes(size, moment.end - moment.start)
                 if kind == "raw":
                     raw_jobs.append(job)  # a whole-source estimate would serialise every other clip
                     raw_needs = max(raw_needs, estimate)
                 else:
                     jobs.append(job)
                     needs = max(needs, estimate)
-        if not jobs and not raw_jobs:
-            raise AutoclipError("no clips found for any requested kind (is the video shorter than the length ranges?)")
         total = len(jobs) + len(raw_jobs)
         reporter("select", 1.0, f"{total} clips planned")
         log.info("system health before render: %s", health_check("render"))
         reporter("render", 0.0, f"0/{total} clips to process")
         try:
-            if raw_jobs:
-                # A mixed batch would report a misleading 100% after the short/long pass; report only
-                # the final state. raw is a single job, rendered in-process without the pool.
-                if jobs:
-                    render_all(jobs, needs, cancel=cancel)
-                render_all(raw_jobs, raw_needs, cancel=cancel)
-            else:
-                render_all(jobs, needs, report=reporter, cancel=cancel)
+            # raw renders last, in its own pass: its whole-source estimate would serialise the other
+            # clips. Keep the final progress event inside the try so a cancel still writes the
+            # partial index for whatever finished.
+            if jobs:
+                render_all(jobs, needs, cancel=cancel)
+            render_all(raw_jobs, raw_needs, report=reporter, cancel=cancel)
+            reporter("render", 1.0, f"{total}/{total} clips processed")
+            rows = store.clips()
         except Cancelled:
             _write_clip_summaries(root, stem, store.clips())  # keep what finished: a half-written run is still useful
             raise
-        reporter("render", 1.0, f"{total}/{total} clips processed")
-        rows = store.clips()
         log.info(
             "output base: %s | clips=%d (failed=%d)",
             safe_path_text(root),
@@ -358,31 +405,8 @@ def process_video(
         cache.close()
         store.close()
     _write_clip_summaries(root, stem, rows)
-    # Optional Stable Diffusion thumbnails (serialized in the AI queue; skipped when unavailable or offline).
     if not cfg.skip.thumbnail and not cfg.skip.llm:
-        try:
-            from . import ai as _ai
-
-            if _ai.sd_available():
-                import cv2
-
-                for r in rows:
-                    if r["status"] != "done":
-                        continue
-                    clip_path = root / r["kind"] / stem / r["file"]
-                    out_jpg = clip_path.with_suffix(".jpg")
-                    frame_path = clip_path.with_suffix(".frame.jpg")
-                    try:
-                        cap = cv2.VideoCapture(str(clip_path))
-                        ok, frame = cap.read()
-                        cap.release()
-                        if ok:
-                            cv2.imwrite(str(frame_path), frame)
-                            _ai.generate_sd_thumbnail(frame_path, out_jpg, cfg.image.prompt)
-                    finally:
-                        frame_path.unlink(missing_ok=True)
-        except Exception as e:
-            log.warning("Stable Diffusion thumbnail pass failed (%s: %s)", type(e).__name__, e)
+        _generate_sd_thumbnails(root, stem, rows, cfg)
 
     for clip_kind in dict.fromkeys(r["kind"] for r in rows):
         log.info("output folder: %s", safe_path_text(root / clip_kind / stem))

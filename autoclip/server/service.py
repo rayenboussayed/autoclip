@@ -6,7 +6,9 @@ import os
 import subprocess
 import sys
 import zipfile
+from dataclasses import asdict
 from pathlib import Path
+from typing import Protocol
 
 from ..core.config import Config, FileConfig, JsonValue, RuntimeOverrides, parse
 from ..core.events import Progress
@@ -17,6 +19,18 @@ from .schemas import JobState
 from .state import Job, job_zip_path
 
 log = logging.getLogger("autoclip.server")
+
+
+class _CancelEvent(Protocol):
+    """The only cancellation surface ``run_job`` needs from an event object."""
+
+    def is_set(self) -> bool: ...
+
+
+def _custom_config(job: Job) -> dict[str, JsonValue] | None:
+    """The user's file keys, if the job supplied any."""
+    custom = job.config.get("_custom")
+    return custom if isinstance(custom, dict) else None
 
 
 def _publish(job: Job, step: str, message: str, percent: float, state: str | None = None) -> None:
@@ -40,34 +54,54 @@ def build_config(custom: dict[str, JsonValue] | None, input_path: Path, output_d
     another file or write outside its own folder.
     """
     file_cfg = parse(FileConfig, dict(custom or {}))
-    cfg = file_cfg.to_config(RuntimeOverrides(input=[str(input_path)], output_dir=str(output_dir)))
-    cfg.input = [str(input_path)]
-    cfg.output_dir = str(output_dir)
-    return cfg
+    return file_cfg.to_config(RuntimeOverrides(input=[str(input_path)], output_dir=str(output_dir)))
 
 
 def prepare_config(job: Job, custom: dict[str, JsonValue] | None) -> Config:
-    """The runtime configuration of a job (the uploaded file config plus the server's own input/output)."""
+    """Validate settings, then build the job config; the server owns its input and output paths."""
     get_settings()
     return build_config(custom, job.input_path, job.output_dir)
 
 
 def _file_config(job: Job, custom: dict[str, JsonValue] | None) -> dict[str, JsonValue]:
     """The nine-key config the child process reads (the input is the uploaded file)."""
-    from dataclasses import asdict
-
     data = asdict(parse(FileConfig, dict(custom or {})))
     data["input"] = [str(job.input_path)]
     return data
 
 
+def _collect_outputs(output_dir: Path) -> list[Path]:
+    """Clip paths from every ``clips.json`` plus all uncaptioned derivatives under ``output_dir``."""
+    outputs: list[Path] = []
+    for index_path in sorted(output_dir.rglob("clips.json")):
+        if ".work" in index_path.relative_to(output_dir).parts:
+            continue
+        try:
+            rows = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            file_name = row if isinstance(row, str) else (row.get("file") if isinstance(row, dict) else None)
+            if file_name:
+                clip_path = index_path.parent / str(file_name)
+                if clip_path.is_file():
+                    outputs.append(clip_path)
+    for derivative in sorted(output_dir.rglob("*_uncaptioned.mp4")):
+        if ".work" not in derivative.relative_to(output_dir).parts:
+            outputs.append(derivative)
+    return outputs
+
+
 def _run_job_inprocess(job: Job, cfg: Config) -> None:
+    """Run one job in this process (the test/debug path) and publish its terminal state."""
     from ..core.batch import run_batch
     from ..core.events import Reporter
     from ..core.hardware import pick_encoder
 
     job.output_dir.mkdir(parents=True, exist_ok=True)
-    job.work_dir = job.output_dir / ".work" / (job.input_path.stem)
+    job.work_dir = job.output_dir / ".work" / job.input_path.stem
     job.work_dir.mkdir(parents=True, exist_ok=True)
     job.process = None
 
@@ -81,22 +115,7 @@ def _run_job_inprocess(job: Job, cfg: Config) -> None:
     result = run_batch(cfg, downloader=None, encoder=encoder, log_file=None, report=reporter, config_dir=job.output_dir)
     # collect outputs
     _publish(job, "packaging", "Collecting outputs", 90.0)
-    outs: list[Path] = []
-    for cj in sorted(job.output_dir.rglob("clips.json")):
-        if ".work" in cj.relative_to(job.output_dir).parts:
-            continue
-        try:
-            rows = json.loads(cj.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if isinstance(rows, list):
-            for r in rows:
-                name = r if isinstance(r, str) else (r.get("file") if isinstance(r, dict) else None)
-                if name:
-                    p = cj.parent / str(name)
-                    if p.is_file():
-                        outs.append(p)
-    job.outputs = outs
+    job.outputs = _collect_outputs(job.output_dir)
     any_index = any(p.name == "clips.json" for p in job.output_dir.rglob("*"))
     if result.clips_failed and result.clips_done == 0 and not any_index:
         job.update(state=JobState.failed, error=f"{result.clips_failed} clip(s) failed")
@@ -109,19 +128,20 @@ def _run_job_inprocess(job: Job, cfg: Config) -> None:
         _publish(job, "completed", "Done", 100.0, state="completed")
 
 
-def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def]
+def run_job(job: Job, cancel_event: _CancelEvent | None = None) -> None:
+    """Run one job (in a subprocess unless ``AUTOCLIP_SERVER_INPROCESS=1``) and publish its terminal state."""
     from ..core import ai
 
     ai.reset_run_breaker()  # the server is one process for many jobs; the breaker is per job, not forever
     try:
         job.output_dir.mkdir(parents=True, exist_ok=True)
-        job.work_dir = job.output_dir / ".work" / (job.input_path.stem)
+        job.work_dir = job.output_dir / ".work" / job.input_path.stem
         job.work_dir.mkdir(parents=True, exist_ok=True)
         _publish(job, "validating", "Validating configuration", 2.0)
-        if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+        if cancel_event is not None and cancel_event.is_set():
             job.cancel_requested = True
-        _custom = job.config.get("_custom")
-        cfg = prepare_config(job, _custom if isinstance(_custom, dict) else None)
+        custom = _custom_config(job)
+        cfg = prepare_config(job, custom)
         if job.cancel_requested:
             job.update(state=JobState.cancelled, error="cancelled")
             _publish(job, "cancelled", "Cancelled", 100.0, state="cancelled")
@@ -130,17 +150,14 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
             return _run_job_inprocess(job, cfg)
         config_path = job.work_dir / "config.json"
         config_path.write_text(
-            json.dumps(_file_config(job, _custom if isinstance(_custom, dict) else None), default=str, ensure_ascii=False, indent=2),
+            json.dumps(_file_config(job, custom), default=str, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
-        job.output_dir.mkdir(parents=True, exist_ok=True)
         # launch subprocess with NDJSON events; the output folder is a runtime override, not a file key
         cmd = [*pipeline_command(config_path), "--output-dir", str(job.output_dir), "--events", "jsonl"]
         env = dict(os.environ)
         if not getattr(sys, "frozen", False):
-            from pathlib import Path
-
             project_root = Path(__file__).resolve().parents[2]
             env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(project_root), env.get("PYTHONPATH", "")]))
         proc = subprocess.Popen(
@@ -183,30 +200,14 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
         if job.cancel_requested:
             cancelled = True
         crash_msg: str | None = None
-        if rc is not None and rc < 0:
+        if rc < 0:
             if job.cancel_requested or cancelled:
                 cancelled = True
             else:
                 crash_msg = f"worker killed by signal {-rc}"
         _publish(job, "packaging", "Collecting outputs", 90.0)
-        # collect outputs from clips.json rows
-        outs: list[Path] = []
-        for cj in sorted(job.output_dir.rglob("clips.json")):
-            if ".work" in cj.relative_to(job.output_dir).parts:
-                continue
-            try:
-                rows = json.loads(cj.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            if isinstance(rows, list):
-                for r in rows:
-                    name = r if isinstance(r, str) else (r.get("file") if isinstance(r, dict) else None)
-                    if not name:
-                        continue
-                    p = cj.parent / str(name)
-                    if p.is_file():
-                        outs.append(p)
-        job.outputs = outs
+        # collect outputs from clips.json rows, plus the always-exported raw derivatives
+        job.outputs = _collect_outputs(job.output_dir)
         failed_count = result_failed if result_failed is not None else 0
         if cancelled:
             job.update(state=JobState.cancelled, error="cancelled")
@@ -217,11 +218,11 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
                 detail = crash_msg + ": " + " | ".join(stderr_tail[-5:])
             job.update(state=JobState.failed, error=detail)
             _publish(job, "failed", detail, 100.0, state="failed")
-        elif rc not in (0, None):
+        elif rc != 0:
             detail = " | ".join(stderr_tail[-20:]) if stderr_tail else f"worker exited with code {rc}"
             job.update(state=JobState.failed, error=detail)
             _publish(job, "failed", detail, 100.0, state="failed")
-        elif failed_count > 0 and not outs:
+        elif failed_count > 0 and not job.outputs:
             detail = f"{failed_count} clip(s) failed"
             job.update(state=JobState.failed, error=detail)
             _publish(job, "failed", detail, 100.0, state="failed")
@@ -236,7 +237,6 @@ def run_job(job: Job, cancel_event=None) -> None:  # type: ignore[no-untyped-def
         job.process = None
         job.update(state=JobState.failed, error="job failed")  # client sees no traceback; operator reads the log
         _publish(job, "failed", "job failed", 100.0, state="failed")
-        log.exception("server job %s failed", job.job_id)
 
 
 def zip_outputs(job: Job) -> Path:

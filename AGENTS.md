@@ -6,8 +6,9 @@ Guidance for AI coding agents (and humans) working on this repository. Read it f
 ## 1. What this project is
 
 `autoclip` turns long videos into the best **short** (default 9:16, 20-60 s) and **long** (default 16:9, 3-10 min)
-clips, per requested **scene type** (`best`, `funny`, `sad`, ... or `"all"`), or exports the whole silence-removed
-video as one captioned **raw** clip at the original shape. One config file drives everything.
+clips, per requested **scene type** (`best`, `funny`, `sad`, ... or `"all"`). Every completed non-split run also exports
+the silence-removed source to `raw/{video}/`: a captioned render (subject to `skip.*`) and an uncaptioned copy of the
+optimized source, with a full-transcript `.srt` when a transcript is available. One config file drives everything.
 Pipeline: download the http(s) URLs of `input` with yt-dlp (only when there are any) -> transcribe (faster-whisper,
 a downloaded subtitle or .srt/.json) -> score sentence-aligned windows per scene -> pick the best non-overlapping ones ->
 render (enhance audio, cut pauses/fillers, layout, burn captions, encode on GPU if one really works).
@@ -240,11 +241,12 @@ main()
                                              (5 min chunks, or the fused pass replayed from the partial) -> SQLite;
                                              subtitles follow the video's original language; consent is always auto;
                                              `skip.stt` stops before Whisper, `skip.denoise` skips the enhancer
-      for kind in cfg.clips.kinds ("short", "long", "raw"):
+      copy the optimized source to raw/{video}/*_uncaptioned.mp4 + full-transcript .srt (no second encode)
+      for kind in local kinds = dedupe(cfg.clips.kinds + ["raw"]):   # cfg.clips.kinds itself is untouched
         moments = [raw_moment(...)]  if kind == "raw"      (one full-length window on the measured clock)
                   ranges_moments(...)  if mode == "ranges"   (scene "custom")
                   select_moments(...)  otherwise              (one pass per scene type)
-        no moments -> warning, kind skipped (all kinds empty -> AutoclipError)
+        no moments -> warning, kind skipped (raw is always present, so the run still succeeds)
         Store.save_moment(...) -> clip_id ; build RenderJob (dst = {out}/{kind}/{video}/{video}_{scene}_{nn}_{start}s.mp4)
       render_all(jobs)                             adaptive pool; results land in the `clips` table
       render_all(raw_jobs)                         separate single-job pass (its duration-scaled estimate must not serialise other clips)
@@ -357,10 +359,15 @@ step, percent, outputs); nothing else is persisted except the job folder and the
 7. **Config is strict, with a soft fallback for values.** Unknown keys and wrong JSON types raise `ConfigError` at
    load; invalid *values* warn and fall back to the field default (`_coerce_defaults`); `"_comment"` keys are
    ignored. All defaults live in the dataclass fields (single source of truth for `--init`/`--init-full`).
-8. **Outputs:** `{output_dir}/{short|long|raw}/{video}/` holds only clips (+ `.jpg`, `.srt`, `clips.json`);
+8. **Outputs:** `{output_dir}/{short|long|raw}/{video}/` holds clips (+ `.jpg`, `.srt`, `clips.json`); `raw/{video}/`
+   additionally holds the `_uncaptioned` derivative described below.
    `{output_dir}/.work/{video}/` holds the DB and transcript cache; `{output_dir}/.work/downloads/` holds
    downloaded originals and their sidecars; `{output_dir}/logs/` holds run logs.
-   File names: `{video}_{scene}_{nn:02d}_{int(start)}s.mp4` (`nn` counts per kind+scene). Two local inputs with the same
+   File names: `{video}_{scene}_{nn:02d}_{int(start)}s.mp4` (`nn` counts per kind+scene). Every completed non-split run
+   also writes `raw/{video}/` regardless of `clips.preset`: a captioned full render (`{video}_raw_01_0s.mp4`) and an
+   `_uncaptioned` byte-copy of the optimized source, plus a full-transcript `.srt` when a transcript is available. The
+   export is added to a **local** `kinds` list in `process_video` - `cc.kinds` stays untouched so scene detection still
+   runs - and the uncaptioned file is a derivative, not a `clips.json` entry. Two local inputs with the same
    file stem are rejected at load time (they would share outputs); downloaded names are deduplicated per batch
    (`Name (2)`).
 9. **Words/segments must be shorter than `store.MAX_SPAN` (120 s)**: window queries only look that far back.

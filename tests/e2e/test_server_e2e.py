@@ -233,14 +233,16 @@ def test_server_renders_an_uploaded_video(live_server: LiveServer, media: Media,
     assert status == 200
     assert job_id.encode() in detail
 
-    # The archive mirrors the output folder: the clip, its sidecars and the clips.json index.
+    # The archive mirrors the output folder: the clips, their sidecars and the clips.json indexes.
     status, archive, _ = _request(f"{live_server.base_url}/api/jobs/{job_id}/download")
     assert status == 200, archive[:2000]
     with zipfile.ZipFile(io.BytesIO(archive)) as zf:
         names = zf.namelist()
         clips = [name for name in names if name.endswith(".mp4")]
-        assert len(clips) == 1, names
-        assert clips[0].startswith("short/"), names
+        short_clip = next((name for name in clips if name.startswith("short/")), None)
+        assert short_clip is not None, names
+        assert any(name.startswith("raw/") and name.endswith(".mp4") for name in clips), names
+        assert any("_uncaptioned.mp4" in name for name in clips), names
         assert any(name.endswith(".srt") for name in names), names
         assert any(name.endswith(".jpg") for name in names), names
         assert any(name.endswith("clips.json") for name in names), names
@@ -249,16 +251,11 @@ def test_server_renders_an_uploaded_video(live_server: LiveServer, media: Media,
             target = tmp_path / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(zf.read(name))
-    extracted = tmp_path / clips[0]
-    rendered = next(
-        path
-        for path in (live_server.output_dir / "jobs" / job_id / "out").rglob("*.mp4")
-        if ".work" not in path.relative_to(live_server.output_dir).parts
-    )
+    extracted = tmp_path / short_clip
     info = probe(extracted)
     assert info.width == 320, (info.width, info.height)
     assert 4.5 <= info.duration <= 10.5, info.duration
-    rows = json.loads(next(rendered.parent.glob("clips.json")).read_text(encoding="utf-8"))
+    rows = json.loads((extracted.parent / "clips.json").read_text(encoding="utf-8"))
     assert len(rows) == 1 and rows[0]["scene"] == "custom", rows  # ranges always render the custom scene
 
     # Deleting removes the job from the registry and its files from the disk.

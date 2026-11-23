@@ -4,6 +4,22 @@ All notable changes to autoclip, newest first. Release timestamps come from
 Git tags (and commit metadata for untagged but version-stamped commits). Each
 release mentions the source tag/commit for traceability.
 
+## [Unreleased]
+
+- feat: every completed non-split run now writes `raw/{video}/`, whatever `clips.preset` says. The folder holds the
+  existing captioned render (`{video}_raw_01_0s.mp4`, with cover and caption-cue `.srt`, subject to `skip.*`) and a
+  new `{video}_raw_01_0s_uncaptioned.mp4` that is a plain copy of the optimized source. When a transcript exists, the
+  copy gets a full-transcript `.srt` (one cue per segment, on the measured timeline). The uncaptioned file is a derivative, not
+  an extra `clips.json` row. The export is added to a local `kinds` list inside `process_video`, so `clips.kinds`,
+  the preset validation, scene detection and the ranges/raw mutual exclusion are unchanged. `--split` remains a pure
+  stream-copy mode and is the only run without a raw folder. No config keys, dependencies or caches changed.
+
+- refactor: simplify the raw-export path without changing its output: one de-duplicated local `kinds` expression,
+  explicit conditional branches for moment selection, descriptive local names, and an extracted Stable Diffusion
+  thumbnail helper. The server now uses a typed cancellation protocol, collects outputs once per path, excludes
+  `.work` strays from derivatives, and emits a single traceback for a failed job. Tests strengthen the derivative
+  and split-mode contracts.
+
 ## [4.0.4] — 2026-11-21 21:59:43 UTC (tag `v4.0.4`, commit `f564c95`)
 
 - feat: a `raw` clip kind exports one full-length, captioned, audio-enhanced version of the silence-removed source at the original shape, into `raw/{video}/`. Select it with the additive `clips.preset: "raw"` value; the default `both`, all nine config keys, the CLI and the caches are unchanged. `raw` cannot be combined with `clips.ranges` or `--split`. Its duration-scaled memory estimate is kept in a separate single-job render pass, and audio decode/mixing now use one destination buffer instead of several full-length copies.

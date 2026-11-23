@@ -210,8 +210,11 @@ def test_run_job_processes_a_small_video(monkeypatch: pytest.MonkeyPatch, media:
         names = zf.namelist()
     clips = [name for name in names if name.endswith(".mp4")]
     # The archive mirrors the output folder: clips, their sidecars and the index, never the work folder.
-    assert len(clips) == len(job.outputs) == 1, names
-    assert clips[0].startswith("short/"), names
+    assert len(clips) == 3, names
+    assert len(job.outputs) == 3, job.outputs
+    assert any(name.startswith("short/") for name in clips), names
+    assert any(name.endswith("raw_01_0s.mp4") for name in clips), names
+    assert any(name.endswith("raw_01_0s_uncaptioned.mp4") for name in clips), names
     assert any(name.endswith(".srt") for name in names), names
     assert any(name.endswith(".jpg") for name in names), names
     assert any(name.endswith("clips.json") for name in names), names
@@ -253,7 +256,7 @@ def test_run_job_processes_a_small_video(monkeypatch: pytest.MonkeyPatch, media:
     run_job(cancel_job, cancel_event=cancel_event)
     assert cancel_job.state == JobState.cancelled
 
-    # An impossible length range produces no clips and a failed job.
+    # An impossible length range produces no long clips, but the always-on raw export still completes the job.
     empty_cfg = {"clips": {"preset": "long"}}
     empty_out = tmp_path / "emptyout"
     empty_out.mkdir()
@@ -266,8 +269,9 @@ def test_run_job_processes_a_small_video(monkeypatch: pytest.MonkeyPatch, media:
         work_dir=empty_out / ".work" / upload.stem,
     )
     run_job(empty_job)
-    assert empty_job.state == JobState.failed
-    assert empty_job.error
+    assert empty_job.state == JobState.completed
+    assert not empty_job.error
+    assert (empty_out / "raw" / upload.stem / f"{upload.stem}_raw_01_0s_uncaptioned.mp4").is_file()
 
     # A missing source is reported as a failed job instead of raising.
     bad_out = tmp_path / "badout"
@@ -777,6 +781,8 @@ def test_run_job_inprocess_collects_outputs(monkeypatch: pytest.MonkeyPatch, tmp
     short.mkdir(parents=True)
     clip = short / "clip.mp4"
     clip.write_bytes(b"x")
+    derivative = short / "clip_uncaptioned.mp4"
+    derivative.write_bytes(b"y")
     (short / "clips.json").write_text(json.dumps([{"file": "clip.mp4"}, {}, "missing.mp4"]), encoding="utf-8")
     bad = out / "long" / "talk"
     bad.mkdir(parents=True)
@@ -786,13 +792,14 @@ def test_run_job_inprocess_collects_outputs(monkeypatch: pytest.MonkeyPatch, tmp
     (odd / "clips.json").write_text(json.dumps({"not": "a list"}), encoding="utf-8")
     (out / ".work" / "talk").mkdir(parents=True)
     (out / ".work" / "talk" / "clips.json").write_text("[]", encoding="utf-8")
+    (out / ".work" / "talk" / "stray_uncaptioned.mp4").write_bytes(b"z")
     job = Job(job_id="inproc", filename="input.mp4", input_path=tmp_path / "input.mp4", output_dir=out, config={}, work_dir=out / ".work")
     monkeypatch.setattr(
         "autoclip.core.batch.run_batch", lambda *a, **k: BatchResult(clips_done=1, clips_failed=0, elapsed_seconds=0.1, peak_rss_mb=0)
     )
     monkeypatch.setattr("autoclip.core.hardware.pick_encoder", lambda *a, **k: None)
     service._run_job_inprocess(job, service.prepare_config(job, None))
-    assert job.outputs == [clip]
+    assert job.outputs == [clip, derivative]  # derivatives are included; work-folder strays are not
 
 
 class _FakeProc:

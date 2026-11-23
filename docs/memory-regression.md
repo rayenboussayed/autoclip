@@ -18,11 +18,11 @@ samples in a fast in-process run, ±10 % noise between runs).
 | Case | Budget | Measured (2026-11-13/18/19) |
 | --- | --- | --- |
 
-| M1 `process_video` on the 40 s fixture | 1500 MB | ~837 MB locally / ~1027 MB CI (2026-11-19; recalibrated, the `lowest` tier is gone) |
+| M1 `process_video` on the 40 s fixture (now includes the always-on raw render) | 1500 MB | ~837 MB locally / ~1027 MB CI (2026-11-19; not recalibrated for the raw render) |
 | M2 `prepare_source` many-parts assembly (bounded FFmpeg segments) | 400 MB | ~246 MB (2026-11-18) |
-| M3 one short clip from a 720p source, `quality=medium` | 2000 MB | ~1161 MB |
-| M4 CLI subprocess on the fixture (parent + tree) | 600/900 MB | ~216/320 MB |
-| M5 CLI subprocess on the many-parts optimized path (parent + tree) | 600/900 MB | ~216/320 MB |
+| M3 one short clip from a 720p source, `quality=medium` (now includes the raw render) | 2000 MB | ~1161 MB (not recalibrated for the raw render) |
+| M4 CLI subprocess on the fixture (parent + tree) | 600/1300 MB | ~216/990 MB (2026-11-22; the always-on raw render added a full-source encode) |
+| M5 CLI subprocess on the many-parts optimized path (parent + tree) | 600/1800 MB | ~216/1398 MB (2026-11-22; same cause) |
 | M9 `enhance_audio` advisory | 512 MB | ~322 MB |
 
 `MIN_SAMPLES` (50) and `MIN_PEAK_MB` (40 MB) are **sanity floors**: a poller that recorded almost no

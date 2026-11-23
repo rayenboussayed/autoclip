@@ -1,6 +1,6 @@
 # autoclip
 
-Cut long videos into the best **short** and **long** clips (TikTok / Reels / Shorts and YouTube-style highlights), or export the whole silence-removed video as a captioned **raw** clip.
+Cut long videos into the best **short** and **long** clips (TikTok / Reels / Shorts and YouTube-style highlights). Every completed non-split run also exports the silence-removed source into `raw/{video}/`: a captioned render (subject to `skip.*`) and an uncaptioned copy of the optimized source, whose `.srt` carries one cue per transcript segment when a transcript is available.
 Free, local, one command. Runs on **Linux, macOS and Windows** (Python 3.11+). No system ffmpeg needed.
 
 ```bash
@@ -46,14 +46,17 @@ is exactly what `python -m autoclip config.json` would run.
 {output_dir}/
   short/{video}/   {video}_{scene}_{nn}_{start}s.mp4 + .jpg cover + .srt, clips.json     (9:16, 20-60 s by default)
   long/{video}/    same, for the long clips                                               (16:9, 3-10 min by default)
-  raw/{video}/     one full-length captioned clip, silence removed                       (original shape)
+  raw/{video}/     every completed non-split run: {video}_raw_01_0s.mp4 (captioned render
+                   + .jpg cover + .srt caption cues) and {video}_raw_01_0s_uncaptioned.mp4
+                   (plain copy of the optimized source) + a full-transcript .srt when a
+                   transcript exists; clips.json lists the captioned clip                          (original shape)
   logs/            autoclip_<timestamp>.log
   .work/{video}/   autoclip.db (recreated empty on every start), the transcript cache and its .partial.jsonl resume file, the optimized source
   .work/downloads/ originals downloaded from URLs (reused by later runs)
 ```
 
 Every `clips.json` row carries `start`/`end` for the processed timeline and `source_start`/`source_end` for the
-original input file. `trimmed` remains the length after pause/filler cuts. A kind that is not requested (or finds nothing) gets no folder. Several videos share the same `short/`, `long/` and `raw/` folders. A *relative* `output_dir` is resolved against the current working
+original input file. `trimmed` remains the length after pause/filler cuts. A short or long kind that is not requested (or finds nothing) gets no folder; `raw/{video}/` is the exception - every completed non-split run exports it, whatever the preset (a cancelled run can stop before the export). The captioned file is a full render with burned-in cues (subject to `skip.*`, and still pause/filler-trimmed); the `_uncaptioned` sibling is a byte-for-byte copy of the optimized (silence-removed) source, so it can be slightly longer. When a transcript exists, the copy's SRT contains one cue per segment on that file's timeline; without one the sidecar is empty. Several videos share the same `short/`, `long/` and `raw/` folders. A *relative* `output_dir` is resolved against the current working
 directory - not against the config file - so the output folder is independent of where your config lives. An absolute `output_dir`
 (or the default `~/Videos/clips`) is used as-is.
 
@@ -95,7 +98,7 @@ variable) or derived automatically.
 | Key | What it controls |
 |---|---|
 | `input` | videos, globs or http(s) URLs |
-| `clips.preset` | `both`, `shorts`, `long` or `raw` - which clip families to render |
+| `clips.preset` | `both`, `shorts`, `long` or `raw` - which clip families to render; `raw/{video}/` is written on every completed non-split run regardless |
 | `clips.scenes` | `best`, a list, or `all` - the scene types to pick moments for |
 | `clips.keywords` | words or phrases that boost a moment |
 | `clips.ranges` | exact cuts (`"00:01:00-00:01:45"`) in original-source seconds, one per line (remapped through silence removal; missing spans are skipped with a warning) |
@@ -105,9 +108,11 @@ variable) or derived automatically.
 | `image.prompt` | the Stable Diffusion prompt of every AI thumbnail |
 
 The built-in clip profiles are fixed: **short** = 20-60 s at 9:16, **long** = 3-10 min at 16:9, **raw** = one
-whole-source file at the original shape. Use `clips.ranges` or `--split` for other shapes. The `raw` preset is
-mutually exclusive with `clips.ranges` and `--split`; its window is the whole silence-removed source, and the
-global `skip.*` settings still apply within it. `clips.scenes` is `"all"`, one type, or a list: `best attractive exciting funny sad
+whole-source file at the original shape. Every completed non-split run also writes `raw/{video}/` with a captioned
+full render and an uncaptioned copy of the silence-removed source (plus its full-transcript `.srt` when one exists),
+so the `raw` preset only changes which *other* folders appear. Use `clips.ranges` or `--split` for other shapes; the `raw`
+preset is mutually exclusive with both, but the always-on raw export still accompanies a `clips.ranges` run. The
+global `skip.*` settings still apply within the captioned render. `clips.scenes` is `"all"`, one type, or a list: `best attractive exciting funny sad
 emotional inspiring calm educational controversial`.
 
 Runtime overrides (flags win over environment variables):
@@ -151,7 +156,9 @@ See `docs/options-reference.md` for the generated reference of the nine keys.
   rather than going below it), `max_seconds` is a hard ceiling (padding around the cut cannot push it over).
 * `clips.ranges` cuts your own ranges (scene type `custom`), applies to the `short` and `long` kinds; `--split` cuts equal
   600 s parts into `long/{video}/` and cannot be combined with `clips.ranges`. The `raw` preset is mutually exclusive
-  with both and instead writes one full-length captioned file to `raw/{video}/`.
+  with both. Independently of the preset, every non-split run also writes `raw/{video}/`: the captioned full render,
+  an `_uncaptioned` copy of the silence-removed source and a full-transcript `.srt`. `--split` is a pure stream-copy
+  mode with no transcript, so it is the one run that does not produce this folder.
 * `input` is a path, a glob or a list. One broken video or clip never stops the batch. Exit status: `0` all done,
   `1` something failed, `2` bad configuration. A transcript is picked up from a sidecar `.json`/`.srt` next to each video.
 
@@ -543,7 +550,9 @@ See `docs/UPGRADING-4.0.md` for the nine-key schema, the removed-key → runtime
 fused per-chunk STT pass, the CPU `medium` pick, detect-once decoding, a hallucination guard, a one-time cache-key change
 and bundled fonts; see `CHANGELOG.md` → `[4.0.3]`. The 4.0.4 release fixes progressive caption drift on
 silence-removed videos and adds the `raw` preset; see `CHANGELOG.md` → `[4.0.4]`. Both changes are additive: the nine
-config keys, the default `both` output and all existing caches are unchanged.
+config keys, the default `both` output and all existing caches are unchanged. A later 4.0.x change makes the `raw/`
+export unconditional (both a captioned render and an uncaptioned copy with a full-transcript `.srt`); see the newest
+`CHANGELOG.md` section.
 `UPGRADING-3.0.md` covers the
 2.x → 3.0 changes and is kept as history. 4.0 was a breaking config-schema release: old config files still load
 (removed keys warn and are ignored), but their replacements moved to flags, environment variables or - for the machine
@@ -662,9 +671,10 @@ python tools/compare_stt.py VIDEO --start 4956 --duration 120 \
 
 The measured result is in [docs/stt-comparison.md](docs/stt-comparison.md).
 
-`tools/verify_output.py` checks a finished run: every clip listed in `clips.json` exists, is a valid
-video with audio, has the right shape and the length the run recorded, and comes with its `.srt`
-sidecar and `.jpg` thumbnail.
+`tools/verify_output.py` checks the clips listed in the `short/` and `long/` `clips.json` files: every
+one exists, is a valid video with audio, has the right shape and the length the run recorded, and comes
+with its `.srt` sidecar and `.jpg` thumbnail. It does not inspect `raw/`, so the captioned raw clip and
+the `_uncaptioned` derivative are outside its current scope.
 
 ```bash
 python tools/verify_output.py OUTPUT_DIR

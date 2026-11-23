@@ -96,9 +96,12 @@ CLIPS = Section(
             "What to produce",
             "choice",
             "`both` renders vertical shorts and horizontal long clips, `shorts` only the 20-60 s vertical ones, "
-            "`long` only the 3-10 minute horizontal ones, `raw` the whole silence-removed video with captions.",
-            "The families have their own length, shape and destination; `raw` keeps the source shape.",
-            "`shorts` for TikTok/Reels/Shorts, `long` for YouTube compilations, `raw` for a full captioned export.",
+            "`long` only the 3-10 minute horizontal ones. Every completed non-split run also exports the silence-removed "
+            "source to `raw/{video}/`: a captioned render and an uncaptioned copy, with a full-transcript `.srt` when "
+            "a transcript is available.",
+            "The families have their own length, shape and destination; `raw` keeps the source shape. "
+            "The always-on raw export is independent of this choice.",
+            "`shorts` for TikTok/Reels/Shorts, `long` for YouTube compilations; use `raw` when you want no short or long folders at all.",
             choices=("both", "shorts", "long", "raw"),
         ),
         _o(

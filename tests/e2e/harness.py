@@ -509,11 +509,15 @@ def clip_paths(folder: Path) -> list[Path]:
 
 
 def rendered_clips(case: CaseResult) -> list[Path]:
-    """Every rendered ``.mp4`` of a case (downloaded originals under ``.work`` are not clips)."""
+    """Every manifest-backed ``.mp4`` of a case, including the raw render but not the uncaptioned copy."""
     out = case.directory / "out"
     if not out.is_dir():
         return []
-    return sorted(path for path in out.rglob("*.mp4") if path.is_file() and ".work" not in path.relative_to(out).parts)
+    return sorted(
+        path
+        for path in out.rglob("*.mp4")
+        if path.is_file() and ".work" not in path.relative_to(out).parts and not path.stem.endswith("_uncaptioned")
+    )
 
 
 def clip_metadata(clip: Path) -> dict[str, Any]:
