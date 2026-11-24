@@ -556,9 +556,10 @@ See `docs/UPGRADING-4.0.md` for the nine-key schema, the removed-key → runtime
 fused per-chunk STT pass, the CPU `medium` pick, detect-once decoding, a hallucination guard, a one-time cache-key change
 and bundled fonts; see `CHANGELOG.md` → `[4.0.3]`. The 4.0.4 release fixes progressive caption drift on
 silence-removed videos and adds the `raw` preset; see `CHANGELOG.md` → `[4.0.4]`. Both changes are additive: the nine
-config keys, the default `both` output and all existing caches are unchanged. A later 4.0.x change makes the `raw/`
-export unconditional (both a captioned render and an uncaptioned copy with a full-transcript `.srt`); see the newest
-`CHANGELOG.md` section.
+config keys, the default `both` output and all existing caches are unchanged. The 4.0.5 release makes the `raw/`
+export unconditional (both a captioned render and an uncaptioned copy with a full-transcript `.srt`), resumes a
+restarted run from its last checkpoint (`--fresh` starts over), and makes `skip.caption` burn-only while `skip.stt`
+remains the only way to suppress transcription and its `.srt` sidecars; see `CHANGELOG.md` → `[4.0.5]`.
 `UPGRADING-3.0.md` covers the
 2.x → 3.0 changes and is kept as history. 4.0 was a breaking config-schema release: old config files still load
 (removed keys warn and are ignored), but their replacements moved to flags, environment variables or - for the machine
@@ -589,7 +590,7 @@ command. Metadata files (`.info.json`, thumbnail, description) are written next 
 
 ## Changelog
 
-See [`CHANGELOG.md`](CHANGELOG.md) for release-by-release notes. The current code is version `4.0.4`.
+See [`CHANGELOG.md`](CHANGELOG.md) for release-by-release notes. The current code is version `4.0.5`.
 
 ## Development
 

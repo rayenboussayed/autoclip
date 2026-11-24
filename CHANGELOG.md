@@ -4,9 +4,9 @@ All notable changes to autoclip, newest first. Release timestamps come from
 Git tags (and commit metadata for untagged but version-stamped commits). Each
 release mentions the source tag/commit for traceability.
 
-## [Unreleased]
+## [4.0.5] — 2026-11-24 05:44:32 UTC (tag `v4.0.5`, commit `2d578fb`)
 
-- feat: a restarted run resumes from its checkpoint instead of starting over. `{output_dir}/.work/{video}/autoclip.db` now persists a run key and a stage marker (`prepared`, `transcribed`, `selected`, `rendered`); on restart with the same source and settings the stored transcript and moments are reused and only clips that are not `done` (or whose MP4 is missing) are rendered again. A changed source/setting invalidates the checkpoint automatically, and `--fresh` forces a full rerun. The fresh-per-run DB invariant is intentionally replaced; the transcript cache, optimizer manifest and originals cache are unchanged. Unit, integration, E2E and docs updated.
+- feat: a restarted run resumes from its checkpoint instead of starting over. `{output_dir}/.work/{video}/autoclip.db` now persists a run key and a stage marker (`prepared`, `transcribed`, `selected`, `rendered`); on restart with the same source and settings the stored transcript and moments are reused and only clips that are not `done` (or whose MP4 is missing) are rendered again. A changed source, subtitle or setting invalidates the checkpoint automatically, and `--fresh` / `AUTOCLIP_FRESH=1` forces a full rerun. The fresh-per-run DB invariant is intentionally replaced; the transcript cache, optimizer manifest and originals cache are unchanged. Unit, integration, E2E and docs updated.
 
 - feat: `skip.caption` now only removes the burned-in text: STT still runs (`wants_transcript = not skip.stt`) and the transcript is written as a `.srt` beside every clip in `short/`, `long/` and `raw/` (the uncaptioned raw copy carries the full transcript). `caption_cues()` computes the cues without rendering sprites, so the sidecars are identical with and without the burn. `skip.stt` remains the only way to suppress transcription and all `.srt` sidecars, including the raw one.
 
@@ -23,6 +23,11 @@ release mentions the source tag/commit for traceability.
   thumbnail helper. The server now uses a typed cancellation protocol, collects outputs once per path, excludes
   `.work` strays from derivatives, and emits a single traceback for a failed job. Tests strengthen the derivative
   and split-mode contracts.
+
+- docs: README, AGENTS and the upgrading notes name 4.0.5 as the current release and describe checkpoint resume,
+  `--fresh` and the `skip.caption`/`skip.stt` sidecar contract. The nine-key config schema is unchanged; the CLI gains
+  `--fresh` (and `AUTOCLIP_FRESH=1`) and the persistent per-video database replaces the fresh-per-run one described in
+  older notes.
 
 ## [4.0.4] — 2026-11-21 21:59:43 UTC (tag `v4.0.4`, commit `f564c95`)
 

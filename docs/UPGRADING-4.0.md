@@ -4,7 +4,7 @@
 > see `docs/UPGRADING-4.0.2.md`. The 4.x tables below describe what changed in each 4.x release; the dual timelines,
 > ranges remap and silence-scan rebuild shipped in 4.0.2 and are tracked in `../CHANGELOG.md`.
 
-> Documentation target: the main branch. Version 4.0.4 is the current release; the 4.x tables below
+> Documentation target: the main branch. Version 4.0.5 is the current release; the 4.x tables below
 > are the released-line reference. See `../CHANGELOG.md` for the full release history.
 > `UPGRADING-3.0.md` covers the 2.x → 3.0 changes and is kept as history.
 
@@ -140,6 +140,6 @@ backend is logged and skipped, never fatal.
 - `--init` writes a seven-key starter; `--init-full` writes every option with its default (it was briefly true that both wrote the same file; they differ by design).
 - The desktop app has four config tabs now: *Videos*, *Clips*, *Download*, *AI* (plus a runtime output-folder control that is
   never written to the config file).
-- Version string: 4.0.4 (`pyproject.toml`, `autoclip/__init__.py`, `snapcraft.yaml`).
+- Version string: 4.0.5 (`pyproject.toml`, `autoclip/__init__.py`, `snapcraft.yaml`).
 
 See also: `docs/options-reference.md` for the generated reference of the nine keys.

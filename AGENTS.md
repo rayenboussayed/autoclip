@@ -19,7 +19,7 @@ render (enhance audio, cut pauses/fillers, layout, burn captions, encode on GPU 
 * Runs on Linux, macOS and Windows, Python >= 3.11 (developed and verified on 3.12). No system ffmpeg required.
 * Four parts: `core` (the engine), `cli` (the command line), `app` (the desktop app, Tk) and `server` (the optional
   FastAPI/WebSocket service).
-* Version 4.0.4 (see `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml`). ~12,000 lines of
+* Version 4.0.5 (see `pyproject.toml`, `autoclip/__init__.py` and `snapcraft.yaml`). ~12,000 lines of
   package code across `core`/`cli`/`app`/`server`, ~14,400 lines of tests (100% statement + branch coverage).
 
 ## 2. Commands
