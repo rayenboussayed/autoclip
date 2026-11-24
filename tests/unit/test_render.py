@@ -220,8 +220,10 @@ def test_render_without_fades(media: Media, tmp_path: Path) -> None:
 
 
 def test_render_without_audio_track_and_without_captions(media: Media, tmp_path: Path) -> None:
+    """skip.caption stops the burn; transcript cues are still returned for the .srt sidecar."""
     dst, size, lines = render(media, tmp_path, moment(2, 9), src=media.silent, captions={"enabled": False})
-    assert not probe(dst).has_audio and lines == [] and size == (320, 568)
+    assert not probe(dst).has_audio and size == (320, 568)
+    assert lines and all(cue.end > cue.start and cue.text for cue in lines)
 
 
 def test_a_rendered_clip_keeps_the_requested_minimum_length(media: Media, tmp_path: Path) -> None:
@@ -301,9 +303,10 @@ def test_skip_audio_mutes_the_clip_and_keeps_the_window(media: Media, tmp_path: 
     assert lines  # captions still work on a muted clip
 
 
-def test_skip_caption_burns_no_captions(media: Media, tmp_path: Path) -> None:
+def test_skip_caption_burns_no_captions_but_keeps_the_cues(media: Media, tmp_path: Path) -> None:
     dst, _, lines = render(media, tmp_path, moment(), captions={"enabled": False})
-    assert lines == [] and probe(dst).has_audio
+    assert probe(dst).has_audio
+    assert lines and all(cue.end > cue.start and cue.text for cue in lines)
 
 
 def test_skip_title_draws_no_title(media: Media, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

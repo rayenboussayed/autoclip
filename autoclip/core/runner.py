@@ -46,9 +46,12 @@ def render_job(job: RenderJob) -> bool:
         log.info("[%d] rendering %s (%.1f-%.1fs, %d threads)", job.clip_id, safe_path_text(job.dst), m.start, m.end, threads)
         vclip = VideoFileClip(str(job.src), audio=False)
         size, lines = render_clip(vclip, job, store, cache)
-        if lines:
+        sidecar = job.dst.with_suffix(".srt")
+        if lines and not job.cfg.skip.stt:
             blocks = [f"{k}\n{_srt_time(c.start)} --> {_srt_time(c.end)}\n{c.text}\n" for k, c in enumerate(lines, 1)]
-            job.dst.with_suffix(".srt").write_text("\n".join(blocks), encoding="utf-8")
+            sidecar.write_text("\n".join(blocks), encoding="utf-8")
+        else:
+            sidecar.unlink(missing_ok=True)  # skip.stt or no cues: never leave a stale sidecar behind
         wall = time.perf_counter() - t0
         store.finish_clip(job.clip_id, ok=True, file=job.dst.name, size=size, trimmed=m.trimmed, wall=wall, peak_rss=RESOURCES.peak_rss)
         log.info(

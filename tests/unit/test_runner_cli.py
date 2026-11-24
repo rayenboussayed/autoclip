@@ -112,9 +112,12 @@ def test_render_job_in_a_fresh_worker_rebuilds_logging_and_monitor(media: Media,
     store.close()
 
 
-def test_render_job_without_captions_writes_no_srt(media: Media, tmp_path: Path) -> None:
+def test_render_job_without_captions_still_writes_the_transcript_srt(media: Media, tmp_path: Path) -> None:
+    """skip.caption removes the burn, not the sidecar: the transcript still produces the .srt."""
     (job,), store, _ = make_jobs(media, tmp_path, n=1, captions={"enabled": False})
-    assert render_job(job) and not (tmp_path / "c1.srt").exists()
+    assert render_job(job)
+    sidecar = tmp_path / "c1.srt"
+    assert sidecar.is_file() and "-->" in sidecar.read_text(encoding="utf-8")
     store.close()
 
 
@@ -262,7 +265,10 @@ def test_main_processes_several_videos_into_the_short_long_video_structure(
     for stem in ("talk", "silent"):
         assert (out / "raw" / stem / f"{stem}_raw_01_0s.mp4").is_file()
         assert (out / "raw" / stem / f"{stem}_raw_01_0s_uncaptioned.mp4").is_file()
-        assert (out / "raw" / stem / f"{stem}_raw_01_0s_uncaptioned.srt").is_file()
+    # The full-transcript sidecar follows the transcript: talk has one, the silent source has none.
+    assert (out / "raw" / "talk" / "talk_raw_01_0s_uncaptioned.srt").is_file()
+    assert not (out / "raw" / "silent" / "silent_raw_01_0s_uncaptioned.srt").exists()
+    for stem in ("talk", "silent"):
         summary = clips_json(tmp_path, "short", stem)
         assert len(summary) == 1 and (out / "short" / stem / summary[0]["file"]).exists()
         assert summary[0]["file"].startswith(f"{stem}_best_01_") and summary[0]["scene"] == "best" and summary[0]["width"] == 320

@@ -14,7 +14,7 @@ from typing import Any, Protocol
 import numpy as np
 
 from .audio import Timeline, build_audio, compute_keep, enhance_audio
-from .captions import Y_CENTER, build_captions, render_text_image, safe_top
+from .captions import Y_CENTER, build_captions, caption_cues, render_text_image, safe_top
 from .config import VideoCfg
 from .derive.constants import (
     BACKGROUND_BLUR,
@@ -242,7 +242,10 @@ def render_clip(vclip: MoviePyClip, job: RenderJob, store: Store, cache: Cache) 
     has_audio = has_audio and not cfg.skip.audio  # a muted clip needs no decoding either
     title_on = not cfg.skip.title
     words = [Word(w.start - start, w.end - start, w.text, w.pseudo) for w in store.window_words(moment.start, moment.end)]
-    font = find_shared_font([*(w.text.upper() if cfg.captions.uppercase else w.text for w in words), moment.title])
+    font_candidates = [w.text.upper() if cfg.captions.uppercase else w.text for w in words]
+    if title_on and moment.title:
+        font_candidates.append(moment.title)
+    font = find_shared_font(font_candidates) if cfg.captions.enabled or (title_on and moment.title) else None
     audio = (
         enhance_audio(
             src,
@@ -277,11 +280,12 @@ def render_clip(vclip: MoviePyClip, job: RenderJob, store: Store, cache: Cache) 
         fill=cfg.video.layout == "fill",
     )
     overlays = []
-    captions, lines = (
-        build_captions(words, Timeline(kept), cfg, cache, size, fg.duration, fillers=job.fillers, font=font)
-        if cfg.captions.enabled and words
-        else (None, [])
-    )
+    timeline = Timeline(kept)
+    if cfg.captions.enabled and words:
+        captions, lines = build_captions(words, timeline, cfg, cache, size, fg.duration, fillers=job.fillers, font=font)
+    else:
+        # skip.caption only removes the burn: the transcript still produces the .srt sidecar.
+        captions, lines = None, caption_cues(words, timeline, cfg, size, job.fillers) if words else []
     if captions is not None:
         overlays.append(captions)
     if title_on and moment.title:

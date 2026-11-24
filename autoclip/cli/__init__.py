@@ -56,6 +56,7 @@ def _overrides(args: argparse.Namespace) -> RuntimeOverrides:
     for attr, name in (
         ("output_dir", "output_dir"),
         ("cookies", "cookies"),
+        ("fresh", "fresh"),
     ):
         value = getattr(args, attr, None)
         if value:
@@ -166,6 +167,7 @@ def _run_command(argv: Sequence[str] | None = None) -> int:
         help="skip a step: stt, denoise, audio_enhance, audio, pauses, caption, title, fade, thumbnail, llm",
     )
     ap.add_argument("--split", action="store_true", help="cut the sources into equal parts instead of highlights")
+    ap.add_argument("--fresh", action="store_true", help="ignore the saved checkpoint and redo the whole run")
     args = ap.parse_args(argv)
     if args.gui:
         from ..app import launch

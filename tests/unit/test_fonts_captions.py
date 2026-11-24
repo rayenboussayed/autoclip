@@ -21,6 +21,7 @@ from autoclip.core.captions import (
     balanced_lines,
     build_captions,
     can_highlight,
+    caption_cues,
     join_tokens,
     make_chunks,
     render_text_image,
@@ -341,6 +342,17 @@ def test_build_captions_plain_uppercase_and_skips(cache: Cache, real_font: Path)
     assert removed is None and none_lines == []  # every caption lies in a removed part of the clip
     tiny, _ = build_captions(words(("blink", 0.0, 0.01)), Timeline([(0.0, 0.05)]), config(), cache, (360, 640), 0.05)
     assert tiny is None  # shown for under 80 ms: skipped
+
+
+def test_caption_cues_match_build_captions_without_rendering(cache: Cache, real_font: Path) -> None:
+    """The .srt cues are identical whether or not the sprites are burned (skip.caption)."""
+    words, tl, cfg, size = sentence(), Timeline([(0.0, 3.0)]), config(), (360, 640)
+    _clip, lines = build_captions(words, tl, cfg, cache, size, 3.0)
+    cues = caption_cues(words, tl, cfg, size)
+    assert [(c.start, c.end, c.text) for c in cues] == [(ln.start, ln.end, ln.text) for ln in lines]
+    shout_cfg = config(uppercase=True)
+    shout_lines = caption_cues(words, tl, shout_cfg, size)
+    assert shout_lines and all(cue.text.isupper() for cue in shout_lines)
 
 
 def test_chunk_dataclass_defaults() -> None:

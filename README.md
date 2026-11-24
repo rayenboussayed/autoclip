@@ -51,12 +51,12 @@ is exactly what `python -m autoclip config.json` would run.
                    (plain copy of the optimized source) + a full-transcript .srt when a
                    transcript exists; clips.json lists the captioned clip                          (original shape)
   logs/            autoclip_<timestamp>.log
-  .work/{video}/   autoclip.db (recreated empty on every start), the transcript cache and its .partial.jsonl resume file, the optimized source
+  .work/{video}/   autoclip.db (persists a checkpoint of finished stages and clips), the transcript cache and its .partial.jsonl resume file, the optimized source
   .work/downloads/ originals downloaded from URLs (reused by later runs)
 ```
 
 Every `clips.json` row carries `start`/`end` for the processed timeline and `source_start`/`source_end` for the
-original input file. `trimmed` remains the length after pause/filler cuts. A short or long kind that is not requested (or finds nothing) gets no folder; `raw/{video}/` is the exception - every completed non-split run exports it, whatever the preset (a cancelled run can stop before the export). The captioned file is a full render with burned-in cues (subject to `skip.*`, and still pause/filler-trimmed); the `_uncaptioned` sibling is a byte-for-byte copy of the optimized (silence-removed) source, so it can be slightly longer. When a transcript exists, the copy's SRT contains one cue per segment on that file's timeline; without one the sidecar is empty. Several videos share the same `short/`, `long/` and `raw/` folders. A *relative* `output_dir` is resolved against the current working
+original input file. `trimmed` remains the length after pause/filler cuts. A short or long kind that is not requested (or finds nothing) gets no folder; `raw/{video}/` is the exception - every completed non-split run exports it, whatever the preset (a cancelled run can stop before the export). The captioned file is a full render with burned-in cues (subject to `skip.*`, and still pause/filler-trimmed); the `_uncaptioned` sibling is a byte-for-byte copy of the optimized (silence-removed) source, so it can be slightly longer. When a transcript exists, the copy's SRT contains one cue per segment on that file's timeline; without one (or with `--skip stt`) no sidecar is written. Several videos share the same `short/`, `long/` and `raw/` folders. A *relative* `output_dir` is resolved against the current working
 directory - not against the config file - so the output folder is independent of where your config lives. An absolute `output_dir`
 (or the default `~/Videos/clips`) is used as-is.
 
@@ -125,8 +125,11 @@ Runtime overrides (flags win over environment variables):
 | `--allow a,b` | — | platforms/@groups to permit (overrides `download.allow`) |
 | `--deny c` | — | platforms/@groups to refuse (overrides `download.deny`) |
 | `--split` | — | cut the video into equal 600 s parts |
+| `--fresh` | — | ignore the saved checkpoint and redo the whole run |
 
-Env values apply first; an explicit flag always wins. `--init` writes a seven-key starter; `--init-full` writes every option with its default.
+A restarted run resumes from `{output_dir}/.work/{video}/autoclip.db`: finished stages, stored transcript and
+already-rendered clips are reused, so an interrupted batch continues instead of starting over. A changed source
+or setting starts fresh automatically; `--fresh` forces it. Env values apply first; an explicit flag always wins. `--init` writes a seven-key starter; `--init-full` writes every option with its default.
 There is deliberately **no** flag for encode quality, machine mode or the LLM model: the engine measures the
 machine and the local server and picks them itself (see *Media quality*, *Performance mode* and *AI*).
 
@@ -223,6 +226,9 @@ without the `ollama` package they are disabled and the clips keep their heuristi
 * `llm.system_prompt` (file) replaces the system message of every LLM call for your house style or rating rubric
   (empty keeps the built-in editor messages); `image.prompt` (file) sets the Stable Diffusion prompt of the AI thumbnails.
 * `--skip llm` skips every Ollama call. Whisper model downloads are automatic; `--skip stt` avoids Whisper entirely (a sidecar, downloaded or cached transcript is used instead).
+* `--skip caption` only stops the burn-in: text is still transcribed and written as a `.srt` beside every clip in
+  `short/`, `long/` and `raw/` (the uncaptioned raw copy gets the full transcript). `--skip stt` is the only way to
+  suppress transcription, and then no `.srt` sidecar is written at all.
 
 ## Automatic resource use
 
@@ -406,14 +412,14 @@ rest of the config - useful for a quick render, a silent clip or a run that must
 | `audio_enhance` | High-pass, loudness normalisation and the limiter of the clip audio; the audio stays at its original level. |
 | `audio` | The audio track: clips are muted and the audio is not decoded (so pauses cannot be removed either). |
 | `pauses` | Keep long pauses and filler sounds in the clips. |
-| `caption` | No burned-in captions. |
+| `caption` | No burned-in captions; the transcript still produces `.srt` sidecars. |
 | `title` | No overlay title, even when the model generated one. |
 | `fade` | No video or audio fades. |
 | `thumbnail` | Keep the frame JPEG instead of generating an AI thumbnail. |
 | `llm` | No Ollama calls (ranking, titles, social captions). |
 
-`--skip audio` mutes the clips and stops audio decoding. Setting `--skip caption`/`--skip title` lets ranges/split runs
-avoid transcription entirely when no text is needed.
+`--skip audio` mutes the clips and stops audio decoding. Only `--skip stt` avoids transcription; `--skip caption` and
+`--skip title` remove the burn-in and the overlay but keep the transcript and its `.srt` sidecars.
 
 ## Performance mode (chosen by the engine)
 
@@ -441,7 +447,7 @@ next run starts close to the learned optimum.
   engine-derived performance profile; they shrink under memory pressure and recover when memory is available again. A smaller Whisper
   model is chosen when the CPU one does not fit in free RAM (the shrink is CPU-only; a GPU model is used as-is); the
   larger CPU pick is reserved for performance-class machines and logged with a slow-run warning.
-* One SQLite database (WAL) per video, recreated empty at every start. Only the transcript JSON is kept between runs.
+* One SQLite database (WAL) per video, persisted as a checkpoint of finished stages and clips; a restarted run reuses it, and `--fresh` or a changed source/setting clears it. The transcript JSON is kept between runs as before.
 * Every production function is wrapped with `traced`: callers get `[START]` / `[END]` output, `START` /
   `END` / `FAIL` log records with machine state, and post-operation memory rebalancing. Nested calls are
   not double-logged, keeping the file usable instead of exploding it.

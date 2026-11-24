@@ -89,6 +89,41 @@ def test_default_run_also_exports_the_raw_folder(media: Media, e2e_run: E2ERun, 
     assert len(list(out.glob("short/*/*.mp4"))) == 1
 
 
+def test_restarting_the_cli_resumes_the_checkpoint(media: Media, e2e_run: E2ERun, tmp_path: Path) -> None:
+    """A second invocation on the same output folder reuses finished stages and clips."""
+    source = tmp_path / "resume.mp4"
+    source.write_bytes(media.video.read_bytes())
+    out = tmp_path / "out-resume"
+    config = pipeline_config(
+        out, source, transcript=media.srt, clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 2, "max_seconds": 6}}
+    )
+    e2e_run.execute("resume-first", config).require_ok()
+    rendered = sorted(out.rglob("*.mp4"))
+    assert len(rendered) == 3  # one short + the raw render + its uncaptioned copy
+    before = {path: path.stat().st_mtime_ns for path in rendered}
+
+    second = e2e_run.execute("resume-second", config).require_ok()
+    assert {path: path.stat().st_mtime_ns for path in rendered} == before
+    log_text = second.log_path.read_text(encoding="utf-8") if second.log_path else second.stdout
+    assert "checkpoint: reusing" in log_text
+
+
+def test_skip_caption_keeps_the_transcript_sidecars(media: Media, e2e_run: E2ERun, tmp_path: Path) -> None:
+    """--skip caption removes the burn, not the STT: short/ and raw/ still get their .srt files."""
+    source = tmp_path / "no-burn.mp4"
+    source.write_bytes(media.video.read_bytes())
+    out = tmp_path / "out-no-burn"
+    config = pipeline_config(out, source, transcript=media.srt)
+    e2e_run.execute("skip-caption", config, args=["--skip", "caption"]).require_ok()
+    for kind in ("short", "raw"):
+        clips = [p for p in out.glob(f"{kind}/*/*.mp4") if not p.stem.endswith("_uncaptioned")]
+        assert len(clips) == 1, (kind, clips)
+        assert parse_srt(clips[0].with_suffix(".srt").read_text(encoding="utf-8"))
+    copies = [p for p in out.glob("raw/*/*.mp4") if p.stem.endswith("_uncaptioned")]
+    assert len(copies) == 1
+    assert parse_srt(copies[0].with_suffix(".srt").read_text(encoding="utf-8"))
+
+
 def test_all_captions_share_one_font(media: Media, e2e_run: E2ERun, tmp_path: Path) -> None:
     """A real CLI render chooses one caption font for the whole clip, logged once per build."""
     if find_font("HELLO 123 CAFÉ") is None:

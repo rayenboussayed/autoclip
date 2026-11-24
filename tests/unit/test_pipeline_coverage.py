@@ -11,7 +11,7 @@ from autoclip.core.cutmap import CutMap, MeasuredTimeline
 from autoclip.core.media import probe
 from autoclip.core.optimizer import PreparedSource
 from autoclip.core.pipeline import process_video
-from tests.support import install_stub_whisper, make_cfg
+from tests.support import bare_media, install_stub_whisper, make_cfg
 
 
 def test_process_video_uses_the_optimized_source(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -463,7 +463,8 @@ def test_export_uncaptioned_raw_copies_the_source_with_a_full_transcript_srt(tmp
     store = Store(tmp_path / "raw.db", fresh=True)
     try:
         store.put_segments([Segment(0.0, 1.25, "hello"), Segment(2.0, 3.5, "world")])
-        dst = _export_uncaptioned_raw(tmp_path / "out", "talk", source, store)
+        dst = _export_uncaptioned_raw(tmp_path / "out", "talk", source, store, write_subtitle=True)
+        skipped = _export_uncaptioned_raw(tmp_path / "out2", "talk", source, store, write_subtitle=False)
     finally:
         store.close()
     assert dst == tmp_path / "out" / "raw" / "talk" / "talk_raw_01_0s_uncaptioned.mp4"
@@ -471,6 +472,7 @@ def test_export_uncaptioned_raw_copies_the_source_with_a_full_transcript_srt(tmp
     assert dst.with_suffix(".srt").read_text(encoding="utf-8") == (
         "1\n00:00:00,000 --> 00:00:01,250\nhello\n\n2\n00:00:02,000 --> 00:00:03,500\nworld\n"
     )
+    assert skipped.is_file() and not skipped.with_suffix(".srt").exists()  # skip.stt suppresses the sidecar
 
 
 def test_process_video_always_exports_both_raw_variants(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -588,6 +590,194 @@ def test_process_video_mixed_kinds_render_raw_last(media: Any, tmp_path: Path, m
     assert len(batches) == 2
     assert batches[0] and all(job.kind == "short" for job in batches[0])
     assert [job.kind for job in batches[1]] == ["raw"]
+
+
+def test_checkpoint_resume_fresh_and_run_key_invalidation(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A restart skips finished stages/clips; --fresh and a changed config each force a full rerun."""
+    from autoclip.core import pipeline as pm
+    from autoclip.core.hardware import cpu_encoder as ce
+    from autoclip.core.moments import select_moments as real_select
+    from autoclip.core.store import Store
+    from autoclip.core.transcript import get_transcript as real_transcript
+
+    install_stub_whisper(monkeypatch, media, {}, cuda=0)
+    calls = {"transcript": 0, "select": 0, "render": 0}
+
+    def spy_transcript(*a: Any, **k: Any) -> Any:
+        calls["transcript"] += 1
+        return real_transcript(*a, **k)
+
+    def spy_select(*a: Any, **k: Any) -> Any:
+        calls["select"] += 1
+        return real_select(*a, **k)
+
+    def fake_render(jobs: list[Any], *a: Any, **k: Any) -> None:
+        calls["render"] += 1
+        for job in jobs:
+            job.dst.write_bytes(b"video")
+            store = Store(job.db_path)
+            store.finish_clip(job.clip_id, ok=True, file=job.dst.name)
+            store.close()
+
+    monkeypatch.setattr("autoclip.core.pipeline.get_transcript", spy_transcript)
+    monkeypatch.setattr("autoclip.core.pipeline.select_moments", spy_select)
+    monkeypatch.setattr(pm, "render_all", fake_render)
+    out = tmp_path / "resume"
+    cfg = make_cfg(media, out, clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
+    encoder = ce(cfg.video, cfg.quality)
+    assert process_video(media.video, cfg, None, encoder) == (2, 0)
+    assert calls == {"transcript": 1, "select": 1, "render": 2}
+
+    index = out / "short" / media.video.stem / "clips.json"
+    before = index.read_text(encoding="utf-8")
+    calls.update(transcript=0, select=0, render=0)
+    assert process_video(media.video, cfg, None, encoder) == (2, 0)
+    assert calls == {"transcript": 0, "select": 0, "render": 1}  # only the (empty) raw pass
+    assert index.read_text(encoding="utf-8") == before
+
+    cfg.fresh = True
+    calls.update(transcript=0, select=0, render=0)
+    assert process_video(media.video, cfg, None, encoder) == (2, 0)
+    assert calls == {"transcript": 1, "select": 1, "render": 2}
+    cfg.fresh = False
+
+    cfg.clips.short.count = 2  # any run-affecting setting changes the run key
+    calls.update(transcript=0, select=0, render=0)
+    assert process_video(media.video, cfg, None, encoder) == (3, 0)
+    assert calls == {"transcript": 1, "select": 1, "render": 2}
+
+
+def test_resume_requeues_a_failed_clip_from_the_checkpoint(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed row from an interrupted run must be rendered again, while finished clips stay untouched."""
+    from autoclip.core import pipeline as pm
+    from autoclip.core.hardware import cpu_encoder as ce
+    from autoclip.core.store import Store
+
+    install_stub_whisper(monkeypatch, media, {}, cuda=0)
+    calls = {"jobs": 0}
+
+    def fake_render(jobs: list[Any], *a: Any, **k: Any) -> None:
+        calls["jobs"] += len(jobs)
+        for job in jobs:
+            job.dst.write_bytes(b"video")
+            store = Store(job.db_path)
+            store.finish_clip(job.clip_id, ok=True, file=job.dst.name)
+            store.close()
+
+    monkeypatch.setattr(pm, "render_all", fake_render)
+    out = tmp_path / "requeue"
+    cfg = make_cfg(media, out, clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
+    encoder = ce(cfg.video, cfg.quality)
+    process_video(media.video, cfg, None, encoder)
+    assert calls["jobs"] == 2  # one short + one raw
+
+    db = out / ".work" / media.video.stem / "autoclip.db"
+    store = Store(db)
+    store.conn.execute("UPDATE clips SET status='failed' WHERE kind='short'")
+    store.close()
+    calls["jobs"] = 0
+    process_video(media.video, cfg, None, encoder)
+    assert calls["jobs"] == 1  # only the failed short clip is requeued; raw stays finished
+
+
+def test_run_key_includes_the_subtitle_identity(tmp_path: Path) -> None:
+    from autoclip.core.config import Config
+    from autoclip.core.pipeline import _run_key
+
+    source = tmp_path / "video.mp4"
+    source.write_bytes(b"video")
+    first = tmp_path / "first.srt"
+    second = tmp_path / "second.srt"
+    first.write_text("same", encoding="utf-8")
+    second.write_text("same", encoding="utf-8")
+    assert _run_key(Config(), source, first) != _run_key(Config(), source, second)
+    assert _run_key(Config(), source, first) != _run_key(Config(), source)
+
+
+def test_no_transcript_needed_when_every_text_step_is_skipped(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoclip.core import pipeline as pm
+    from autoclip.core.hardware import cpu_encoder as ce
+    from autoclip.core.store import Store
+
+    def fake_render(jobs: list[Any], *a: Any, **k: Any) -> None:
+        for job in jobs:
+            job.dst.write_bytes(b"video")
+            store = Store(job.db_path)
+            store.finish_clip(job.clip_id, ok=True, file=job.dst.name)
+            store.close()
+
+    monkeypatch.setattr(pm, "render_all", fake_render)
+    out = tmp_path / "no-text"
+    cfg = make_cfg(media, out, clips={"mode": "ranges", "kinds": ["short"], "short": {"count": 1, "ranges": ["00:00:02-00:00:05"]}})
+    cfg.skip.stt = True
+    cfg.skip.title = True
+    cfg.captions.enabled = False
+    process_video(media.video, cfg, None, ce(cfg.video, cfg.quality))
+    assert list(out.rglob("*.srt")) == []
+
+
+def test_resume_handles_pending_rows_and_empty_output_files(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A checkpoint row saved before render still has a file name, and a 0-byte output is not 'done'."""
+    from autoclip.core import pipeline as pm
+    from autoclip.core.hardware import cpu_encoder as ce
+    from autoclip.core.store import Store
+
+    install_stub_whisper(monkeypatch, media, {}, cuda=0)
+    rendered: list[Any] = []
+
+    def fake_render(jobs: list[Any], *a: Any, **k: Any) -> None:
+        for job in jobs:
+            rendered.append(job.dst)
+            job.dst.write_bytes(b"video")
+            store = Store(job.db_path)
+            store.finish_clip(job.clip_id, ok=True, file=job.dst.name)
+            store.close()
+
+    monkeypatch.setattr(pm, "render_all", fake_render)
+    out = tmp_path / "pending"
+    cfg = make_cfg(media, out, clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
+    encoder = ce(cfg.video, cfg.quality)
+    process_video(media.video, cfg, None, encoder)
+
+    db = out / ".work" / media.video.stem / "autoclip.db"
+    store = Store(db)
+    short_id = store.clips("short")[0]["id"]
+    store.conn.execute("UPDATE clips SET status='pending', file='' WHERE id=?", (short_id,))
+    status = [(row["kind"], row["status"], row["file"]) for row in store.clips()]
+    store.close()
+    rendered.clear()
+    process_video(media.video, cfg, None, encoder)
+    assert any("short" in path.parts for path in rendered), (status, rendered)
+    assert all(path.is_file() and path.stat().st_size for path in rendered)
+
+    short_output = next(out.glob("short/*/*.mp4"))
+    short_output.write_bytes(b"")
+    rendered.clear()
+    process_video(media.video, cfg, None, encoder)
+    assert any("short" in path.parts for path in rendered)
+
+
+def test_skip_stt_writes_no_transcript_sidecars(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """skip.stt is the only way to turn STT off; then no .srt sidecar is written in any folder."""
+    from autoclip.core import pipeline as pm
+    from autoclip.core.hardware import cpu_encoder as ce
+    from autoclip.core.store import Store
+
+    def fake_render(jobs: list[Any], *a: Any, **k: Any) -> None:
+        for job in jobs:
+            job.dst.write_bytes(b"video")
+            store = Store(job.db_path)
+            store.finish_clip(job.clip_id, ok=True, file=job.dst.name)
+            store.close()
+
+    monkeypatch.setattr(pm, "render_all", fake_render)
+    source = bare_media(media, tmp_path)
+    out = tmp_path / "no-stt"
+    cfg = make_cfg(media, out, source=source, clips={"kinds": ["short"], "short": {"count": 1, "min_seconds": 5, "max_seconds": 10}})
+    cfg.skip.stt = True
+    process_video(source, cfg, None, ce(cfg.video, cfg.quality))
+    assert list(out.rglob("*.srt")) == []
+    assert (out / "raw" / source.stem / f"{source.stem}_raw_01_0s_uncaptioned.mp4").is_file()
 
 
 def test_process_video_persists_both_timelines_in_clips_json(media: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

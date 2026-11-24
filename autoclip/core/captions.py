@@ -436,6 +436,37 @@ def without_fillers(words: Sequence[Word], fillers: set[str]) -> list[Word]:
 
 
 @traced("build_captions")
+def caption_screens(
+    words: Sequence[Word],
+    cfg: Config,
+    size: tuple[int, int],
+    fillers: frozenset[str] | set[str] | None = None,
+) -> list[Chunk]:
+    """The caption screens of a clip, without rendering anything."""
+    if fillers is None:
+        fillers = frozenset(DEFAULT_FILLERS)
+    cleaned = without_fillers(words, {f.lower() for f in fillers})
+    return make_chunks(cleaned, cfg.captions, size[0])
+
+
+def caption_cues(
+    words: Sequence[Word],
+    tl: Timeline,
+    cfg: Config,
+    size: tuple[int, int],
+    fillers: frozenset[str] | set[str] | None = None,
+) -> list[Span]:
+    """SubRip cues on the trimmed timeline, whether or not the text is burned into the video."""
+    cues: list[Span] = []
+    for chunk in caption_screens(words, cfg, size, fillers):
+        span = tl.map_range(chunk.start, chunk.end)
+        if span is None or span[1] - span[0] < 0.08:
+            continue
+        text = chunk.text.upper() if cfg.captions.uppercase else chunk.text
+        cues.append(Span(round(span[0], 2), round(span[1], 2), text))
+    return cues
+
+
 def build_captions(
     words: Sequence[Word],
     tl: Timeline,
@@ -454,11 +485,8 @@ def build_captions(
     """
     W, H = size
     cc = cfg.captions
-    if fillers is None:
-        fillers = frozenset(DEFAULT_FILLERS)
-    words = without_fillers(words, {f.lower() for f in fillers})
     font_size, max_w = int(min(W, H) / 15), int(W * 0.9)
-    chunks = make_chunks(words, cc, W)
+    chunks = caption_screens(words, cfg, size, fillers)
     if font is None:
         font = find_shared_font([c.text.upper() if cc.uppercase else c.text for c in chunks])
     log.info("caption font: %s", font)

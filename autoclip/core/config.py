@@ -317,6 +317,7 @@ class Config(Section):
     video: VideoCfg = field(default_factory=VideoCfg)
     captions: CaptionsCfg = field(default_factory=CaptionsCfg)
     skip: SkipCfg = field(default_factory=SkipCfg)
+    fresh: bool = False  # internal: ignore a saved checkpoint and redo the whole run
 
 
 @dataclass(config=SCHEMA)
@@ -380,6 +381,7 @@ class FilePlatformsCfg(Section):
 #: Keys older versions accepted, with the replacement to use instead. A removed *section* covers its children.
 REMOVED_KEYS: dict[str, str] = {
     "output_dir": "set AUTOCLIP_OUTPUT_DIR, pass --output-dir, or choose the folder in the app",
+    "fresh": "pass --fresh on the command line to ignore a saved checkpoint",
     "mode": "the engine balances the run automatically from the measured machine; there is nothing to set",
     "quality": "the engine chooses the encode quality automatically from the measured machine; there is nothing to set",
     "logging": "logging is internal: DEBUG in debug mode (AUTOCLIP_DEBUG=1), INFO otherwise",
@@ -479,6 +481,7 @@ class RuntimeOverrides(Section):
     cookies: str | None = None  # a browser name or a Netscape cookies file
     skip: list[SkipName] | None = None
     split: Bool | None = None
+    fresh: Bool | None = None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> RuntimeOverrides:
@@ -496,6 +499,8 @@ class RuntimeOverrides(Section):
         skips = [name.strip() for name in env.get("AUTOCLIP_SKIP", "").split(",") if name.strip()]
         if skips:
             data["skip"] = skips  # type: ignore[assignment]
+        if env.get("AUTOCLIP_FRESH", "").strip().lower() in ("1", "true", "yes", "on"):
+            data["fresh"] = True
         # Every invalid value falls back to its default inside ``parse``; nothing in this curated dict can raise.
         return parse(cls, data)
 
@@ -588,6 +593,7 @@ class FileConfig(Section):
             video=VideoCfg(),
             captions=CaptionsCfg(enabled=not skip.caption),
             skip=skip,
+            fresh=bool(ov.fresh),
         )
 
 

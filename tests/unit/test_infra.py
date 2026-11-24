@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import logging
 import os
+import sqlite3
 import sys
 import types
 from pathlib import Path
@@ -405,6 +406,43 @@ def test_store_fresh_wipes_previous_database(tmp_path: Path) -> None:
     s.close()
     s = Store(path, fresh=True)
     assert s.light_segments() == []
+    s.close()
+
+
+def test_store_adds_peak_rss_to_an_old_database(tmp_path: Path) -> None:
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            "CREATE TABLE clips(id INTEGER PRIMARY KEY, kind TEXT, scene TEXT, n INTEGER, start REAL, end REAL, "
+            "source_start REAL, source_end REAL, score REAL, llm_score REAL, title TEXT, caption TEXT, text TEXT, "
+            "status TEXT, file TEXT, width INTEGER, height INTEGER, trimmed REAL, wall REAL, error TEXT);"
+        )
+    store = Store(path)
+    assert "peak_rss" in {str(row["name"]) for row in store.conn.execute("PRAGMA table_info(clips)")}
+    clip_id = store.save_moment("short", "best", 1, Moment(0, 5, "text"))
+    store.finish_clip(clip_id, ok=True, file="a.mp4")
+    assert store.conn.execute("SELECT peak_rss FROM clips").fetchone()[0] == 0
+    store.close()
+
+
+def test_store_checkpoint_survives_reopen_and_reset(tmp_path: Path) -> None:
+    path = tmp_path / "checkpoint.db"
+    s = Store(path)
+    assert s.checkpoint() == ("", "")
+    s.put_segments(segs())
+    s.save_moment("short", "best", 1, Moment(0, 5, "text"))
+    s.kv_put("cached:blob", b"keep")
+    s.set_checkpoint("run-1", "selected")
+    s.close()
+
+    s = Store(path)
+    assert s.checkpoint() == ("run-1", "selected")
+    assert len(s.light_segments()) == 3 and len(s.clips()) == 1
+    s.requeue_clip(1)
+    assert s.clips()[0]["status"] == "pending"
+    s.reset_pipeline()
+    assert s.checkpoint() == ("", "") and s.light_segments() == [] and s.clips() == []
+    assert s.kv_get("cached:blob") == b"keep"  # content-keyed cache is not pipeline state
     s.close()
 
 

@@ -32,6 +32,7 @@ pip install -e ".[server]"                     # optional: the FastAPI server (t
 
 python -m autoclip --init config.json          # tiny starter config      (--init-full: every option + default)
 python -m autoclip [config.json]               # run (no config: ./config.json if present, else ./input.mp4 + defaults; exit 0/1/2)
+python -m autoclip --fresh [config.json]       # ignore the saved checkpoint and redo the whole run
 python -m autoclip --gui                       # the desktop app (same as: python -m autoclip.app)
 python -m autoclip --formats URL               # every format of a URL and the one autoclip would pick (no config needed)
 python -m autoclip --platforms [URL] config.json        # the allow/deny policy (and where that URL would go)
@@ -232,12 +233,12 @@ main()
     process_video(src, cfg, log_file, encoder, name=name, subtitle=subtitle, subtitle_manual=...)
       probe(src)                                   PyAV: duration, audio?, size, fps
       mode == "split": ffmpeg stream-copy parts -> {out}/long/{video}/   (done)
-      Store(.work/{video}/autoclip.db, fresh=True) + Cache      ({video} = name or src.stem)
+      Store(.work/{video}/autoclip.db) + Cache                   ({video} = name or src.stem; checkpoint: see invariant 1)
       scan_audio -> optimized source if silence is worth removing (`optimizer.py`)
                     (fresh assembly: each 5-min chunk transcribed after its segments commit, partial saved in
                      {stem}.transcript.partial.jsonl; reused assembly: no fused STT)
       detect_scenes (the cut boundaries feed moment selection; nothing is stored)
-      get_transcript(..., needs_text(cfg))        sidecar file | downloaded subtitle | disk cache | faster-whisper
+      get_transcript(..., needs_text or wants) sidecar file | downloaded subtitle | disk cache | faster-whisper
                                              (5 min chunks, or the fused pass replayed from the partial) -> SQLite;
                                              subtitles follow the video's original language; consent is always auto;
                                              `skip.stt` stops before Whisper, `skip.denoise` skips the enhancer
@@ -333,10 +334,13 @@ step, percent, outputs); nothing else is persisted except the job folder and the
 
 ## 5. Invariants - do not break these
 
-1. **Fresh database per video, every run.** `Store(..., fresh=True)` deletes the DB and its `-wal/-shm/-journal`.
-   The only things persisted between runs are `{video}.transcript.json` (keyed by source name/size/mtime, model,
-   language, multilingual, hallucination guard, word_timestamps and the enhancement settings; a mismatch re-transcribes) and the downloaded
-   originals under `.work/downloads` (reused when the name prefix - title, id, format id, range - matches).
+1. **Persistent database with checkpoints per video.** `Store(.work/{video}/autoclip.db)` keeps its transcript, clip
+   rows and a `checkpoint(run_key, stage)` marker (`prepared` -> `transcribed` -> `selected` -> `rendered`). A restarted
+   `process_video` with the same source identity and settings reuses the stored transcript and moments and only renders
+   clips that are not `done` with an existing MP4; `cfg.fresh` (`--fresh`, a runtime override) or a changed run key calls
+   `Store.reset_pipeline()`. Content-keyed `kv` blobs, `{video}.transcript.json` (keyed by source name/size/mtime, model,
+   language, multilingual, hallucination guard, word_timestamps and the enhancement settings) and downloaded originals
+   under `.work/downloads` (reused when the name prefix - title, id, format id, range - matches) survive as before.
 2. **Results flow through SQLite, not return values.** `render_job` returns a bool but the truth is the `clips` row
    (`pending` -> `done`/`failed`). `clips.json` is built from rows. A row still `pending` after `render_all` means the
    worker never finished and is reported as failed.
@@ -400,8 +404,11 @@ step, percent, outputs); nothing else is persisted except the job folder and the
     `skip.audio` mutes the clip and stops audio decoding, so pause removal cannot run; `skip.denoise` transcribes raw
     audio and disables noise reduction of the clip audio; `skip.thumbnail` keeps the frame JPEG; `skip.llm` forbids
     Ollama calls. `captions.enabled` and `--skip title` are the remaining switches; short clips get a title only
-    when the model generated one; long clips fall back to a heuristic title (short clips keep none). `needs_text(cfg)` decides whether a transcript is loaded at all (highlights, or captions/titles
-    that are not skipped).
+    when the model generated one; long clips fall back to a heuristic title (short clips keep none). `needs_text(cfg)`
+    decides whether selection/titles read the transcript, while `wants_transcript(cfg) = not skip.stt` decides whether
+    STT runs at all: `skip.caption` only removes the burn-in, so transcript `.srt` sidecars are still written for every
+    clip in `short/`/`long/`/`raw/`; `skip.stt` is the only way to suppress them. `caption_cues()` computes those cues
+    without rendering sprites, and `render.py` uses it whenever `captions.enabled` is false.
 17. **The server owns the input and the output folder.** `prepare_config` always drops `input` and `output_dir` from the
     uploaded config and sets them to the uploaded file and the job folder; a server job can never write outside its
     own folder. The registry is in memory (a restart loses the jobs, not their files), and `OUTPUT_DIR`/`CACHE_DIR`
@@ -428,7 +435,8 @@ Removed keys are dropped by `_strip_removed` with a warning via `REMOVED_KEYS` (
 keys still raise `ConfigError`.
 
 `Config` (runtime) = `input`, `output_dir`, `mode`, `quality`, `download`, `clips`,
-`llm`, `image`, `video`, `captions`, `skip`. `mode` (`performance`/`resources`/`balance`) and `quality`
+`llm`, `image`, `video`, `captions`, `skip`, `fresh`. `fresh` is internal (`--fresh`, never a file key - it is stripped
+with the other internal fields by `REMOVED_KEYS`). `mode` (`performance`/`resources`/`balance`) and `quality`
 (`high`/`medium`/`low`) are **internal, engine-derived** fields (chosen by `derive.policy.auto_quality` from the measured cores and
 free RAM in `to_config`; never accepted from the file, the environment or the command line). `KindCfg` = `count`, `min_seconds`,
 `max_seconds`, `aspect`, `ranges` (no `target_seconds` in 4.0). `SkipCfg` = `stt`, `denoise`, `audio_enhance`, `audio`,
@@ -783,7 +791,7 @@ Philosophy: **real ffmpeg, real files, real processes** wherever feasible; injec
 * **New platform family, alias or group:** edit `platforms.py` (`FAMILIES`, `ALIASES`, `GROUPS`), test it offline in
   `tests/unit/test_platforms.py` and update the README table. Family names are checked against yt-dlp only at run time, so
   none of this needs the network.
-* **DB schema change:** edit `store.SCHEMA` (the DB is recreated every run - no migrations), update `Store` methods and
+* **DB schema change:** edit `store.SCHEMA`; the DB now persists, so add a small `PRAGMA table_info` + `ALTER TABLE` fallback in `Store.__init__` for new columns (as done for `peak_rss`), update `Store` methods and
   `tests/unit/test_infra.py`. Remember workers open their own connection.
 * **Caption styling:** `captions.render_text_image` takes a `CaptionsCfg`; sprite cache keys include the whole style
   (`sprite_key`), so new style fields are picked up automatically if they are in `CaptionsCfg`. `render_clip` picks one

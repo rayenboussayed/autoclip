@@ -235,6 +235,12 @@ def test_environment_overrides_are_field_by_field(monkeypatch: pytest.MonkeyPatc
     assert merged.skip == ["caption", "llm"]
 
 
+def test_environment_fresh_is_an_opt_in_boolean() -> None:
+    assert RuntimeOverrides.from_env({"AUTOCLIP_FRESH": "1"}).fresh is True
+    assert RuntimeOverrides.from_env({"AUTOCLIP_FRESH": "yes"}).fresh is True
+    assert RuntimeOverrides.from_env({"AUTOCLIP_FRESH": "false"}).fresh is None
+
+
 def test_an_invalid_environment_override_is_ignored(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level("WARNING", logger="autoclip"):
         overrides = RuntimeOverrides.from_env({"AUTOCLIP_SKIP": "snap", "AUTOCLIP_OUTPUT_DIR": "/env/out"})

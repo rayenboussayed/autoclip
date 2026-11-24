@@ -4,7 +4,7 @@ Each budget is a measured peak × a safety factor, floored at 200 MB. When a pub
 grows (a new OCR pass, a bigger model), recalibrate the budget with a fresh measurement and note the
 date here. An unexplained change *lowering* a budget, or removing one, is a regression risk.
 
-Measured on 2026-11-13 and 2026-11-18 on a 16-core Linux 3.14/3.13 machine; M1/M3 run with the in-process ``low``/``medium`` fixtures and ``ultrafast``; M4/M5 run via CLI subprocesses (engine-derived tier since 5.0 - ``medium`` on the calibration box), re-confirmed green 2026-11-19. M4/M5 were recalibrated on 2026-11-22: every non-split run now also renders the whole silence-removed source into ``raw/``, so the CLI tree peaks rose to 990 MB (fixture) and 1398 MB (many-parts) on this box. M1/M3 also run the always-on raw render but were not recalibrated in this task; do not tighten them without a fresh measurement.
+Measured on 2026-11-13 and 2026-11-18 on a 16-core Linux 3.14/3.13 machine; M1/M3 run with the in-process ``low``/``medium`` fixtures and ``ultrafast``; M4/M5 run via CLI subprocesses (engine-derived tier since 5.0 - ``medium`` on the calibration box), re-confirmed green 2026-11-19. M4/M5 were recalibrated on 2026-11-22: every non-split run now also renders the whole silence-removed source into ``raw/``, so the CLI tree peaks rose to 990 MB (fixture) and 1398 MB (many-parts) on this box. M1/M3 also run the always-on raw render but were not recalibrated in this task; do not tighten them without a fresh measurement. The 2026-11-23 checkpoint/resume work adds only a few SQLite rows and a config hash per run, so no budget was changed; a resumed run does strictly less render work and stays inside these ceilings.
 """
 
 from __future__ import annotations

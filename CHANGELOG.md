@@ -6,6 +6,10 @@ release mentions the source tag/commit for traceability.
 
 ## [Unreleased]
 
+- feat: a restarted run resumes from its checkpoint instead of starting over. `{output_dir}/.work/{video}/autoclip.db` now persists a run key and a stage marker (`prepared`, `transcribed`, `selected`, `rendered`); on restart with the same source and settings the stored transcript and moments are reused and only clips that are not `done` (or whose MP4 is missing) are rendered again. A changed source/setting invalidates the checkpoint automatically, and `--fresh` forces a full rerun. The fresh-per-run DB invariant is intentionally replaced; the transcript cache, optimizer manifest and originals cache are unchanged. Unit, integration, E2E and docs updated.
+
+- feat: `skip.caption` now only removes the burned-in text: STT still runs (`wants_transcript = not skip.stt`) and the transcript is written as a `.srt` beside every clip in `short/`, `long/` and `raw/` (the uncaptioned raw copy carries the full transcript). `caption_cues()` computes the cues without rendering sprites, so the sidecars are identical with and without the burn. `skip.stt` remains the only way to suppress transcription and all `.srt` sidecars, including the raw one.
+
 - feat: every completed non-split run now writes `raw/{video}/`, whatever `clips.preset` says. The folder holds the
   existing captioned render (`{video}_raw_01_0s.mp4`, with cover and caption-cue `.srt`, subject to `skip.*`) and a
   new `{video}_raw_01_0s_uncaptioned.mp4` that is a plain copy of the optimized source. When a transcript exists, the

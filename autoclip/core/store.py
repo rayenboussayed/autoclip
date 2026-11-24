@@ -62,9 +62,12 @@ CREATE TABLE IF NOT EXISTS clips(id INTEGER PRIMARY KEY, kind TEXT, scene TEXT, 
                                  width INTEGER, height INTEGER, trimmed REAL, wall REAL, error TEXT, peak_rss INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v BLOB NOT NULL, size INTEGER, atime REAL);
 CREATE INDEX IF NOT EXISTS ix_kv_atime ON kv(atime);
+CREATE TABLE IF NOT EXISTS checkpoint(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 """
 #: Words and segments are shorter than this, so a window query only needs to look this far back.
 MAX_SPAN = 120.0
+#: Pipeline stages in order; reaching one means every earlier stage finished.
+CHECKPOINT_STAGES = ("prepared", "transcribed", "selected", "rendered")
 
 
 class Store:
@@ -89,6 +92,10 @@ class Store:
         ):
             self.conn.execute(f"PRAGMA {pragma}")
         self.conn.executescript(SCHEMA)
+        # The database now survives runs, so add columns from older schemas instead of recreating it.
+        columns = {str(row["name"]) for row in self.conn.execute("PRAGMA table_info(clips)")}
+        if "peak_rss" not in columns:
+            self.conn.execute("ALTER TABLE clips ADD COLUMN peak_rss INTEGER NOT NULL DEFAULT 0")
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
@@ -105,6 +112,36 @@ class Store:
         """Checkpoint the WAL (so the file shrinks) and close."""
         self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self.conn.close()
+
+    # -- checkpoints ----------------------------------------------------------------------------
+    def checkpoint(self) -> tuple[str, str]:
+        """The ``(run_key, stage)`` saved by the last run on this database (empty when none)."""
+        rows = self.conn.execute("SELECT k, v FROM checkpoint WHERE k IN ('run_key', 'stage')").fetchall()
+        values = {str(row["k"]): str(row["v"]) for row in rows}
+        return values.get("run_key", ""), values.get("stage", "")
+
+    def set_checkpoint(self, run_key: str, stage: str) -> None:
+        """Save the run identity and its furthest completed stage in one transaction."""
+        with self.transaction():
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO checkpoint(k, v) VALUES (?,?)",
+                (("run_key", run_key), ("stage", stage)),
+            )
+
+    def reset_pipeline(self) -> None:
+        """Clear transcript, clip and checkpoint rows; content-keyed cache blobs survive."""
+        with self.transaction():
+            for table in ("segments", "words", "clips", "checkpoint"):
+                self.conn.execute(f"DELETE FROM {table}")  # noqa: S608  # the names are literals above
+
+    def requeue_clip(self, clip_id: int) -> None:
+        """Make an unfinished clip row eligible for rendering again (never touch a finished row)."""
+        with self.transaction():
+            self.conn.execute(
+                "UPDATE clips SET status='pending', file='', width=0, height=0, trimmed=0, wall=0, error=NULL, peak_rss=0 "
+                "WHERE id=? AND status!='done'",
+                (clip_id,),
+            )
 
     # -- transcript -----------------------------------------------------------------------------
     def put_segments(self, segments: list[Segment]) -> None:
